@@ -1,0 +1,39 @@
+name: lint
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate plugin.json is valid JSON
+        run: jq empty .claude-plugin/plugin.json
+
+      - name: Validate skill + agent frontmatter
+        run: |
+          python3 - <<'EOF'
+          import re, sys, glob
+          ok = True
+          targets = sorted(glob.glob("skills/*/SKILL.md")) + sorted(glob.glob("agents/*.md"))
+          if not targets:
+              print("::error::no skills/*/SKILL.md or agents/*.md found"); sys.exit(1)
+          for path in targets:
+              text = open(path, encoding="utf-8").read()
+              m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+              if not m:
+                  print(f"::error::{path} missing YAML frontmatter"); ok = False; continue
+              fm = m.group(1)
+              if "name:" not in fm or "description:" not in fm:
+                  print(f"::error::{path} frontmatter missing 'name' or 'description'"); ok = False; continue
+              print(f"{path}: OK")
+          sys.exit(0 if ok else 1)
+          EOF
