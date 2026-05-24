@@ -38,7 +38,15 @@ invocation (see Inputs); pass it to the analyst and to every project-issues call
    orchestrator's own branch/state collide with the workers.
 2. **Capture repo + base branch.** `git rev-parse --show-toplevel` → `repo_root`.
    Determine the repo's default branch → `base`. All worktrees branch off `base`.
-3. **Worktree mechanism — agent-worktree MCP only.** Worktree creation uses the
+3. **Refresh `base` from the remote — guard against stale worktrees.** Before
+   creating any worktree, bring the main checkout's default branch up to date so
+   the worktrees don't branch off a stale `base`: `git fetch origin` then
+   `git pull --ff-only` (you are on the default branch per Precondition 1). If it
+   can't fast-forward (the local branch has diverged) or a dirty working tree
+   blocks it, **STOP** and tell the user to reconcile the main checkout first —
+   never merge, rebase, or force. Stopgap: `worktree_create` does **not** refresh
+   from the remote itself yet, so the skill must do it here.
+4. **Worktree mechanism — agent-worktree MCP only.** Worktree creation uses the
    **agent-worktree MCP** (`worktree_create`). If that MCP is **not loaded** in
    this session (fresh sessions don't auto-load plugin MCPs), **STOP** and tell
    the user to `/reload-plugins` (or do a one-time `--scope user` install of the
