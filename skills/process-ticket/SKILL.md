@@ -86,6 +86,8 @@ Spawn `reviewer`. Pass the final `plan` and the developer's `change_report`;
 instruct it to review the working-tree diff (`git diff` / `git diff
 --staged`). It returns `VERDICT: APPROVE` or `VERDICT: CHANGES_REQUESTED`
 plus severity-tagged findings (`[blocking]` / `[nit]`).
+(If the Codex plugin is active, the reviewer adds a Codex correctness pass on
+its own — the verdict format and this fix loop are unchanged.)
 - `CHANGES_REQUESTED` with blocking findings → re-spawn `developer` once with
   the findings appended to the plan, then re-run `reviewer` once. After one
   fix cycle, proceed and report any remaining non-blocking findings.

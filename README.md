@@ -19,6 +19,11 @@ Two skills, split into two lanes that never overlap:
 The five subagents (`agents/`): `conflict-analyst`, `context-extractor`, `planner`,
 `developer`, `reviewer`. Each has a narrow, mostly read-only scope; only `developer` edits code.
 
+> **Optional Codex review.** If the [Codex plugin](https://github.com/openai/codex-plugin-cc)
+> is installed and logged in, the `reviewer` automatically adds a Codex correctness pass and
+> folds its blocking findings into the verdict. Without Codex, the review step runs exactly as
+> before — no setup required either way.
+
 ## Dependencies
 
 This plugin is inert without two MCP plugins enabled **in the consuming session**:

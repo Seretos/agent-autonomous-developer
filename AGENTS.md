@@ -28,6 +28,26 @@ The plugin is Python-scoped by name. Stack assumptions (`python -m pytest`, `src
 `pip install -e ".[test]"`) belong in the worker agents (`developer`), **not** smeared across
 the orchestrating skills — keep the skills stack-neutral so the scope stays in one place.
 
+## Optional Codex review augmentation lives in the reviewer
+
+When the Codex plugin (`openai/codex-plugin-cc`) is installed and ready, the `reviewer`
+agent runs an **extra** Codex correctness pass and folds Codex's blocking findings into its
+`VERDICT`. A few non-obvious decisions:
+
+- **It lives in the `reviewer` agent, not in `process-ticket`.** The agent already owns the
+  `VERDICT: APPROVE / CHANGES_REQUESTED` contract, so the skill and its one-round fix loop stay
+  untouched — same as keeping stack scope in the worker agents.
+- **Presence-driven, no flag.** Detection = glob the Codex companion script under
+  `~/.claude/plugins/cache/<marketplace>/codex/<version>/scripts/codex-companion.mjs`, then
+  gate on `codex-companion.mjs setup --json` returning `ready: true`. No opt-in setting.
+- **Why a direct `Bash` call to the companion script, not `/codex:review`.** That slash command
+  is `disable-model-invocation: true` (user-typed only) and subagents have no `Skill`/`Agent`
+  tool — so the only programmatic entry is `node "<script>" review --wait`. `--write` is never
+  passed: Codex must stay review-only, like the reviewer.
+- **Fragile bit.** The cross-plugin path discovery depends on the cache layout above; if the
+  marketplace/plugin dir names change, discovery returns nothing and the reviewer **degrades
+  silently** to its built-in review (never a hard error).
+
 ## Provider-portability gotchas
 
 The draft-PR flow assumes GitHub/GitLab conventions that are **not** portable to Azure DevOps
