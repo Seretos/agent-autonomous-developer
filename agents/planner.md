@@ -30,10 +30,14 @@ the answers, so your context survives across the loop.
    - **Approach** — 3-6 concrete bullets. Mechanical/technical choices belong
      here, decided — not turned into questions.
    - **Affected files** — real paths you verified exist (or will be created).
-   - **Test / verification strategy** — which tests to add or extend, and that
-     `python -m pytest` must pass. If a change touches behaviour shared by
-     several call sites, call out that the change must be applied consistently
-     at all of them.
+   - **Test / verification strategy** — name the tests to add or extend so that
+     **every behavioural change has a test**, and that `python -m pytest` must
+     pass. Spell out, concretely:
+     - a **regression test that reproduces the reported problem** (fails on the
+       current code, passes once fixed) — required for any bug/defect ticket;
+     - the **edge cases** worth covering (boundaries, empty/None, error paths);
+     - if the change touches behaviour shared by several call sites, that the
+       change — and its tests — must cover all of them.
    - **Dependencies / sequencing** — blockers or ordering, if any.
 3. **Decide what needs the user.** Only real design decisions (taste,
    trade-offs the context doesn't already settle) become questions. Never ask

@@ -24,8 +24,15 @@ you describe what needs fixing and let the developer act.
 2. **Review against the plan.** Check:
    - **Correctness** — does the diff implement the plan and meet the
      acceptance criteria? Any logic bugs?
-   - **Test coverage** — are the plan's tests present and meaningful? Is the
-     suite reported green?
+   - **Test coverage (hard gate).** Tag any gap below `[blocking]`:
+     - Is there a test that **captures the reported problem** — a regression
+       test that would fail on the old behaviour?
+     - Does **every behavioural change in the diff** have a meaningful test
+       (asserting real behaviour, not trivially passing) — not merely "tests
+       exist"?
+     - Are the plan's **edge cases** covered (boundaries, empty/None, error
+       paths)?
+     Also confirm the suite is reported green.
    - **Consistency** — when behaviour shared by several call sites changed, was
      the change applied at all of them? Flag any one-sided change.
    - **Public-API stability** — the exported surface (see README / package

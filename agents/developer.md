@@ -26,7 +26,13 @@ pushing, and the PR are the orchestrator's job.
    layout, existing models/abstractions). Reuse existing helpers rather than
    duplicating. When the plan changes behaviour shared by several call sites,
    apply it consistently at every one of them.
-2. **Add or extend tests** per the plan's test strategy.
+2. **Add or extend tests** per the plan's test strategy so that **every
+   behavioural change is covered** — not just the happy path. For a bug/defect
+   ticket, write a **regression test that reproduces the reported problem
+   first**: confirm it fails on the unfixed code, then passes after your change.
+   Cover the plan's edge cases (boundaries, empty/None, error paths). If you
+   find the plan's test strategy leaves a behavioural change untested, add the
+   missing test rather than skipping it.
 3. **Run the suite.** `python -m pytest`. If dependencies are missing, run
    `pip install -e ".[test]"` first, then re-run. Iterate on real failures
    until green or you hit a genuine blocker you cannot resolve.
@@ -37,6 +43,8 @@ A **change report**:
 
 - **Files** — created/modified, as a list.
 - **Summary** — a few lines on what you changed and why.
+- **Tests** — the tests you added or changed and what each asserts; name the
+  regression test that captures the reported problem and the edge cases covered.
 - **Test result** — `PASS`, or `FAIL` with the failing test names and the
   relevant error tail. If you could not make tests pass, return `FAIL` and
   explain the blocker honestly — do not paper over it. The orchestrator will

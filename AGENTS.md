@@ -28,6 +28,22 @@ The plugin is Python-scoped by name. Stack assumptions (`python -m pytest`, `src
 `pip install -e ".[test]"`) belong in the worker agents (`developer`), **not** smeared across
 the orchestrating skills — keep the skills stack-neutral so the scope stays in one place.
 
+## Test adequacy is a three-agent chain
+
+Tests aren't merely "written" — adequacy is enforced across three agents, and weakening any
+one link drops the guarantee:
+
+- **planner** mandates the strategy: a regression test that reproduces the reported problem,
+  the edge cases, and a test for every behavioural change.
+- **developer** writes them (the regression test red→green first) and reports what each asserts.
+- **reviewer** makes coverage a **`[blocking]` gate** — a missing regression test, an untested
+  behavioural change, or an uncovered edge case is `CHANGES_REQUESTED`.
+
+Enforcement rides the existing one-round fix loop in `process-ticket`: a blocking coverage
+finding sends the developer back to add the test, then the reviewer re-checks. There is
+deliberately **no separate test phase/agent** — test scope stays in these worker agents for
+the same reason the Python stack scope does (one place, not smeared across the skill).
+
 ## Optional Codex review augmentation lives in the reviewer
 
 When the Codex plugin (`openai/codex-plugin-cc`) is installed and ready, the `reviewer`
