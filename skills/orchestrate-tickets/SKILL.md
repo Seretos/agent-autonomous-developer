@@ -130,13 +130,42 @@ down), remove it **safely and statelessly**:
      `backgrounded · <job-id>` line Phase C printed for that worktree; or
    - **matching the worktree path** to a running background job (list the bg jobs
      and pick the one whose working directory is this worktree).
-   Then `claude stop <job-id>`. Never force-kill the process (the daemon respawns
-   `--bg` jobs from their record), and never write a sidecar/state file mapping
-   worktrees to job-ids.
-2. **Confirm the directory is free**, then remove the worktree via the
+   Then `claude stop <job-id>`. Never force-kill the *session* process (the daemon
+   respawns `--bg` jobs from their record), and never write a sidecar/state file
+   mapping worktrees to job-ids.
+2. **Kill any orphaned Codex broker holding this worktree.** If the worktree's
+   `process-ticket` run invoked the reviewer's Codex pass, a
+   `node … app-server-broker.mjs --cwd <worktree-path> …` helper can still be
+   running and holding the directory open — it is **not** a `claude --bg` job, so
+   `claude stop` does not reach it and force-killing it triggers **no** daemon
+   respawn. Kill it **before** `worktree_remove`, while git still knows the
+   worktree, so the MCP's remove stays in sync. On Windows / PowerShell (surgical
+   match — the broker script **and** this worktree's path):
+   ```powershell
+   Get-CimInstance Win32_Process |
+     Where-Object {
+       $_.Name -eq 'node.exe' -and
+       $_.CommandLine -like '*app-server-broker.mjs*' -and
+       $_.CommandLine -like '*<worktree-path>*'
+     } |
+     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+   ```
+   The directory-lock failure is Windows-specific (POSIX lets `git worktree remove`
+   unlink a directory with an open handle), but killing the orphan is good hygiene
+   everywhere — POSIX equivalent: `pkill -f "app-server-broker.mjs.*<worktree-path>"`.
+3. **Confirm the directory is free**, then remove the worktree via the
    agent-worktree MCP (`worktree_remove`) so it releases ports, runs teardown,
    and updates its state store. Do not `rm -rf` the directory or run
    `git worktree remove` by hand — that desyncs the MCP's state.
+
+**Recovery — already-desynced phantom entry.** If a worktree was left desynced
+(git no longer lists it, the directory persists, and the MCP still shows
+`status: created`), `worktree_remove` — even with `force=true` — fails with
+`fatal: '<path>' is not a working tree`. Recover by hand: kill the broker (snippet
+above) → remove the directory (`Remove-Item -Recurse -Force '<worktree-path>'`) →
+delete the merged local branch (`git branch -d <branch>`). The phantom MCP entry
+then remains — cosmetic; no agent-worktree MCP call currently prunes it (its own
+self-reconcile is tracked in the agent-worktree repo).
 
 ## Hard rules
 
@@ -161,9 +190,11 @@ down), remove it **safely and statelessly**:
   fresh worktree sessions don't auto-load the plugin MCPs
   (anthropics/claude-code#61866). That's why sessions start idle, not with a
   `process-ticket` boot prompt.
-- **Teardown order is load-bearing:** stop the session → confirm the dir is free →
-  `worktree_remove`. Resolve the job-id from history or path-match, never from a
-  persisted file. Stop via `claude stop <job-id>`, never force-kill.
+- **Teardown order is load-bearing:** stop the session → kill the worktree's Codex
+  broker → confirm the dir is free → `worktree_remove`. Resolve the job-id from
+  history or path-match, never from a persisted file. Stop the **session** via
+  `claude stop <job-id>`, never force-kill it (the daemon respawns `--bg` jobs); the
+  **Codex broker** is a plain helper process — force-killing it is correct and safe.
 - **Lane separation (load-bearing).** orchestrate-tickets runs **only** from the
   main checkout; `process-ticket` runs **only** inside a worktree on a feature
   branch. Never invoke orchestrate-tickets from a worktree, and never run
