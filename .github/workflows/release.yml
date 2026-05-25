@@ -65,10 +65,11 @@ jobs:
         run: |
           STAGE="build/stage/agent-python-developer-ticket-workflow"
           rm -rf "$STAGE"
-          mkdir -p "$STAGE/.claude-plugin" "$STAGE/skills" "$STAGE/agents"
+          mkdir -p "$STAGE/.claude-plugin" "$STAGE/skills" "$STAGE/agents" "$STAGE/assets"
           cp .claude-plugin/plugin.json "$STAGE/.claude-plugin/"
           cp -a skills/. "$STAGE/skills/"
           cp -a agents/. "$STAGE/agents/"
+          cp -a assets/. "$STAGE/assets/"
           cp README.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
 
@@ -154,6 +155,9 @@ jobs:
           DESC=$(jq -r '.description' .claude-plugin/plugin.json)
           NAME=$(jq -r '.name'        .claude-plugin/plugin.json)
           TAG="${NAME}--v${VERSION}"
+          # Raw URL pinned to the release tag (the same ref dispatched below);
+          # assets/ is staged into the release tree above, so this resolves.
+          ICON="https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/assets/icon.png"
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
@@ -167,7 +171,8 @@ jobs:
               "repo":        "${{ github.repository }}",
               "category":    "skill",
               "version":     "${VERSION}",
-              "ref":         "${TAG}"
+              "ref":         "${TAG}",
+              "icon":        "${ICON}"
             }
           }
           EOF
