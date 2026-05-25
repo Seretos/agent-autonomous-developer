@@ -1,3 +1,5 @@
+<img src="assets/icon.png" alt="agent-python-developer-ticket-workflow icon" width="96" />
+
 # agent-python-developer-ticket-workflow
 
 A Claude Code **skill + agents** plugin that turns [agent-project-issues](https://github.com/Seretos/agent-project-issues)
