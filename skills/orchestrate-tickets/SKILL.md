@@ -67,13 +67,24 @@ lower-cased, non-alphanumerics → hyphens, ~4 words). The target set is just
 `Agent(subagent_type="conflict-analyst", prompt=…)` — passing `project_id` and
 either "all open" or the explicit subset. It returns a readable summary and a
 trailing fenced ```json block with `parallel` and `deferred` arrays. Parse the
-**json block only**; the target set is `parallel`.
+**json block only**; the target set is `parallel`. Each `deferred` entry carries
+a **`type`**: `"file-collision"` (footprint overlap) or `"logical-dependency"`
+(disjoint files, but the ticket states it must come *after* an unmet predecessor —
+e.g. a doc/integration ticket). Keep that `type` through to the confirm step
+(Phase B) — the two kinds mean different things to the human.
 
 ## Phase B — confirm, then create worktrees
 
 1. **Confirm before launching.** Present the planned fleet to the user via
    **AskUserQuestion**: the tickets that will run in parallel (with branch +
-   footprint), and the deferred ones with their collision reason. Launching N
+   footprint), and the deferred ones **grouped by `type`** — `file-collision`
+   (would conflict in a shared file) vs `logical-dependency` (clean footprint but
+   must wait on an unmet predecessor, with which tickets in its `depends_on`).
+   Surfacing the `logical-dependency` group explicitly is the point: the parallel
+   set is conflict-free **and** dependency-respecting, so the human sees that
+   ordering was checked, not silently skipped. If the analyst returned **no**
+   deferrals at all, state plainly that logical-ordering dependencies were
+   checked and none applied — so the blind spot never stays silent. Launching N
    background `--dangerously-skip-permissions` sessions is heavy and
    hard-to-undo, so get a go-ahead (or let the user drop/keep tickets) first.
    For SINGLE mode keep it light, but still confirm the one launch.
@@ -113,7 +124,9 @@ Print one table: `ticket · branch · worktree path · bg job-id`. Then spell ou
 the **per-session next steps the user must do** (the skill can't — see Phase C):
 for each session, `claude attach <job-id>`, run **`/reload-plugins`** (so the
 worktree's plugin MCPs load), then `process ticket #<n>`. Also list the deferred
-tickets (what still needs a later, sequential pass) and the stop hint
+tickets (what still needs a later, sequential pass), keeping the
+`file-collision` vs `logical-dependency` split — for `logical-dependency` ones,
+name the predecessors so the user knows what must land first — and the stop hint
 (`claude stop <job-id>`). Then stop — you've started the fleet; the user drives
 it from here.
 
@@ -174,9 +187,12 @@ self-reconcile is tracked in the agent-worktree repo).
 - **Delegate the analysis.** In MULTI mode the `conflict-analyst` decides the
   set; you never compute footprints yourself. In SINGLE mode you only read the
   title for a slug — no footprint analysis.
-- **Conflict-free = disjoint file footprints** (the analyst's contract). Tickets
-  that share a source file are never launched together; they go to `deferred`
-  for a later run.
+- **Parallel-safe = disjoint file footprints AND no unmet logical dependency**
+  (the analyst's contract). Tickets that share a source file, *or* that state an
+  explicit "must come after #x" dependency on a predecessor not yet done, are
+  never launched together; they go to `deferred` (tagged `file-collision` or
+  `logical-dependency`) for a later run. Surface the `logical-dependency` group at
+  the confirm step so the ordering check is visible, never silently skipped.
 - **agent-worktree MCP only — no raw-git fallback.** If the MCP isn't loaded,
   hard-fail and tell the user to `/reload-plugins`. Never `git worktree add`.
 - **Sequential, not parallel**, for both worktree creation and instance launch
