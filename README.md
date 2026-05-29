@@ -15,7 +15,7 @@ Two skills, split into two lanes that never overlap:
 
 | Skill | Runs from | Does |
 |---|---|---|
-| **orchestrate-tickets** | the **main** checkout | Picks a conflict-free set of open tickets (via the `conflict-analyst` subagent — disjoint file footprints), creates one git worktree per ticket, and starts one idle background Claude session per worktree. Implements nothing itself. |
+| **orchestrate-tickets** | the **main** checkout | Picks a parallel-safe set of open tickets (via the `conflict-analyst` subagent — disjoint file footprints **and** no unmet "must come after" dependency stated in a ticket; the rest are deferred, tagged `file-collision` or `logical-dependency`), creates one git worktree per ticket, and starts one idle background Claude session per worktree. Implements nothing itself. |
 | **process-ticket** | inside a **worktree** on a feature branch | Runs one ticket end-to-end through five subagents — `context-extractor → planner → developer → reviewer` — and ends with a pushed feature branch + an open **draft** PR and traceability comments on the ticket. |
 
 The five subagents (`agents/`): `conflict-analyst`, `context-extractor`, `planner`,
