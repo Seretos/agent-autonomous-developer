@@ -26,6 +26,14 @@ The five subagents (`agents/`): `conflict-analyst`, `context-extractor`, `planne
 > folds its blocking findings into the verdict. Without Codex, the review step runs exactly as
 > before — no setup required either way.
 
+> **Optional Serena navigation.** If the [agent-serena-wrapper](https://github.com/Seretos/agent-serena-wrapper)
+> plugin is installed, the `process-ticket` subagents (`context-extractor`, `planner`,
+> `developer`, `reviewer`) automatically gain access to Serena's symbol-aware navigation and
+> editing tools (`find_symbol`, `find_implementations`, `replace_symbol_body`, etc.) for more
+> precise, token-efficient code exploration and edits. Without `agent-serena-wrapper`, behaviour
+> is unchanged — the unresolved tool names are silently dropped by Claude Code, and the
+> subagents fall back to `Read`/`Glob`/`Grep`/`Edit`/`Write` as before. No hard dependency.
+
 ## Dependencies
 
 This plugin is inert without two MCP plugins enabled **in the consuming session**:
