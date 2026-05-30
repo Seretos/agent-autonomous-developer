@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Code-reviews the working-tree diff produced by the developer against the approved plan. Read-only — inspects the diff and code, returns an APPROVE / CHANGES_REQUESTED verdict with severity-tagged findings. When the Codex plugin is installed and ready, also runs an extra Codex correctness review and folds its blocking findings into the verdict. Never edits code, never commits, never opens PRs. Invoked fourth by process-ticket.
-tools: Read, Glob, Grep, Bash
+tools: Read, Glob, Grep, Bash, mcp__plugin_agent-serena-wrapper_serena__find_symbol, mcp__plugin_agent-serena-wrapper_serena__get_symbols_overview, mcp__plugin_agent-serena-wrapper_serena__find_referencing_symbols, mcp__plugin_agent-serena-wrapper_serena__find_declaration, mcp__plugin_agent-serena-wrapper_serena__find_implementations, mcp__plugin_agent-serena-wrapper_serena__get_diagnostics_for_file
 model: sonnet
 ---
 

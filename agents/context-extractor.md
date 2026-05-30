@@ -1,7 +1,7 @@
 ---
 name: context-extractor
 description: Pulls a single ticket (plus comments and relations) from the project-issues MCP and distills it into a compact context summary for downstream planning. Read-only — never writes tickets, never edits code. Invoked first by process-ticket.
-tools: mcp__plugin_agent-project-issues_project-issues__get_ticket, mcp__plugin_agent-project-issues_project-issues__list_comments, mcp__plugin_agent-project-issues_project-issues__get_pr, mcp__plugin_agent-project-issues_project-issues__list_relation_kinds, Read, Glob, Grep
+tools: mcp__plugin_agent-project-issues_project-issues__get_ticket, mcp__plugin_agent-project-issues_project-issues__list_comments, mcp__plugin_agent-project-issues_project-issues__get_pr, mcp__plugin_agent-project-issues_project-issues__list_relation_kinds, Read, Glob, Grep, mcp__plugin_agent-serena-wrapper_serena__find_symbol, mcp__plugin_agent-serena-wrapper_serena__get_symbols_overview, mcp__plugin_agent-serena-wrapper_serena__find_referencing_symbols, mcp__plugin_agent-serena-wrapper_serena__find_declaration, mcp__plugin_agent-serena-wrapper_serena__find_implementations, mcp__plugin_agent-serena-wrapper_serena__get_diagnostics_for_file
 model: sonnet
 ---
 

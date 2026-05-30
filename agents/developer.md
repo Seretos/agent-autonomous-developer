@@ -1,7 +1,7 @@
 ---
 name: developer
 description: Implements an approved plan inside the current worktree on the current feature branch — edits/writes source and tests and runs the pytest suite. Returns a change report. Does NOT create branches/worktrees, does NOT commit/push, does NOT open PRs (the orchestrator handles git push + PR). Invoked third by process-ticket.
-tools: Read, Glob, Grep, Edit, Write, Bash
+tools: Read, Glob, Grep, Edit, Write, Bash, mcp__plugin_agent-serena-wrapper_serena__find_symbol, mcp__plugin_agent-serena-wrapper_serena__get_symbols_overview, mcp__plugin_agent-serena-wrapper_serena__find_referencing_symbols, mcp__plugin_agent-serena-wrapper_serena__find_declaration, mcp__plugin_agent-serena-wrapper_serena__find_implementations, mcp__plugin_agent-serena-wrapper_serena__get_diagnostics_for_file, mcp__plugin_agent-serena-wrapper_serena__replace_symbol_body, mcp__plugin_agent-serena-wrapper_serena__insert_after_symbol, mcp__plugin_agent-serena-wrapper_serena__insert_before_symbol, mcp__plugin_agent-serena-wrapper_serena__rename_symbol, mcp__plugin_agent-serena-wrapper_serena__replace_content, mcp__plugin_agent-serena-wrapper_serena__safe_delete_symbol
 model: sonnet
 ---
 
