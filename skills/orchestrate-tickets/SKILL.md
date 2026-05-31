@@ -102,10 +102,13 @@ Claude instance whose working directory is the worktree (so the user's later
 never on the default branch). Start it **idle — no boot prompt**: a freshly-spawned
 worktree session does not have the plugin MCPs loaded, so a boot prompt would fail
 before the user can `/reload-plugins` (see anthropics/claude-code#61866). On
-Windows/PowerShell:
+Windows/PowerShell, use the literal `path` field returned by `worktree_create`
+as `<worktree-path>` — never reconstruct the path from the branch name, and
+never assume `.claude/worktrees/` or any other base directory (mirroring the
+Phase B discipline). The snippet:
 
 ```powershell
-Push-Location '<worktree-path>'
+Push-Location '<worktree-path>' -ErrorAction Stop
 claude --allow-dangerously-skip-permissions --verbose --rc "<branch>" --bg
 Pop-Location
 ```
@@ -115,6 +118,12 @@ Pop-Location
 - **Capture the `backgrounded · <job-id>` line** the launch prints — that
   `<job-id>` is the handle for `claude attach <job-id>` / `claude logs <job-id>`
   / `claude stop <job-id>`. Keep it in your report (Phase D) — teardown needs it.
+- **Verify the session's cwd immediately after launch (mandatory, not advisory).**
+  Run `claude agents --json`, find the entry whose `id` matches `<job-id>`, and
+  assert its `cwd` field equals the `path` returned by `worktree_create`. If they
+  do not match, run `claude stop <job-id>` immediately and report an error — **do
+  NOT proceed to Phase D**. A session running from the wrong directory will fail
+  the `process-ticket` branch guard and produce corrupt work.
 - Do **not** open a terminal and do **not** `claude attach` — the user attaches
   when ready.
 
