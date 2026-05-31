@@ -175,7 +175,8 @@ jobs:
               "version":     "${VERSION}",
               "ref":         "${TAG}",
               "icon":        "${ICON}",
-              "description_url": "${DESC_URL}"
+              "description_url": "${DESC_URL}",
+              "tags": ["git", "organisation", "ticket", "python"]
             }
           }
           EOF
