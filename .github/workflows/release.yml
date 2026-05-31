@@ -5,7 +5,7 @@ name: release
 #      or via CLI: gh workflow run release.yml -f version=0.0.1
 #   2. Workflow stamps version into plugin.json (in CI only), pushes an orphan
 #      release branch with install-ready files (.claude-plugin, skills/, agents/,
-#      README.md), creates the agent-python-developer-ticket-workflow--v{version}
+#      README.md, description.md), creates the agent-python-developer-ticket-workflow--v{version}
 #      tag on that commit, and publishes a GitHub Release with the zip attached.
 #   3. The workflow then notifies agent-marketplace directly via
 #      MARKETPLACE_DISPATCH_TOKEN.
@@ -71,6 +71,7 @@ jobs:
           cp -a agents/. "$STAGE/agents/"
           cp -a assets/. "$STAGE/assets/"
           cp README.md "$STAGE/"
+          cp description.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
 
           mkdir -p dist
@@ -155,9 +156,10 @@ jobs:
           DESC=$(jq -r '.description' .claude-plugin/plugin.json)
           NAME=$(jq -r '.name'        .claude-plugin/plugin.json)
           TAG="${NAME}--v${VERSION}"
-          # Raw URL pinned to the release tag (the same ref dispatched below);
-          # assets/ is staged into the release tree above, so this resolves.
+          # Raw URLs pinned to the release tag (the same ref dispatched below);
+          # assets/ and description.md are staged into the release tree above, so these resolve.
           ICON="https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/assets/icon.png"
+          DESC_URL="https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/description.md"
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GH_PAT" \
             -H "Accept: application/vnd.github+json" \
@@ -172,7 +174,8 @@ jobs:
               "category":    "skill",
               "version":     "${VERSION}",
               "ref":         "${TAG}",
-              "icon":        "${ICON}"
+              "icon":        "${ICON}",
+              "description_url": "${DESC_URL}"
             }
           }
           EOF
