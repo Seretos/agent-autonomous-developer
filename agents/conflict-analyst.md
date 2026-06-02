@@ -43,13 +43,15 @@ call — never assume a fixed one.
    - `get_ticket(project_id, ticket_id, include_relations=True)` and skim
      `list_comments` for corrections that change scope.
    - Then **ground it in code**: `Grep`/`Glob`/`Read` the project's source tree
-     (typically under `src/`) to find the functions/modules that actually
+     (e.g. under `src/`, `lib/`, `app/`, or at the repo root per the project's
+     convention) to find the functions/modules that actually
      implement the behaviour the ticket describes (e.g. a bug isolated to one
      module → that module; a cross-cutting change → the shared base/helper module
      plus each submodule that consumes it).
    - The **footprint** is the set of source files the fix must modify. Include a
      shared/existing test file only if the ticket would edit one; a brand-new
-     dedicated test file (e.g. `tests/test_<area>.py`) does **not** count as a
+     dedicated test file (e.g. `tests/test_<area>.py`, `*.test.ts`, `*_test.go`,
+     `*Test.java` per the project's convention) does **not** count as a
      collision.
 3. **Extract each ticket's logical dependencies.** From the **same** `get_ticket`
    body (and comments you already read), plus the `relations`, pull out every

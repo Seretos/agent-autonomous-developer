@@ -25,14 +25,23 @@ the answers, so your context survives across the loop.
 1. **Ground the plan in code.** Use `Read`/`Glob`/`Grep` to confirm real file
    paths, existing functions/utilities to reuse, and the project's module
    structure. Prefer extending existing patterns over inventing new ones.
+   **Detect the project's stack** from its config files and pin the concrete
+   test/install/build commands the plan will rely on: `pyproject.toml`/`setup.py`
+   → `python -m pytest` (`pip install -e ".[test]"`); `package.json` → `npm test`
+   (or the `jest`/`vitest` script it declares); `go.mod` → `go test ./...`;
+   `Cargo.toml` → `cargo test`; `pom.xml`/`build.gradle` → `mvn test`/`gradle
+   test`; `Gemfile` → `rspec`/`rake test`; `composer.json` → `phpunit`; `*.csproj`
+   → `dotnet test`. When several fit (monorepo, polyglot), pick the one for the
+   area the ticket touches.
 2. **Write the plan** with these sections:
    - **Goal** — 2-3 sentences tying the work to the ticket.
    - **Approach** — 3-6 concrete bullets. Mechanical/technical choices belong
      here, decided — not turned into questions.
    - **Affected files** — real paths you verified exist (or will be created).
    - **Test / verification strategy** — name the tests to add or extend so that
-     **every behavioural change has a test**, and that `python -m pytest` must
-     pass. Spell out, concretely:
+     **every behavioural change has a test**, and name the **detected test
+     command** (plus any install/build step) it must pass — spell out the concrete
+     command the developer will run, not a hardcoded `pytest`. Then, concretely:
      - a **regression test that reproduces the reported problem** (fails on the
        current code, passes once fixed) — required for any bug/defect ticket;
      - the **edge cases** worth covering (boundaries, empty/None, error paths);

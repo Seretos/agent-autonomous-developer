@@ -1,9 +1,9 @@
-<img src="assets/icon.png" alt="agent-python-developer-ticket-workflow icon" width="96" />
+<img src="assets/icon.png" alt="agent-autonomous-developer icon" width="96" />
 
-# agent-python-developer-ticket-workflow
+# agent-autonomous-developer
 
 A Claude Code **skill + agents** plugin that turns [agent-project-issues](https://github.com/Seretos/agent-project-issues)
-tickets into draft pull requests for **Python** projects — single tickets end-to-end, or a
+tickets into draft pull requests for projects in **any language** — single tickets end-to-end, or a
 whole backlog dispatched in parallel across isolated git worktrees.
 
 Ships **only skill/agent content** — no binaries, no MCP server of its own. It drives two
@@ -41,7 +41,7 @@ This plugin is inert without two MCP plugins enabled **in the consuming session*
 ```json
 // .claude/settings.json (or settings.local.json) of the target project
 "enabledPlugins": {
-  "agent-python-developer-ticket-workflow@agent-marketplace": true,
+  "agent-autonomous-developer@agent-marketplace": true,
   "agent-project-issues@agent-marketplace": true,
   "agent-worktree@agent-marketplace": true
 }
@@ -58,14 +58,14 @@ registry does not auto-install them today — enabling them is the consumer's re
 
 ```
 /plugin marketplace add Seretos/agent-marketplace
-/plugin install agent-python-developer-ticket-workflow@agent-marketplace
+/plugin install agent-autonomous-developer@agent-marketplace
 ```
 
 Then enable the two MCP dependencies as shown above.
 
 ## Usage
 
-From the **main** checkout of a Python project registered in agent-project-issues:
+From the **main** checkout of a project registered in agent-project-issues:
 
 ```
 orchestrate tickets in <project>            # all open tickets
@@ -79,8 +79,9 @@ It creates the worktrees and starts idle background sessions. In each session yo
 process ticket #7 in <project>
 ```
 
-> **Scope:** Python projects (the worker agents assume `python -m pytest` and a `src/`
-> layout). The project id is **not** auto-detected — pass it explicitly (`… in <project>`).
+> **Scope:** any language — the worker agents **auto-detect** the project's stack and test
+> command (`python -m pytest`, `npm test`, `go test`, `cargo test`, …) from its config files.
+> The project id is **not** auto-detected — pass it explicitly (`… in <project>`).
 
 ## Branches
 
@@ -95,5 +96,5 @@ Actions → release → Run workflow → version=X.Y.Z
 ```
 
 Stamps the version into `plugin.json` (CI only — never hand-bump it), pushes the orphan
-`release` branch, tags `agent-python-developer-ticket-workflow--vX.Y.Z`, and dispatches to
+`release` branch, tags `agent-autonomous-developer--vX.Y.Z`, and dispatches to
 `Seretos/agent-marketplace` (category `skill`) via `MARKETPLACE_DISPATCH_TOKEN`.

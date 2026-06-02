@@ -1,6 +1,6 @@
 ---
 name: process-ticket
-description: End-to-end automated ticket processing for a Python project. Invoke with a ticket number and a project (e.g. "process ticket #42 in acme-api", "implement issue 42") when you are already inside a prepared git worktree on a feature branch. Orchestrates four subagents in sequence — context-extractor, planner, developer, reviewer — and ends with a pushed feature branch and an open draft Pull Request, plus traceability comments on the ticket. The skill itself never extracts context, plans, codes, or reviews; it delegates every phase to a subagent and manages the hand-offs (including a planner question-loop routed to the user via AskUserQuestion). Does NOT create the worktree or branch — the user prepares those beforehand.
+description: End-to-end automated ticket processing for a project (language/stack auto-detected). Invoke with a ticket number and a project (e.g. "process ticket #42 in acme-api", "implement issue 42") when you are already inside a prepared git worktree on a feature branch. Orchestrates four subagents in sequence — context-extractor, planner, developer, reviewer — and ends with a pushed feature branch and an open draft Pull Request, plus traceability comments on the ticket. The skill itself never extracts context, plans, codes, or reviews; it delegates every phase to a subagent and manages the hand-offs (including a planner question-loop routed to the user via AskUserQuestion). Does NOT create the worktree or branch — the user prepares those beforehand.
 ---
 
 # process-ticket — orchestrator
@@ -77,7 +77,8 @@ Do not type `#ai-generated` — the MCP prepends it.
 ### Phase 3 — developer (Edit / Write / Bash)
 Spawn `developer`. Pass the full `plan` and the `context_summary`. It
 implements on the **current branch/worktree**, edits/writes files, and runs
-`python -m pytest`. It returns a **change_report** (files touched, summary,
+the project's test suite (the test command is auto-detected from the stack and
+named in the plan). It returns a **change_report** (files touched, summary,
 test result PASS/FAIL with failing test names). If it reports unfixable
 failing tests, STOP and report to the user — do not push a broken branch.
 

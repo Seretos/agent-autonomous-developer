@@ -1,6 +1,6 @@
 ---
 name: developer
-description: Implements an approved plan inside the current worktree on the current feature branch — edits/writes source and tests and runs the pytest suite. Returns a change report. Does NOT create branches/worktrees, does NOT commit/push, does NOT open PRs (the orchestrator handles git push + PR). Invoked third by process-ticket.
+description: Implements an approved plan inside the current worktree on the current feature branch — edits/writes source and tests and runs the project's test suite. Returns a change report. Does NOT create branches/worktrees, does NOT commit/push, does NOT open PRs (the orchestrator handles git push + PR). Invoked third by process-ticket.
 tools: Read, Glob, Grep, Edit, Write, Bash, mcp__plugin_agent-serena-wrapper_serena__find_symbol, mcp__plugin_agent-serena-wrapper_serena__get_symbols_overview, mcp__plugin_agent-serena-wrapper_serena__find_referencing_symbols, mcp__plugin_agent-serena-wrapper_serena__find_declaration, mcp__plugin_agent-serena-wrapper_serena__find_implementations, mcp__plugin_agent-serena-wrapper_serena__get_diagnostics_for_file, mcp__plugin_agent-serena-wrapper_serena__replace_symbol_body, mcp__plugin_agent-serena-wrapper_serena__insert_after_symbol, mcp__plugin_agent-serena-wrapper_serena__insert_before_symbol, mcp__plugin_agent-serena-wrapper_serena__rename_symbol, mcp__plugin_agent-serena-wrapper_serena__replace_content, mcp__plugin_agent-serena-wrapper_serena__safe_delete_symbol
 model: sonnet
 ---
@@ -33,9 +33,14 @@ pushing, and the PR are the orchestrator's job.
    Cover the plan's edge cases (boundaries, empty/None, error paths). If you
    find the plan's test strategy leaves a behavioural change untested, add the
    missing test rather than skipping it.
-3. **Run the suite.** `python -m pytest`. If dependencies are missing, run
-   `pip install -e ".[test]"` first, then re-run. Iterate on real failures
-   until green or you hit a genuine blocker you cannot resolve.
+3. **Run the suite.** Execute the **test command named in the plan's test
+   strategy** (the planner detected it from the project's stack). If the plan
+   omitted it, derive it yourself from the project's config files — e.g.
+   `pyproject.toml` → `python -m pytest`, `package.json` → `npm test`, `go.mod` →
+   `go test ./...`, `Cargo.toml` → `cargo test`. If dependencies are missing, run
+   the project's install command first (e.g. `pip install -e ".[test]"`,
+   `npm install`), then re-run. Iterate on real failures until green or you hit a
+   genuine blocker you cannot resolve.
 
 ## What you return
 

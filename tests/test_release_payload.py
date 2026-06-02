@@ -1,7 +1,7 @@
 """
 Regression test for ticket #12: the `repository_dispatch` client_payload sent
 to agent-marketplace must contain a `tags` field equal to
-["git", "organisation", "ticket", "python"].
+["git", "organisation", "ticket", "automation"].
 
 The test reads the raw YAML, extracts the heredoc JSON block that is passed to
 `curl -d @- <<EOF`, substitutes placeholder values for every shell variable so
@@ -19,7 +19,7 @@ WORKFLOW_PATH = (
     / "release.yml"
 )
 
-EXPECTED_TAGS = ["git", "organisation", "ticket", "python"]
+EXPECTED_TAGS = ["git", "organisation", "ticket", "automation"]
 
 
 def _extract_heredoc_json(text: str) -> str:
@@ -62,7 +62,7 @@ def _substitute_shell_vars(text: str) -> str:
 def test_tags_field_present_and_correct():
     """
     Regression test: client_payload must contain
-    tags == ["git", "organisation", "ticket", "python"].
+    tags == ["git", "organisation", "ticket", "automation"].
     """
     raw = WORKFLOW_PATH.read_text(encoding="utf-8")
     heredoc = _extract_heredoc_json(raw)

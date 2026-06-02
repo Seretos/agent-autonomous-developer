@@ -1,7 +1,8 @@
-# agent-python-developer-ticket-workflow — architecture notes
+# agent-autonomous-developer — architecture notes
 
 Pure skill + agents plugin (no binary, no MCP). Drives a ticket→draft-PR workflow for
-**Python** projects on top of the `agent-project-issues` and `agent-worktree` MCPs.
+projects in **any language** (stack auto-detected) on top of the `agent-project-issues`
+and `agent-worktree` MCPs.
 
 README.md covers *what* it does, install, and release. The skills/agents document their own
 rules. This file records only the non-obvious decisions a contributor must not silently break
@@ -28,11 +29,15 @@ so there is no auto-detection to fall back on. Both skills take the project id a
 argument and thread it through every subagent prompt and MCP call. Don't add a "guess the
 project from cwd" shortcut — there's nothing to guess from.
 
-## Python scope lives in the worker agents
+## Stack auto-detection lives in the planner + developer
 
-The plugin is Python-scoped by name. Stack assumptions (`python -m pytest`, `src/` layout,
-`pip install -e ".[test]"`) belong in the worker agents (`developer`), **not** smeared across
-the orchestrating skills — keep the skills stack-neutral so the scope stays in one place.
+The plugin is language-agnostic. Stack assumptions are **detected from the project's config
+files** (`pyproject.toml` → `python -m pytest`, `package.json` → `npm test`/`jest`/`vitest`,
+`go.mod` → `go test`, `Cargo.toml` → `cargo test`, `pom.xml`/`build.gradle` → maven/gradle,
+…) rather than hardcoded. The **planner** detects the stack and pins the concrete
+test/install/build commands in the plan's test strategy; the **developer** executes *those*
+commands (and re-derives them from the config if the plan is thin). Keep the orchestrating
+skills stack-neutral — the scope stays in these two worker agents, in one place.
 
 ## Test adequacy is a three-agent chain
 
@@ -48,7 +53,7 @@ one link drops the guarantee:
 Enforcement rides the existing one-round fix loop in `process-ticket`: a blocking coverage
 finding sends the developer back to add the test, then the reviewer re-checks. There is
 deliberately **no separate test phase/agent** — test scope stays in these worker agents for
-the same reason the Python stack scope does (one place, not smeared across the skill).
+the same reason the stack-detection scope does (one place, not smeared across the skill).
 
 ## Optional Codex review augmentation lives in the reviewer
 

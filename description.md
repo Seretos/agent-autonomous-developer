@@ -1,4 +1,4 @@
-Automates the journey from open ticket to draft pull request for Python projects. Instead of manually reading a ticket, planning changes, writing code, and opening a PR, you invoke one skill and five specialised subagents handle the work end-to-end — or dispatch an entire backlog in parallel across isolated git worktrees.
+Automates the journey from open ticket to draft pull request for projects in any language (stack auto-detected). Instead of manually reading a ticket, planning changes, writing code, and opening a PR, you invoke one skill and five specialised subagents handle the work end-to-end — or dispatch an entire backlog in parallel across isolated git worktrees.
 
 Key capabilities:
 

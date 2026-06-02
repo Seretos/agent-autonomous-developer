@@ -5,7 +5,7 @@ name: release
 #      or via CLI: gh workflow run release.yml -f version=0.0.1
 #   2. Workflow stamps version into plugin.json (in CI only), pushes an orphan
 #      release branch with install-ready files (.claude-plugin, skills/, agents/,
-#      README.md, description.md), creates the agent-python-developer-ticket-workflow--v{version}
+#      README.md, description.md), creates the <plugin-name>--v{version}
 #      tag on that commit, and publishes a GitHub Release with the zip attached.
 #   3. The workflow then notifies agent-marketplace directly via
 #      MARKETPLACE_DISPATCH_TOKEN.
@@ -63,7 +63,8 @@ jobs:
         id: stage
         shell: bash
         run: |
-          STAGE="build/stage/agent-python-developer-ticket-workflow"
+          PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
+          STAGE="build/stage/${PLUGIN_NAME}"
           rm -rf "$STAGE"
           mkdir -p "$STAGE/.claude-plugin" "$STAGE/skills" "$STAGE/agents" "$STAGE/assets"
           cp .claude-plugin/plugin.json "$STAGE/.claude-plugin/"
@@ -75,7 +76,7 @@ jobs:
           cp LICENSE "$STAGE/" 2>/dev/null || true
 
           mkdir -p dist
-          ZIPNAME="agent-python-developer-ticket-workflow-${{ inputs.version }}.zip"
+          ZIPNAME="${PLUGIN_NAME}-${{ inputs.version }}.zip"
           (cd "$STAGE" && zip -r "$GITHUB_WORKSPACE/dist/$ZIPNAME" .)
 
           echo "stage=$STAGE"      >> "$GITHUB_OUTPUT"
@@ -176,7 +177,7 @@ jobs:
               "ref":         "${TAG}",
               "icon":        "${ICON}",
               "description_url": "${DESC_URL}",
-              "tags": ["git", "organisation", "ticket", "python"]
+              "tags": ["git", "organisation", "ticket", "automation"]
             }
           }
           EOF

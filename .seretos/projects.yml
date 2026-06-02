@@ -1,10 +1,10 @@
 version: 1
 
 projects:
-  - id: agent-python-developer-ticket-workflow
+  - id: agent-autonomous-developer
     description: ""
     provider: github
-    path: Seretos/agent-python-developer-ticket-workflow
+    path: Seretos/agent-autonomous-developer
     token_env: GITHUB_TOKEN
     permissions:
       issues:
