@@ -105,12 +105,14 @@ before the user can `/reload-plugins` (see anthropics/claude-code#61866). On
 Windows/PowerShell, use the literal `path` field returned by `worktree_create`
 as `<worktree-path>` — never reconstruct the path from the branch name, and
 never assume `.claude/worktrees/` or any other base directory (mirroring the
-Phase B discipline). The snippet:
+Phase B discipline). **This snippet is PowerShell-only — do NOT paste it into
+bash or cmd.** Under bash, `Set-Location` is "command not found" and execution
+silently continues, so `claude --bg` would launch from the wrong cwd. The snippet:
 
 ```powershell
-Push-Location '<worktree-path>' -ErrorAction Stop
+Set-Location '<worktree-path>' -ErrorAction Stop
+if ($PWD.Path -ne '<worktree-path>') { throw "cwd guard: expected '<worktree-path>', got $($PWD.Path) — aborting before launch" }
 claude --allow-dangerously-skip-permissions --verbose --rc "<branch>" --bg
-Pop-Location
 ```
 
 - `--rc "<branch>"` names the remote-control session after the branch; `--bg`
@@ -220,6 +222,14 @@ self-reconcile is tracked in the agent-worktree repo).
   history or path-match, never from a persisted file. Stop the **session** via
   `claude stop <job-id>`, never force-kill it (the daemon respawns `--bg` jobs); the
   **Codex broker** is a plain helper process — force-killing it is correct and safe.
+- **Phase C launch snippet must run in PowerShell — not bash, not cmd.** Under
+  bash, `Set-Location` and `Push-Location` are "command not found" and execution
+  silently continues, so `claude --bg` launches from the wrong cwd (the main
+  checkout) — exactly the problem the snippet's cwd guard is designed to prevent.
+  The post-launch `claude agents --json` cwd-check (see Phase C) is the runtime
+  backstop but does **not** excuse running the snippet in the wrong shell: by the
+  time that check fires, a dangerous session has already started. See Phase C for
+  the full snippet and its required form.
 - **Lane separation (load-bearing).** orchestrate-tickets runs **only** from the
   main checkout; `process-ticket` runs **only** inside a worktree on a feature
   branch. Never invoke orchestrate-tickets from a worktree, and never run
