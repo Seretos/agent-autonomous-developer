@@ -1,6 +1,6 @@
 ---
 name: orchestrate-tickets
-description: Fleet orchestrator for a project (language/stack auto-detected) — turns open tickets into parallel, conflict-free background work. Invoke to dispatch ticket work (e.g. "orchestrate tickets in acme-api", "work all open tickets in parallel", "orchestrate ticket 7 in acme-api"). With ONE ticket given it goes straight to creating a worktree and launching its instance. With none (all open) or several, it spawns the conflict-analyst subagent to find the maximal set of tickets that can run in parallel without their PRs conflicting, then creates one worktree per selected ticket and starts a background + remote-control Claude instance per worktree — idle, with no boot prompt. Plugin MCPs don't auto-load in a fresh worktree session (anthropics/claude-code#61866), so the user runs `/reload-plugins` in each session and then drives `process-ticket #<n>` there themselves. The skill creates the worktrees and starts the sessions; it does NOT prompt them, implement, push, or merge.
+description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Invoke e.g. "start ticket #7 in acme-api", "work this one ticket", "process foundational ticket #3". Creates one worktree per ticket and starts an idle background Claude session. Bypassing this skill to work manually on main forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge — and is not permitted.
 ---
 
 # orchestrate-tickets — fleet orchestrator
@@ -15,6 +15,21 @@ so they run `/reload-plugins` first, then `process ticket #<n>` (the
 
 There is **no cwd→project auto-detection**. The `project_id` is supplied at
 invocation (see Inputs); pass it to the analyst and to every project-issues call.
+
+### Single-ticket / serial path (the normal, always-correct path)
+
+A single non-parallelizable or foundational ticket does **not** need a fleet.
+SINGLE mode (one ticket given) is the **default safe path**: it skips the
+conflict-analyst entirely, creates one worktree, and starts one idle session.
+"Not running in the parallel fleet" does **not** mean "do it manually on
+`main`" — it means run SINGLE mode through this skill.
+
+Working a ticket manually (editing files on `main`, committing directly, or
+force-pushing) bypasses every safety gate the workflow enforces: planner
+approval, developer QA/tests, reviewer subagent + Codex correctness pass,
+PR-based merge, and the no-force-push rule on shared branches. **This is not
+permitted.** Every ticket — serial or parallel, foundational or incremental,
+one or many — goes through this skill.
 
 ## Inputs
 

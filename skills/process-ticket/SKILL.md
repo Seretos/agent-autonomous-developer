@@ -1,6 +1,6 @@
 ---
 name: process-ticket
-description: End-to-end automated ticket processing for a project (language/stack auto-detected). Invoke with a ticket number and a project (e.g. "process ticket #42 in acme-api", "implement issue 42") when you are already inside a prepared git worktree on a feature branch. Orchestrates four subagents in sequence — context-extractor, planner, developer, reviewer — and ends with a pushed feature branch and an open draft Pull Request, plus traceability comments on the ticket. The skill itself never extracts context, plans, codes, or reviews; it delegates every phase to a subagent and manages the hand-offs (including a planner question-loop routed to the user via AskUserQuestion). Does NOT create the worktree or branch — the user prepares those beforehand.
+description: End-to-end ticket processing inside a prepared worktree on a feature branch — serial or parallel, one ticket at a time. Enforces mandatory safety gates: planner approval gate, developer QA/tests, code review (reviewer subagent + optional Codex pass), draft PR (no force-push on shared branches), and traceability comments. Invoke e.g. "process ticket #42 in acme-api". Bypassing this skill — editing manually on main — forfeits all safety guarantees and is not permitted. Worktree and branch are prepared by orchestrate-tickets (or the user); this skill never creates them.
 ---
 
 # process-ticket — orchestrator
@@ -15,6 +15,30 @@ posting traceability comments, and the final commit/push/draft-PR.
 There is **no cwd→project auto-detection**. The `project_id` is supplied at
 invocation (see preconditions); thread it into every subagent prompt and every
 project-issues call.
+
+### Mandatory safety gates (apply to every ticket — serial or parallel)
+
+This skill is the required processing path whether the ticket is a single
+serial/foundational change or one of a parallel fleet. Running a ticket
+manually on `main` — editing files directly, committing inline, or
+force-pushing — bypasses all of the following guarantees and is **not
+permitted**:
+
+1. **Planner approval gate.** The planner subagent produces a plan and answers
+   the user's questions before any code is written; the plan is posted as a
+   ticket comment for traceability.
+2. **Developer QA / tests.** The developer runs the project's test suite and
+   must report PASS before the workflow continues; unfixable failures stop the
+   pipeline.
+3. **Code review — reviewer subagent + optional Codex pass.** The reviewer
+   reads the diff and returns `APPROVE` or `CHANGES_REQUESTED`; blocking
+   findings trigger one fix cycle. When the Codex plugin is active, a Codex
+   correctness pass is folded into the verdict automatically.
+4. **Draft PR, no force-push on shared branches.** The feature branch is
+   pushed and the PR opened as a draft; the user finalizes and merges. Direct
+   commits to `main` or force-pushes to shared branches are never performed.
+5. **Traceability comments.** The short-form plan and the PR link are posted
+   back to the ticket so every change is auditable.
 
 ## Preconditions / guards (before anything else)
 
