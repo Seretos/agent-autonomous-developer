@@ -31,6 +31,67 @@ PR-based merge, and the no-force-push rule on shared branches. **This is not
 permitted.** Every ticket — serial or parallel, foundational or incremental,
 one or many — goes through this skill.
 
+## Fit-awareness — when this workflow is (and isn't) the right tool
+
+This plugin's execution model is **isolated workers with no shared context**: each
+ticket gets its own worktree, its own background Claude session, and its own PR.
+That model has fixed overhead per ticket and a parallelism ceiling set by how
+independent the tickets are. It fits some ticket shapes well and others poorly.
+
+### Good fit signals
+
+- **Few tickets (roughly 2–6)** — the per-ticket startup overhead is justified
+  when each ticket delivers meaningful value on its own.
+- **Large vertical slices** — each ticket owns a full feature top-to-bottom
+  (data model → business logic → API → UI → tests in one ticket). The worker
+  can implement and review the whole thing without waiting on another worker.
+- **Sparse DAG (`dag_depth` 0–2)** — dependency chains are short; most tickets
+  have no predecessors and can start immediately.
+- **High parallelism ratio** — most tickets land in the `parallel` set; few or
+  none are deferred, so the fixed per-ticket overhead is spread across real
+  concurrent work.
+
+### Poor fit signals
+
+- **Deep dependency chains (`dag_depth > 2`)** — a long chain forces sequential
+  waves and narrows the achievable wave width; most tickets end up deferred,
+  not parallel.
+- **Many tickets touching the same shared integration file(s) across different
+  dependency waves** — even when files don't conflict within a wave, the same
+  file appearing in multiple waves signals a "moving base" reconvergence problem:
+  later waves must absorb changes from earlier ones, a surface the conflict
+  analyst's static footprint check cannot fully prevent.
+- **Horizontally/layer-cut tickets** — e.g. "DB layer", "API layer", "UI layer"
+  as separate tickets for the same feature. All three must land before the
+  feature is observable, so the parallelism buys nothing and each worker
+  implements an incomplete slice. Vertical slicing (each ticket owns a thin
+  full-stack slice of the feature) fits the isolated model; horizontal slicing
+  does not.
+- **High ticket count with low parallelism** — when most tickets end up
+  deferred, the fixed per-ticket overhead (worktree creation, session startup,
+  `/reload-plugins`, PR overhead) dominates over the parallelism actually
+  gained.
+- **`min_wave_width == 1`** — at least one wave is a serial bottleneck: only
+  one ticket can run in that wave. A narrow bottleneck wave stalls all
+  downstream work.
+
+### The isolation model contrast
+
+This plugin's isolated-worker model is well-suited to **independent, vertically-
+sliced work**. A future `autonomous-teams` shared-context model — where workers
+share working memory — would tolerate horizontal slicing because context crosses
+worker boundaries. Slicing knowledge belongs in `orchestrate-tickets` and the
+`conflict-analyst`, not in a standalone `slice-tickets` skill, because a re-slicing
+recommendation is only meaningful relative to the execution model it describes.
+Splitting it out would decouple recommendation from model, making both stale on
+future changes.
+
+### Fit assessment applies only in MULTI mode
+
+SINGLE mode does not invoke the conflict-analyst; no fit evaluation is produced.
+The fit signals and the Phase B fit warning below apply exclusively to MULTI mode
+(when the analyst returns a `fit` field in its JSON output).
+
 ## Inputs
 
 - A **project id** (e.g. `acme-api`). If missing or unclear, resolve it via
@@ -99,8 +160,25 @@ e.g. a doc/integration ticket). Keep that `type` through to the confirm step
    set is conflict-free **and** dependency-respecting, so the human sees that
    ordering was checked, not silently skipped. If the analyst returned **no**
    deferrals at all, state plainly that logical-ordering dependencies were
-   checked and none applied — so the blind spot never stays silent. Launching N
-   background `--dangerously-skip-permissions` sessions is heavy and
+   checked and none applied — so the blind spot never stays silent.
+
+   **Fit Warning (MULTI mode only, when `fit.verdict == "poor"`):** After
+   presenting the parallel and deferred groups — and before the go-ahead question
+   — display a **Fit Warning** block. Include:
+   - The specific signals that triggered `"poor"`, drawn directly from the
+     analyst's `fit` field:
+     - `dag_depth` value, if `dag_depth > 2`
+     - `min_wave_width`, if `min_wave_width == 1`
+     - The `cross_wave_shared_files` list, if non-empty
+     - The parallelism ratio (`parallel_count / ticket_count`), if below 0.5
+   - The analyst's `recommendation` string, verbatim.
+   - A plain statement that the orchestrator recommends re-slicing but the human
+     decides — the go-ahead prompt is unchanged; the human can proceed as-is.
+
+   When `fit.verdict == "good"`, or in SINGLE mode (no `fit` field), show no
+   fit block — proceed directly to the go-ahead question.
+
+   Launching N background `--dangerously-skip-permissions` sessions is heavy and
    hard-to-undo, so get a go-ahead (or let the user drop/keep tickets) first.
    For SINGLE mode keep it light, but still confirm the one launch.
 2. **Create one worktree per selected ticket, SEQUENTIALLY.** Never in parallel —
