@@ -100,7 +100,38 @@ call — never assume a fixed one.
    regardless of files); note the file collision in the `reason` string so the
    human has the full picture. `logical-dependency` takes precedence over
    `file-collision` as the `type` value — the schema has no combined form.
-6. **Name a branch per selected ticket:** `fix/<n>-<slug>`, where `<slug>` is the
+6. **Compute the fit assessment.** Using the data you already hold (candidate list,
+   per-ticket footprints, dependency graph), derive the following signals:
+   - **`dag_depth`** — length of the longest dependency chain across all candidates
+     (longest path in the directed dependency graph; 0 if no dependencies exist).
+   - **`min_wave_width`** — layer the full DAG into waves: wave 0 = tickets with no
+     unmet dependencies; wave 1 = tickets whose only dependencies are in wave 0; and
+     so on. `min_wave_width` is the number of tickets in the narrowest wave. A value
+     of 1 means at least one wave is a serial bottleneck (only one ticket can run in
+     that wave).
+   - **`cross_wave_shared_files`** — files that appear in the footprints of tickets
+     assigned to **different** waves (a cross-wave integration surface). Collect
+     these by joining the per-ticket footprints you grounded in step 2 across wave
+     boundaries.
+   - **`ticket_count`** — total number of candidates (before collision/dependency
+     filtering).
+   - **`parallel_count`** — number of tickets in the `parallel` array (selected in
+     step 5).
+   - **`verdict`** — `"poor"` if **any** of the following hold:
+     - `dag_depth > 2`
+     - `min_wave_width == 1`
+     - `cross_wave_shared_files` is non-empty
+     - `parallel_count / ticket_count < 0.5`
+     Otherwise `"good"`.
+   - **`recommendation`** — when `verdict == "poor"`, write a specific re-slicing
+     suggestion using full context (ticket titles, footprint files, dependency
+     reasons). For example: "Tickets #3 and #7 both touch `auth.py` across waves —
+     consider merging them into one vertical slice that owns the full auth change."
+     When `verdict == "good"`, set to `null`.
+
+   Append a `"fit"` key to the JSON output block (schema below).
+
+7. **Name a branch per selected ticket:** `fix/<n>-<slug>`, where `<slug>` is the
    ticket title lower-cased, non-alphanumerics → hyphens, trimmed to ~4 words.
 
 ## What you return
@@ -131,7 +162,16 @@ block as the LAST thing in your reply — the orchestrator parses ONLY this bloc
      "depends_on": ["3", "8", "4", "5"],
      "collides_with": [],
      "reason": "body states 'sinnvollerweise nach W4/W6/W7/W8 (#3/#8/#4/#5)'; disjoint footprint but would document against a half-built engine. The isolated 'empty frame' fix is immediately safe and could be split out."}
-  ]
+  ],
+  "fit": {
+    "dag_depth": 2,
+    "min_wave_width": 1,
+    "cross_wave_shared_files": ["src/yourpkg/auth.py"],
+    "ticket_count": 3,
+    "parallel_count": 1,
+    "verdict": "poor",
+    "recommendation": "Tickets #3 and #9 both touch auth.py across waves — consider merging them into one vertical slice that owns the full auth change end-to-end."
+  }
 }
 ```
 
@@ -154,6 +194,9 @@ in the `deferred` array, not only in prose.
 
 ## Hard rules
 
+- **Fit assessment is always computed in MULTI mode and always appears in the JSON
+  output.** It is informational — the analyst never suppresses or modifies the
+  `parallel` set based on fit. The human at Phase B decides whether to proceed.
 - **Read-only.** No `Edit`, `Write`, `Bash`. No project-issues write calls. Never
   create a worktree, branch, comment, or PR — that is the orchestrator's job.
 - **Footprints come from the code, not the title.** Always confirm the implicated

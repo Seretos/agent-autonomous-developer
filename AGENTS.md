@@ -82,6 +82,31 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   the reviewer launches Codex (process name or `--cwd`), update the teardown matcher in
   `skills/orchestrate-tickets/SKILL.md` to match.
 
+## Why ticket-slicing knowledge lives in the orchestrator, not a standalone skill
+
+Slicing recommendations are **model-relative** — only meaningful for the isolated-worker
+model that `orchestrate-tickets` implements. A recommendation like "merge tickets #3 and #7
+into one vertical slice" is sound advice for this plugin's model (one worktree, one worker,
+no shared context) but would be wrong advice for a future `autonomous-teams` shared-context
+model, where workers share working memory and can therefore coordinate on horizontally-cut
+tickets without reconvergence pain.
+
+Splitting slicing into a standalone `slice-tickets` skill would decouple the recommendation
+from the execution model it describes. Changes to the orchestration model would require
+updating both files in lockstep — a coordination burden with no benefit, and a source of
+stale guidance when one file is updated and the other isn't. The `conflict-analyst` is the
+natural home for fit assessment because it already reads all tickets, grounds footprints in
+code, and has full access to the dependency graph; fit assessment is a natural extension of
+that analysis, not a separate concern.
+
+A future `autonomous-teams` shared-context model would require different slicing heuristics
+(horizontal cuts become viable; wave-width and cross-wave file sharing matter less). Those
+heuristics belong with that model's orchestrator — not here — for the same reason: keeping
+recommendation and model co-located makes both easier to keep correct.
+
+There is deliberately **no standalone `slice-tickets` skill** in this plugin. Do not create
+one.
+
 ## Provider-portability gotchas
 
 The draft-PR flow assumes GitHub/GitLab conventions that are **not** portable to Azure DevOps
