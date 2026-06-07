@@ -103,6 +103,14 @@ The fit signals and the Phase B fit warning below apply exclusively to MULTI mod
 
 ## Preconditions
 
+0. **Name the orchestrator session at launch time (user responsibility).** There
+   is no Claude CLI mechanism to rename a session mid-flight. The orchestrator
+   session is already running when this skill is invoked, so its session name
+   must be set by the user at launch time via `--rc "<project_id>"` — e.g.
+   `claude --rc "acme-api" --dangerously-skip-permissions`. The skill cannot
+   enforce this at runtime; if the user omits `--rc`, the session gets an
+   auto-generated name and cannot be renamed retroactively.
+
 1. **Run only from the main checkout — never inside a worktree.** This skill is
    the mirror of `process-ticket` (which runs only *inside* a worktree on a
    feature branch). Guard before doing anything else:
@@ -205,11 +213,20 @@ silently continues, so `claude --bg` would launch from the wrong cwd. The snippe
 ```powershell
 Set-Location '<worktree-path>' -ErrorAction Stop
 if ($PWD.Path -ne '<worktree-path>') { throw "cwd guard: expected '<worktree-path>', got $($PWD.Path) — aborting before launch" }
-claude --allow-dangerously-skip-permissions --verbose --rc "<branch>" --bg
+claude --allow-dangerously-skip-permissions --verbose --rc "<project_id>/<branch-slug>" --bg
 ```
 
-- `--rc "<branch>"` names the remote-control session after the branch; `--bg`
-  detaches it under the daemon. **No trailing prompt** — the session waits idle.
+  Where `<branch-slug>` is the branch name with every internal `/` replaced by
+  `-` (so `fix/12-add-login` becomes `fix-12-add-login`), giving a session name
+  like `acme-api/fix-12-add-login`. If the project id itself contains a `/`
+  (e.g. an org-scoped id like `acme/api`), replace those slashes with `-` too
+  (yielding `acme-api`), so exactly one slash — the separator between project id
+  and branch slug — remains in the session name. No nested slashes.
+
+- `--rc "<project_id>/<branch-slug>"` names the remote-control session
+  `<project_id>/<branch-slug>` so the Claude Agents overview identifies both the
+  project and the ticket branch at a glance; `--bg` detaches it under the daemon.
+  **No trailing prompt** — the session waits idle.
 - **Capture the `backgrounded · <job-id>` line** the launch prints — that
   `<job-id>` is the handle for `claude attach <job-id>` / `claude logs <job-id>`
   / `claude stop <job-id>`. Keep it in your report (Phase D) — teardown needs it.
