@@ -1,6 +1,6 @@
 ---
 name: orchestrate-tickets
-description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Invoke e.g. "start ticket #7 in acme-api", "work this one ticket", "process foundational ticket #3". Creates one worktree per ticket and starts an idle background Claude session. Bypassing this skill to work manually on main forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge — and is not permitted.
+description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to create tickets, split tickets, re-slice epics, and to execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing this skill to work manually on main forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge — and is not permitted.
 ---
 
 # orchestrate-tickets — fleet orchestrator
@@ -30,6 +30,31 @@ approval, developer QA/tests, reviewer subagent + Codex correctness pass,
 PR-based merge, and the no-force-push rule on shared branches. **This is not
 permitted.** Every ticket — serial or parallel, foundational or incremental,
 one or many — goes through this skill.
+
+## How to slice when authoring tickets
+
+These rules apply **whenever you are creating, splitting, or re-slicing tickets**
+— regardless of whether the conflict-analyst later runs. They are not gated on
+MULTI mode.
+
+- **1 ticket = 1 vertical full-stack slice = 1 worktree = 1 PR.** Each ticket
+  must own a thin but complete feature path: data model → business logic →
+  API → UI → tests, all in one ticket. One ticket, one PR.
+- **Target 2–6 tickets for a body of work.** If the work is large, decompose it
+  into a serial sequence of vertical wave-tickets (wave 1 lands, wave 2 branches
+  off it). Never decompose by adding more parallel tickets beyond what can run
+  safely concurrently.
+- **Forbidden — horizontal/layer cuts.** Never create separate tickets for
+  "DB layer", "API layer", "UI layer", or similarly named seam/impl/wire tickets
+  that cover the same feature. All three layers must land before the feature is
+  observable, so the parallelism buys nothing and each worker implements an
+  incomplete slice.
+- **Forbidden — splitting for parallelism.** Never split a ticket purely to gain
+  parallelism. Split only when the resulting tickets are each independently
+  shippable vertical slices.
+- **Forbidden — tickets that aren't independently shippable.** If a ticket
+  delivers no observable value on its own (nothing to review, test, or demo), it
+  is a layer cut in disguise — merge it into its vertical slice.
 
 ## Fit-awareness — when this workflow is (and isn't) the right tool
 
@@ -88,9 +113,11 @@ future changes.
 
 ### Fit assessment applies only in MULTI mode
 
-SINGLE mode does not invoke the conflict-analyst; no fit evaluation is produced.
-The fit signals and the Phase B fit warning below apply exclusively to MULTI mode
-(when the analyst returns a `fit` field in its JSON output).
+The slicing rules in `## How to slice when authoring tickets` are **unconditional**
+— they apply at authoring time regardless of mode. What is gated to MULTI mode is
+the **diagnostic output**: the `fit` field and the Phase B Fit Warning below are
+only produced when the conflict-analyst runs (MULTI mode). SINGLE mode does not
+invoke the conflict-analyst and produces no fit evaluation.
 
 ## Inputs
 
