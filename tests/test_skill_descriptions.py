@@ -213,3 +213,106 @@ def test_process_mentions_orchestrate_tickets():
         "skills/process-ticket/SKILL.md must mention 'orchestrate-tickets' "
         "(two-lane cross-reference per AGENTS.md)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: ticket #25 — slicing rules exposed at authoring time
+# ---------------------------------------------------------------------------
+
+def test_orchestrate_description_includes_authoring_verbs():
+    """
+    REGRESSION (#25): the description must include at least one authoring verb
+    so the skill loads when tickets are being created/split/re-sliced, not only
+    at execution time. Accepted verbs (case-insensitive): 'create ticket',
+    'split ticket', 're-slice', 'plan epic'.
+    """
+    text = _read(ORCHESTRATE_MD)
+    desc = _extract_description(text)
+    lower = desc.lower()
+    authoring_verbs = ["create ticket", "split ticket", "re-slice", "plan epic"]
+    assert any(v in lower for v in authoring_verbs), (
+        "orchestrate-tickets description must include at least one authoring verb "
+        f"(one of {authoring_verbs}) so the skill loads at ticket-authoring time.\n"
+        f"Current description:\n{desc}"
+    )
+
+
+def test_orchestrate_has_authoring_section():
+    """
+    REGRESSION (#25): the SKILL.md body must contain the heading
+    'How to slice when authoring tickets' so slicing rules are present
+    as an authoring-time imperative, not only as a runtime diagnostic.
+    """
+    text = _read(ORCHESTRATE_MD)
+    assert "How to slice when authoring tickets" in text, (
+        "skills/orchestrate-tickets/SKILL.md must contain the heading "
+        "'How to slice when authoring tickets'"
+    )
+
+
+def _extract_authoring_section(text: str) -> str:
+    """Extract the body of the '## How to slice when authoring tickets' section."""
+    section_m = re.search(
+        r"## How to slice when authoring tickets(.*?)(?=\n## )", text, re.DOTALL
+    )
+    assert section_m, (
+        "skills/orchestrate-tickets/SKILL.md must contain the "
+        "'## How to slice when authoring tickets' section"
+    )
+    return section_m.group(1)
+
+
+def test_orchestrate_authoring_section_vertical_slice_rule():
+    """
+    REGRESSION (#25): the new authoring section must tie 1 ticket to a
+    vertical slice and 1 PR / worktree.
+    Scoped to the authoring section only so this fails if the section is removed.
+    """
+    text = _read(ORCHESTRATE_MD)
+    section = _extract_authoring_section(text)
+    lower = section.lower()
+    # The section must link ticket → vertical slice.
+    assert "vertical" in lower, (
+        "The '## How to slice when authoring tickets' section must mention "
+        "'vertical' (vertical slice rule)"
+    )
+    # Must connect a single ticket to a single PR or worktree.
+    assert ("1 pr" in lower or "one pr" in lower
+            or "1 worktree" in lower or "one worktree" in lower), (
+        "The '## How to slice when authoring tickets' section must state the "
+        "1-ticket = 1-PR / 1-worktree rule"
+    )
+
+
+def test_orchestrate_authoring_section_forbidden_horizontal():
+    """
+    REGRESSION (#25): the new authoring section must explicitly forbid
+    horizontal / layer cuts (e.g. DB/API/UI as separate tickets).
+    Scoped to the authoring section only so this fails if the section is removed.
+    """
+    text = _read(ORCHESTRATE_MD)
+    section = _extract_authoring_section(text)
+    lower = section.lower()
+    assert "horizontal" in lower or "layer" in lower, (
+        "The '## How to slice when authoring tickets' section must explicitly "
+        "forbid horizontal/layer cuts"
+    )
+    assert "forbidden" in lower or "not permitted" in lower or "never" in lower, (
+        "The '## How to slice when authoring tickets' section must mark "
+        "horizontal/layer cuts as forbidden"
+    )
+
+
+def test_orchestrate_authoring_section_target_ticket_count():
+    """
+    REGRESSION (#25): the new authoring section must mention the 2–6 target
+    ticket-count range.
+    Scoped to the authoring section only so this fails if the section is removed.
+    """
+    text = _read(ORCHESTRATE_MD)
+    section = _extract_authoring_section(text)
+    # Accept '2–6', '2-6', or '2 to 6'.
+    assert re.search(r"2\s*[–\-–]\s*6|2\s+to\s+6", section), (
+        "The '## How to slice when authoring tickets' section must mention the "
+        "2–6 target ticket-count range"
+    )
