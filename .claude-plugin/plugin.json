@@ -1,0 +1,18 @@
+{
+  "name": "agent-autonomous-developer",
+  "description": "Turns agent-project-issues tickets into draft pull requests for projects in any language (stack auto-detected). Ships two skills — orchestrate-tickets (dispatches conflict-free parallel ticket work across git worktrees and launches one background Claude session per ticket) and process-ticket (an end-to-end context→plan→code→review→PR pipeline) — backed by five subagents. Drives the agent-project-issues and agent-worktree MCPs.",
+  "version": "0.1.3",
+  "author": {
+    "name": "Arne von Appen"
+  },
+  "dependencies": [
+    {
+      "name": "agent-project-issues",
+      "version": ">=0.0.1 <1.0.0"
+    },
+    {
+      "name": "agent-worktree",
+      "version": ">=0.0.1 <1.0.0"
+    }
+  ]
+}
