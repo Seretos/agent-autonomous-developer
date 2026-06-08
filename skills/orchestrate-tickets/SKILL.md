@@ -130,13 +130,13 @@ invoke the conflict-analyst and produces no fit evaluation.
 
 ## Preconditions
 
-0. **Name the orchestrator session at launch time (user responsibility).** There
-   is no Claude CLI mechanism to rename a session mid-flight. The orchestrator
-   session is already running when this skill is invoked, so its session name
-   must be set by the user at launch time via `--rc "<project_id>"` — e.g.
-   `claude --rc "acme-api" --dangerously-skip-permissions`. The skill cannot
-   enforce this at runtime; if the user omits `--rc`, the session gets an
-   auto-generated name and cannot be renamed retroactively.
+0. **Name the orchestrator session at launch time (user responsibility).** The
+   orchestrator session is already running when this skill is invoked, so its
+   display name should be set by the user at launch time via `--name "<project_id>"` — e.g.
+   `claude --name "acme-api" --permission-mode bypassPermissions --allow-dangerously-skip-permissions`.
+   The skill cannot enforce this at runtime; if the user omits `--name`, the
+   session gets an auto-generated name. As a mid-flight fallback, `/rename <name>`
+   is available inside a running session to set the display name after launch.
 
 1. **Run only from the main checkout — never inside a worktree.** This skill is
    the mirror of `process-ticket` (which runs only *inside* a worktree on a
@@ -213,7 +213,7 @@ e.g. a doc/integration ticket). Keep that `type` through to the confirm step
    When `fit.verdict == "good"`, or in SINGLE mode (no `fit` field), show no
    fit block — proceed directly to the go-ahead question.
 
-   Launching N background `--dangerously-skip-permissions` sessions is heavy and
+   Launching N background `--permission-mode bypassPermissions --allow-dangerously-skip-permissions` sessions is heavy and
    hard-to-undo, so get a go-ahead (or let the user drop/keep tickets) first.
    For SINGLE mode keep it light, but still confirm the one launch.
 2. **Create one worktree per selected ticket, SEQUENTIALLY.** Never in parallel —
@@ -240,7 +240,7 @@ silently continues, so `claude --bg` would launch from the wrong cwd. The snippe
 ```powershell
 Set-Location '<worktree-path>' -ErrorAction Stop
 if ($PWD.Path -ne '<worktree-path>') { throw "cwd guard: expected '<worktree-path>', got $($PWD.Path) — aborting before launch" }
-claude --allow-dangerously-skip-permissions --verbose --rc "<project_id>/<branch-slug>" --bg
+claude --allow-dangerously-skip-permissions --permission-mode bypassPermissions --verbose --name "<project_id>/<branch-slug>" --bg
 ```
 
   Where `<branch-slug>` is the branch name with every internal `/` replaced by
@@ -250,9 +250,9 @@ claude --allow-dangerously-skip-permissions --verbose --rc "<project_id>/<branch
   (yielding `acme-api`), so exactly one slash — the separator between project id
   and branch slug — remains in the session name. No nested slashes.
 
-- `--rc "<project_id>/<branch-slug>"` names the remote-control session
-  `<project_id>/<branch-slug>` so the Claude Agents overview identifies both the
-  project and the ticket branch at a glance; `--bg` detaches it under the daemon.
+- `--name "<project_id>/<branch-slug>"` sets the display name shown in the
+  Claude Agents overview and `/resume` picker, so both the project and the ticket
+  branch are identifiable at a glance; `--bg` detaches it under the daemon.
   **No trailing prompt** — the session waits idle.
 - **Capture the `backgrounded · <job-id>` line** the launch prints — that
   `<job-id>` is the handle for `claude attach <job-id>` / `claude logs <job-id>`
