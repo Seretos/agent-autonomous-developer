@@ -40,7 +40,11 @@ you describe what needs fixing and let the developer act.
    - **Conventions** — layout, models, and naming consistent with the
      surrounding code.
 
-## Optional — Codex second opinion (only when the Codex plugin is active)
+## Optional — Codex second opinion (when the Codex plugin is available)
+
+This pass runs on **every invocation** where the Codex plugin is available —
+including re-reviews after a fix cycle. It is never skipped because this is a
+second or subsequent pass; Codex availability is the only gate.
 
 If the user has the Codex plugin (`openai/codex-plugin-cc`) installed **and**
 available, run an **additional** Codex correctness review and fold its blocking
