@@ -1,6 +1,6 @@
 ---
 name: orchestrate-tickets
-description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to create tickets, split tickets, re-slice epics, and to execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing this skill — working manually on `main`, or the orchestrator session entering a worktree to edit there directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge — and is not permitted.
+description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to create tickets, split tickets, re-slice epics, and to execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing it — working manually on `main`, or the orchestrator editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
 ---
 
 # orchestrate-tickets — fleet orchestrator
