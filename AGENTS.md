@@ -57,7 +57,7 @@ the same reason the stack-detection scope does (one place, not smeared across th
 
 ## Optional Codex review augmentation lives in the reviewer
 
-When the Codex plugin (`openai/codex-plugin-cc`) is installed and ready, the `reviewer`
+When the Codex plugin (`openai/codex-plugin-cc`) is installed and available, the `reviewer`
 agent runs an **extra** Codex correctness pass and folds Codex's blocking findings into its
 `VERDICT`. A few non-obvious decisions:
 
@@ -65,8 +65,12 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   `VERDICT: APPROVE / CHANGES_REQUESTED` contract, so the skill and its one-round fix loop stay
   untouched — same as keeping stack scope in the worker agents.
 - **Presence-driven, no flag.** Detection = glob the Codex companion script under
-  `~/.claude/plugins/cache/<marketplace>/codex/<version>/scripts/codex-companion.mjs`, then
-  gate on `codex-companion.mjs setup --json` returning `ready: true`. No opt-in setting.
+  `~/.claude/plugins/cache/<marketplace>/codex/<version>/scripts/codex-companion.mjs`; the
+  reviewer gates on `codex.available` being `true` in `setup --json` (CLI + runtime
+  installed), then attempts the pass and degrades on failure. A cold broker
+  (`auth.loggedIn: false` but `auth.requiresOpenaiAuth` not `true`) is NOT treated as
+  not-authenticated — the broker starts on-demand and the existing non-zero-exit degradation
+  is the backstop. No opt-in setting.
 - **Why a direct `Bash` call to the companion script, not `/codex:review`.** That slash command
   is `disable-model-invocation: true` (user-typed only) and subagents have no `Skill`/`Agent`
   tool — so the only programmatic entries are `node "<script>" adversarial-review --wait --base

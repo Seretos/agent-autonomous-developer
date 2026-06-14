@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Code-reviews the working-tree diff produced by the developer against the approved plan. Read-only — inspects the diff and code, returns an APPROVE / CHANGES_REQUESTED verdict with severity-tagged findings. When the Codex plugin is installed and ready, also runs an extra Codex correctness review and folds its blocking findings into the verdict. Never edits code, never commits, never opens PRs. Invoked fourth by process-ticket.
+description: Code-reviews the working-tree diff produced by the developer against the approved plan. Read-only — inspects the diff and code, returns an APPROVE / CHANGES_REQUESTED verdict with severity-tagged findings. When the Codex plugin is installed and available, also runs an extra Codex correctness review and folds its blocking findings into the verdict. Never edits code, never commits, never opens PRs. Invoked fourth by process-ticket.
 tools: Read, Glob, Grep, Bash, mcp__plugin_agent-serena-wrapper_serena__find_symbol, mcp__plugin_agent-serena-wrapper_serena__get_symbols_overview, mcp__plugin_agent-serena-wrapper_serena__find_referencing_symbols, mcp__plugin_agent-serena-wrapper_serena__find_declaration, mcp__plugin_agent-serena-wrapper_serena__find_implementations, mcp__plugin_agent-serena-wrapper_serena__get_diagnostics_for_file
 model: sonnet
 ---
@@ -43,7 +43,7 @@ you describe what needs fixing and let the developer act.
 ## Optional — Codex second opinion (only when the Codex plugin is active)
 
 If the user has the Codex plugin (`openai/codex-plugin-cc`) installed **and**
-ready, run an **additional** Codex correctness review and fold its blocking
+available, run an **additional** Codex correctness review and fold its blocking
 findings into your verdict. This augments your own review — it never replaces
 the plan-adherence checks above. It is **best-effort**: any failure here
 degrades silently to your own review. Codex problems never block the pipeline.
@@ -58,10 +58,29 @@ degrades silently to your own review. Codex problems never block the pipeline.
    ```
    Empty output → Codex is not installed. **Skip the rest of this section** and
    finish with your own review (do not mention Codex).
-2. **Check readiness.** `node "<path>" setup --json` and parse the JSON. Proceed
-   only if `ready` is `true` (Codex CLI present and authenticated). Otherwise
-   skip the review and add one line — `Codex review skipped: not ready` — to
-   your output.
+2. **Check availability.** Run `node "<path>" setup --json` and parse the JSON.
+   Apply this four-case decision tree based on `codex.available`, `ready`
+   (`auth.loggedIn`), and `auth.requiresOpenaiAuth`:
+
+   - **Case A — `codex.available` is `false`:** The Codex CLI/runtime is
+     genuinely absent. Skip the review and add one line —
+     `Codex review skipped: not ready` — to your output.
+   - **Case B — `ready` is `true` (equivalently `auth.loggedIn` is `true`):**
+     Proceed with the Codex pass. (happy path)
+   - **Case C — `auth.loggedIn` is `false` AND `auth.requiresOpenaiAuth` is
+     `true`:** Genuine no-credentials state (no `auth.json`, no tokens, no
+     `OPENAI_API_KEY`). Skip the review and add one line —
+     `Codex review skipped: not ready` — to your output.
+   - **Case D — `codex.available` is `true`, but neither Case B nor Case C
+     applies** (i.e. `auth.loggedIn` is `false` and `auth.requiresOpenaiAuth`
+     is `null`/absent/`false`): This is a cold or transient broker state. The
+     broker starts on-demand when any Codex command runs, so **proceed anyway**.
+     If the review fails for any reason, step 5 (the degradation step) is the
+     backstop.
+
+   Do NOT use `ENOENT` or named-pipe/socket string-matching to distinguish
+   states — use only the structured `codex.available`, `ready`/`auth.loggedIn`,
+   and `auth.requiresOpenaiAuth` fields above.
 3. **Run the review (read-only, foreground).** The companion must collect the
    diff itself — do not rely on Codex's sandbox to read workspace files, as that
    fails on Windows. Use a two-branch decision based on diff size.
