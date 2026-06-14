@@ -122,7 +122,10 @@ plus severity-tagged findings (`[blocking]` / `[nit]`).
 (If the Codex plugin is active, the reviewer adds a Codex correctness pass on
 its own — the verdict format and this fix loop are unchanged.)
 - `CHANGES_REQUESTED` with blocking findings → re-spawn `developer` once with
-  the findings appended to the plan, then re-run `reviewer` once. After one
+  the findings appended to the plan, then re-run `reviewer` once for a
+  **full review** (correctness, test coverage, consistency, and — if the Codex
+  plugin is active — the Codex correctness pass). Do not narrow the re-review
+  prompt to only checking that prior blocking findings are resolved. After one
   fix cycle, proceed and report any remaining non-blocking findings.
 - `APPROVE` → proceed to the final step.
 
