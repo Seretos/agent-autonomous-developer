@@ -1,6 +1,6 @@
 ---
 name: process-ticket
-description: End-to-end ticket processing inside a prepared worktree on a feature branch — serial or parallel, one ticket at a time. Enforces mandatory safety gates: planner approval gate, developer QA/tests, code review (reviewer subagent + optional Codex pass), draft PR (no force-push on shared branches), and traceability comments. Invoke e.g. "process ticket #42 in acme-api". Bypassing this skill — editing manually on `main`, or the orchestrator session editing directly inside a worktree without going through this skill — forfeits all safety guarantees and is not permitted. Worktree and branch are prepared by orchestrate-tickets (or the user); this skill never creates them.
+description: End-to-end ticket processing inside a prepared worktree on a feature branch — serial or parallel, one ticket at a time. Enforces mandatory safety gates: planner approval, developer QA/tests, code review (reviewer + optional Codex pass), draft PR (no force-push on shared branches), and traceability comments. Invoke e.g. "process ticket #42". Bypassing it — editing manually on `main`, or editing directly inside a worktree without this skill — forfeits all safety guarantees and is not permitted. Worktree/branch are prepared by orchestrate-tickets or the user; this skill never creates them.
 ---
 
 # process-ticket — orchestrator

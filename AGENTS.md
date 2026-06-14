@@ -22,6 +22,39 @@ plus `git-dir` vs `git-common-dir`). They are a **matched pair**: if you touch o
 guard, change the other's to match — otherwise a fleet and its workers can land in the same
 lane and collide. Neither skill knows about the other's guard, so this pairing lives here.
 
+## Developer and reviewer tool boundaries (denylist, not allowlist)
+
+The `developer` and `reviewer` agents enforce their safety constraints via a
+`disallowedTools:` **denylist** in their frontmatter — not a `tools:` allowlist.
+This means both agents inherit whatever MCP tools are connected in the session
+(Unity tools, future MCP servers, etc.) while still being blocked from the
+operations they must never do.
+
+**Why denylist?** An allowlist required enumerating every tool the agent would
+legitimately need — including future MCP servers the plugin author can't predict.
+A denylist lists only the small, stable set of *forbidden* operations, and new
+MCP tools are available automatically.
+
+**Developer denylist invariant.** The developer's `disallowedTools:` must block:
+all PR operations (`create_pr`, `merge_pr`), all ticket-mutation operations
+(`add_comment`, `update_ticket`, `create_ticket`, `delete_ticket`), and
+worktree lifecycle operations that belong to the orchestrator (`worktree_create`,
+`worktree_remove`, `worktree_switch`). `worktree_start` is deliberately NOT
+denied — the developer needs it for the long-lived-process guardrail.
+
+**Reviewer denylist invariant.** The reviewer is strictly read-only. Its
+`disallowedTools:` must additionally block all file-write tools (`Edit`, `Write`,
+`NotebookEdit`) and all Serena write tools (`replace_symbol_body`,
+`insert_after_symbol`, `insert_before_symbol`, `rename_symbol`, `replace_content`,
+`safe_delete_symbol`). The reviewer also denies `worktree_start` — it has no
+reason to launch processes.
+
+**Known fragility.** When a new MCP server with write tools is connected to a
+session, those write tools are available to both agents by default. If the new
+server has write operations that the reviewer (or developer) must not use, add
+them to the respective `disallowedTools:` list. The agents' Hard Rules remain
+the behavioral backstop, but the denylist is the primary enforcement mechanism.
+
 ## Why the project id is always a parameter
 
 agent-project-issues does not resolve cwd→project (`local_path` is null, `source: config`),
