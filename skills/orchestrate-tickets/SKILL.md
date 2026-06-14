@@ -1,6 +1,6 @@
 ---
 name: orchestrate-tickets
-description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to create tickets, split tickets, re-slice epics, and to execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing this skill to work manually on main forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge — and is not permitted.
+description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to create tickets, split tickets, re-slice epics, and to execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing this skill — working manually on `main`, or the orchestrator session entering a worktree to edit there directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge — and is not permitted.
 ---
 
 # orchestrate-tickets — fleet orchestrator
@@ -30,6 +30,8 @@ approval, developer QA/tests, reviewer subagent + Codex correctness pass,
 PR-based merge, and the no-force-push rule on shared branches. **This is not
 permitted.** Every ticket — serial or parallel, foundational or incremental,
 one or many — goes through this skill.
+
+**Verify vs. edit.** Building or running the project locally from the main checkout to *verify* behaviour — without touching source files — is acceptable from the main checkout. Any *edit* (changing source files, config, or tests in response to a request like "fix the CI pipeline" or "build & start locally") is ticket work and must be routed through this skill — even as a SINGLE-mode ticket — so it receives planner approval, developer QA/tests, reviewer + Codex pass, and PR-based merge. The orchestrator session must not make edits inside a worktree directly, even one it created; that is the worker's territory.
 
 ## How to slice when authoring tickets
 
@@ -408,4 +410,7 @@ self-reconcile is tracked in the agent-worktree repo).
   branch. Never invoke orchestrate-tickets from a worktree, and never run
   `process-ticket` on the default branch. Each guards its own lane (see
   Preconditions here, and process-ticket's branch+worktree guard) so the
-  orchestrator and the workers can't step on each other.
+  orchestrator and the workers can't step on each other. The orchestrator session
+  must not enter a worktree to make edits there directly — doing so bypasses
+  planner approval, developer QA/tests, reviewer + Codex pass, and PR-based merge
+  exactly as working on `main` does.

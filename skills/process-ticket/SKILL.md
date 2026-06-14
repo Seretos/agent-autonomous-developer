@@ -1,6 +1,6 @@
 ---
 name: process-ticket
-description: End-to-end ticket processing inside a prepared worktree on a feature branch — serial or parallel, one ticket at a time. Enforces mandatory safety gates: planner approval gate, developer QA/tests, code review (reviewer subagent + optional Codex pass), draft PR (no force-push on shared branches), and traceability comments. Invoke e.g. "process ticket #42 in acme-api". Bypassing this skill — editing manually on main — forfeits all safety guarantees and is not permitted. Worktree and branch are prepared by orchestrate-tickets (or the user); this skill never creates them.
+description: End-to-end ticket processing inside a prepared worktree on a feature branch — serial or parallel, one ticket at a time. Enforces mandatory safety gates: planner approval gate, developer QA/tests, code review (reviewer subagent + optional Codex pass), draft PR (no force-push on shared branches), and traceability comments. Invoke e.g. "process ticket #42 in acme-api". Bypassing this skill — editing manually on `main`, or the orchestrator session editing directly inside a worktree without going through this skill — forfeits all safety guarantees and is not permitted. Worktree and branch are prepared by orchestrate-tickets (or the user); this skill never creates them.
 ---
 
 # process-ticket — orchestrator
@@ -22,7 +22,10 @@ This skill is the required processing path whether the ticket is a single
 serial/foundational change or one of a parallel fleet. Running a ticket
 manually on `main` — editing files directly, committing inline, or
 force-pushing — bypasses all of the following guarantees and is **not
-permitted**:
+permitted**. The same applies if the orchestrator session enters a worktree
+and edits files directly — bypassing this skill in a worker's directory is
+identical in effect. Building or running the project locally from the main
+checkout to *verify* behaviour (without editing) is not a bypass; *editing* is.
 
 1. **Planner approval gate.** The planner subagent produces a plan and answers
    the user's questions before any code is written; the plan is posted as a
