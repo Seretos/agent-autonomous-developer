@@ -1,6 +1,6 @@
 ---
 name: orchestrate-tickets
-description: Required entry-point for any ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to create tickets, split tickets, re-slice epics, and to execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing it — working manually on `main`, or the orchestrator editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
+description: Required entry-point for executing ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to split tickets, re-slice epics, and execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing it — working manually on `main`, or the orchestrator editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
 ---
 
 # orchestrate-tickets — fleet orchestrator
@@ -15,6 +15,13 @@ so they run `/reload-plugins` first, then `process ticket #<n>` (the
 
 There is **no cwd→project auto-detection**. The `project_id` is supplied at
 invocation (see Inputs); pass it to the analyst and to every project-issues call.
+
+**Scope note — bare ticket creation is not this skill's job.** To merely file a
+new ticket, call `create_ticket` directly (the project-issues MCP). This skill is
+for *executing* ticket work — and for splitting or re-slicing tickets when
+decomposing that work before execution. Routing a simple "file a ticket" request
+through this skill adds unnecessary overhead (worktree creation, background
+session launch, fleet orchestration).
 
 ### Single-ticket / serial path (the normal, always-correct path)
 

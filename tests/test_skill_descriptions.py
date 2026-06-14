@@ -316,3 +316,46 @@ def test_orchestrate_authoring_section_target_ticket_count():
         "The '## How to slice when authoring tickets' section must mention the "
         "2–6 target ticket-count range"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: ticket #45 — narrow over-claiming description
+# ---------------------------------------------------------------------------
+
+def test_orchestrate_description_does_not_advertise_bare_creation():
+    """
+    REGRESSION (#45): the orchestrate-tickets description must NOT contain the
+    plural phrase 'create tickets' — that over-claims by advertising bare ticket
+    creation as a primary use case, causing misrouting of simple 'file a ticket'
+    requests into the heavy orchestration flow.
+
+    Accepted: 'split tickets', 're-slice epics', or other authoring verbs are
+    fine; only the bare-creation plural 'create tickets' is forbidden here.
+    """
+    text = _read(ORCHESTRATE_MD)
+    desc = _extract_description(text)
+    assert "create tickets" not in desc.lower(), (
+        "orchestrate-tickets description must NOT contain 'create tickets' "
+        "(plural) — bare ticket creation should be done via create_ticket MCP "
+        "directly, not routed through this orchestration skill.\n"
+        f"Current description:\n{desc}"
+    )
+
+
+def test_orchestrate_body_has_create_ticket_scope_note():
+    """
+    REGRESSION (#45): the orchestrate-tickets SKILL.md body (text after the
+    closing '---' of the frontmatter) must contain the literal token
+    'create_ticket' directing readers to the MCP call for bare ticket creation,
+    as a scope note distinguishing 'file one ticket' from 'execute ticket work'.
+    """
+    text = _read(ORCHESTRATE_MD)
+    # Extract the body: everything after the second '---' delimiter.
+    fm_end = re.search(r"^---\n.*?\n---\n", text, re.DOTALL | re.MULTILINE)
+    assert fm_end is not None, "Could not find closing '---' of frontmatter"
+    body = text[fm_end.end():]
+    assert "create_ticket" in body, (
+        "skills/orchestrate-tickets/SKILL.md body must contain the literal "
+        "'create_ticket' token as a scope note directing bare ticket creation "
+        "to the MCP call directly, not through this skill."
+    )
