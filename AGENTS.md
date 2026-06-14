@@ -82,6 +82,24 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   the reviewer launches Codex (process name or `--cwd`), update the teardown matcher in
   `skills/orchestrate-tickets/SKILL.md` to match.
 
+## Long-lived process guardrail (cross-file)
+
+`agents/developer.md` carries the rule: before starting any process that does not exit on its
+own (daemon, dev-server, watcher, GUI editor, etc.), the developer must use `worktree_start`
+with an appropriate `start:` contract step so the process is tracked and killed automatically
+on worktree teardown. When no suitable contract step exists and an ad-hoc launch is
+unavoidable, the developer must emit an explicit warning in the change report that the process
+will survive worktree teardown and must be terminated manually.
+
+The rule is **generic and app-agnostic by design** — no concrete tool or application is named
+as a prescriptive target. App-specific variants (e.g. how to handle a Unity GUI editor) belong
+in wrapper projects such as `agent-unity-wrapper`, not in this plugin.
+
+**Invariant for contributors:** if you change the developer's process-launch guidance, verify
+that the updated rule still covers **both** branches — (1) the tracked-start path
+(`worktree_start` + `start:` contract step) and (2) the manual-warning fallback for ad-hoc
+launches — and update this note to stay consistent with the new wording.
+
 ## Why ticket-slicing knowledge lives in the orchestrator, not a standalone skill
 
 Slicing recommendations are **model-relative** — only meaningful for the isolated-worker
