@@ -124,8 +124,17 @@ The orchestrator owns this (not the developer): it depends on the whole
 pipeline's outcome (final plan + review verdict) and the branch/ticket the
 orchestrator holds, and it keeps the developer's tool scope minimal.
 
-1. **Commit** (raw git — no MCP for a local commit):
-   `git add -A` then `git commit -m "<concise summary> (#<ticket>)"`.
+1. **Commit** (raw git — no MCP for a local commit): `git add -A`, then:
+   - **Single-line message** (summary only, no body or trailers):
+     `git commit -m "<concise summary> (#<ticket>)"`.
+   - **Multi-line message** (body text, Co-Authored-By trailer, etc.): use the
+     Write tool to write the full message to `/tmp/commit-msg.txt`, then run
+     `git commit -F /tmp/commit-msg.txt`. Writing via the Write tool sidesteps
+     shell quoting entirely — no heredoc, no escaping. Never compose a
+     multi-line commit message as a PowerShell here-string (`@'...'@`) and run
+     it through the Bash tool. The Bash tool executes real `bash`, not
+     PowerShell — `@'...'@` delimiters have no meaning in bash and pass `@`
+     literally as text, corrupting the commit subject line.
 2. **Push** the feature branch: `git push -u origin <branch>`.
 3. **Open the PR as a draft via MCP** (MCP over CLI per the priority law):
    `create_pr(project_id=<project>, title=<from plan>,
@@ -151,3 +160,11 @@ orchestrator holds, and it keeps the developer's tool scope minimal.
 - **Never create the worktree/branch.** The user owns that.
 - **Push is authorized for this workflow only** (user-confirmed). PR opens as
   a **draft** so the user finalizes it.
+- **Multi-line commit messages must use `git commit -F <tempfile>` — never
+  `@'...'@` via the Bash tool.** The Bash tool runs real `bash`, not
+  PowerShell. A PowerShell here-string (`@'...'@`) passed to the Bash tool
+  produces `@` as the commit subject, corrupting the message. For any message
+  with a body or trailers, use the Write tool to write it to a well-known temp
+  path (e.g. `/tmp/commit-msg.txt`) and commit with `git commit -F
+  <tempfile>`. The single-line `-m` form remains correct for summary-only
+  messages.
