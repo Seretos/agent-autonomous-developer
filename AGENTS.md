@@ -69,8 +69,10 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   gate on `codex-companion.mjs setup --json` returning `ready: true`. No opt-in setting.
 - **Why a direct `Bash` call to the companion script, not `/codex:review`.** That slash command
   is `disable-model-invocation: true` (user-typed only) and subagents have no `Skill`/`Agent`
-  tool — so the only programmatic entry is `node "<script>" review --wait`. `--write` is never
-  passed: Codex must stay review-only, like the reviewer.
+  tool — so the only programmatic entries are `node "<script>" adversarial-review --wait --base
+  origin/<default-branch>` (normal path, diff ≤ ~180 KB) and `node "<script>" task
+  --prompt-file <tmpfile>` (oversized path, diff > ~180 KB). `--write` is never passed to
+  either: Codex must stay review-only, like the reviewer.
 - **Fragile bit.** The cross-plugin path discovery depends on the cache layout above; if the
   marketplace/plugin dir names change, discovery returns nothing and the reviewer **degrades
   silently** to its built-in review (never a hard error).
