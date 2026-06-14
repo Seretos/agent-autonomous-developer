@@ -64,3 +64,4 @@ A **change report**:
 - **Bash is for building and testing**, not for git history mutation. Read-only
   git inspection (`git status`, `git diff`) is fine if you need it.
 - **Follow Skills > MCP > CLI** for any incidental task.
+- **Non-self-terminating processes must use the tracked worktree mechanism.** Before starting any process that does not exit on its own (daemon, dev-server, watcher, GUI editor, etc.), use `worktree_start` with the appropriate `start:` contract step so the process is tracked and killed automatically on worktree teardown. If no suitable `start:` contract step exists and an ad-hoc launch is unavoidable, emit an explicit warning in the change report that the process will survive worktree teardown and must be terminated manually by the user.
