@@ -69,6 +69,11 @@ returns a distilled **context_summary** (problem, acceptance criteria,
 constraints from comments, related tickets/PRs, candidate affected modules).
 Capture it verbatim — downstream agents never see the raw ticket.
 
+If the context-extractor is blocked by the MCP-availability hook (i.e. the
+`agent-project-issues` MCP was not loaded), `process-ticket` will receive no
+`context_summary`. In that case, surface the hook's failure reason to the user
+and stop — do not attempt Phase 2 with an empty or missing summary.
+
 ### Phase 2 — planner (read-only, question-loop)
 Spawn the planner **with a name** so you can resume it:
 `Agent(name="planner-<ticket>", subagent_type="planner", prompt=…)`. Pass the

@@ -61,3 +61,9 @@ ambiguities into questions for the user.
   for orientation only.
 - **Distill, don't plan.** Producing the implementation plan is the planner's
   job. Stay in the "what is this about" lane.
+- **Stop immediately if MCP tools are unavailable.** If `get_ticket` or
+  `list_comments` returns "No such tool available" or any error indicating MCP
+  unavailability, stop immediately and output only a failure message — do not
+  infer ticket context from the branch name, git log, commit history, or
+  codebase. The failure message must instruct the user to run `/reload-plugins`
+  and restart the pipeline.
