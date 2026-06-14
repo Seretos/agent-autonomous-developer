@@ -62,20 +62,64 @@ degrades silently to your own review. Codex problems never block the pipeline.
    only if `ready` is `true` (Codex CLI present and authenticated). Otherwise
    skip the review and add one line — `Codex review skipped: not ready` — to
    your output.
-3. **Run the review (read-only, foreground).** `node "<path>" review --wait`.
-   The default `auto` scope reviews the uncommitted working-tree changes —
-   exactly the diff you are reviewing. **Never** pass `--write`; this is a
-   review, Codex must not edit anything. The review runs in the foreground
-   because you must act on its result synchronously.
-4. **Fold Codex's findings into your verdict.** Carry each concrete Codex
-   finding (file + problem) into your findings list, tagged `(codex)`. Treat a
-   correctness bug Codex flags as `[blocking]` (or keep Codex's own severity if
-   it states one). If Codex reports **any** blocking issue, your verdict is
-   `VERDICT: CHANGES_REQUESTED` even if your own review alone would have been
-   `APPROVE`.
+3. **Run the review (read-only, foreground).** The companion must collect the
+   diff itself — do not rely on Codex's sandbox to read workspace files, as that
+   fails on Windows. Use a two-branch decision based on diff size.
+
+   **3a. Measure the diff.** Determine the default branch from context (threaded
+   in by `process-ticket`'s precondition step); if it is not available, derive it
+   via `git symbolic-ref --short refs/remotes/origin/HEAD`. Then measure:
+   ```bash
+   git diff origin/<default-branch>...HEAD | wc -c
+   ```
+   (On Windows PowerShell use:
+   `(git diff origin/<default-branch>...HEAD | Measure-Object -Character).Characters`)
+
+   **3b. Normal path (diff ≤ ~180 KB).** Run:
+   ```bash
+   node "<path>" adversarial-review --wait --base origin/<default-branch>
+   ```
+   The companion runs `git diff <merge-base>..HEAD` internally, embeds the
+   result inline in the adversarial-review prompt, and passes it to Codex via
+   `runAppServerTurn` — no sandbox shell access. **Never** pass `--write`.
+   **Never** pass `--scope` when `--base` is explicit (the companion ignores
+   `--scope` when `--base` is given). The companion has its own 256 KB ceiling;
+   if the embedded diff exceeds it, the companion falls back to a lightweight
+   summary and self-collect guidance — on Windows that self-collect path would
+   fail, but step 5 catches the non-zero exit and emits "Codex review
+   unavailable", preserving the silent-degradation contract.
+
+   **3c. Oversized path (diff > ~180 KB).** Write the diff to a temporary file:
+   ```bash
+   TMPFILE="$(node -e "const os=require('os'),p=require('path');console.log(p.join(os.tmpdir(),'codex-review-'+Date.now()+'.diff'))")"
+   trap 'rm -f "$TMPFILE"' EXIT
+   printf 'Review the following branch diff for correctness bugs. Return file:line findings only. Do not edit any files.\n\n' > "$TMPFILE"
+   git diff origin/<default-branch>...HEAD >> "$TMPFILE"
+   node "<path>" task --prompt-file "$TMPFILE"
+   ```
+   The `trap` ensures the temp file is deleted whether the `task` call succeeds
+   or fails. Do **not** pass `--write`. Do **not** pass `--prompt-file` to the
+   `review` subcommand — it is not supported there.
+
+4. **Fold Codex's findings into your verdict.**
+
+   - **`adversarial-review` output** is structured JSON with fields `file`,
+     `line_start`, `line_end`, `confidence`, and `recommendation`. For each
+     entry map it to `<file>:<line_start> — <recommendation>` and tag it
+     `(codex)`. A `needs-attention` verdict from Codex (or any entry in the
+     findings array) is treated as `[blocking]`.
+   - **`task --prompt-file` output** is free-form text. Extract any lines that
+     reference a file path and treat them as findings, tagging each `(codex)`.
+     Any such finding is treated as `[blocking]`.
+
+   In both cases, carry the findings into your findings list. If Codex reports
+   **any** blocking issue, your verdict is `VERDICT: CHANGES_REQUESTED` even if
+   your own review alone would have been `APPROVE`.
+
 5. **On any error or unusable output** (script missing, `node` unavailable,
-   non-zero exit, nothing parseable): add one line — `Codex review unavailable`
-   — and proceed with your own verdict. Never retry in a loop; never block.
+   non-zero exit, nothing parseable, temp-file write failure): add one line —
+   `Codex review unavailable` — and proceed with your own verdict. Never retry
+   in a loop; never block.
 
 ## What you return
 
