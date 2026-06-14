@@ -123,6 +123,31 @@ invoke the conflict-analyst and produces no fit evaluation.
 
 - A **project id** (e.g. `acme-api`). If missing or unclear, resolve it via
   `find_projects` and confirm with the user before doing anything.
+  - **Reject placeholder project ids.** `find_projects` can return a generic
+    id via the `source: "git-remote"` auto-discovery path (e.g. `_auto`).
+    Before using the resolved id anywhere, check it against the blocklist:
+    strip any leading `_`, then compare case-insensitively against `auto`,
+    `default`, and `session`. If it matches, derive a slug from the last path
+    segment of the `path` or `web_url` field returned by `find_projects`
+    (e.g. `path: "Seretos/obsidian-memory-gatekeeper"` → slug
+    `obsidian-memory-gatekeeper`). If no unambiguous non-placeholder slug can
+    be derived this way (both fields absent or empty), confirm with the user —
+    consistent with the "confirm with the user" rule above.
+
+    *Worked example:* `find_projects` returns `source: "git-remote"`,
+    `project_id: "_auto"`, `path: "Seretos/obsidian-memory-gatekeeper"`.
+    Strip leading `_` → `auto` → matches the blocklist. Derive slug from last
+    segment of `path` → `obsidian-memory-gatekeeper`. Phase C then emits
+    `--name "obsidian-memory-gatekeeper/fix-12-..."`.
+
+    *Edge cases:* `_auto` (strip underscore → matches); `auto` (direct match);
+    `default`, `session` (both in blocklist); `automate-api` (does **not**
+    match — full-token equality, not substring); `path` and `web_url` both
+    absent → fall through to "confirm with the user"; non-placeholder id
+    (e.g. `acme-api`) passes silently and slash-normalisation still applies.
+
+    This check occurs on the value returned by `find_projects`, before the
+    slash-normalisation step in Phase C.
 - An optional ticket number, or several, or nothing.
   - **exactly one** ticket → SINGLE mode (skip analysis).
   - **none** → MULTI mode over **all open** tickets.
@@ -245,7 +270,9 @@ claude --allow-dangerously-skip-permissions --permission-mode bypassPermissions 
 
   Where `<branch-slug>` is the branch name with every internal `/` replaced by
   `-` (so `fix/12-add-login` becomes `fix-12-add-login`), giving a session name
-  like `acme-api/fix-12-add-login`. If the project id itself contains a `/`
+  like `acme-api/fix-12-add-login`. After placeholder resolution (see Inputs)
+  and before slash-normalisation, the project id must already be a
+  non-placeholder slug. Then: if the project id itself contains a `/`
   (e.g. an org-scoped id like `acme/api`), replace those slashes with `-` too
   (yielding `acme-api`), so exactly one slash — the separator between project id
   and branch slug — remains in the session name. No nested slashes.
@@ -332,6 +359,15 @@ self-reconcile is tracked in the agent-worktree repo).
 
 - **Project id is a parameter.** Pass the supplied `project_id` to the analyst
   and every project-issues call — never hardcode a project.
+- **Reject placeholder project ids.** Before using the resolved `project_id`
+  in any session `--name` or Phase D report, verify it does not match the
+  blocklist: strip any leading `_`, then compare case-insensitively against
+  `auto`, `default`, and `session`. If it matches, derive a slug from the last
+  path segment of the `path` or `web_url` field from the `find_projects` result
+  (e.g. `Seretos/obsidian-memory-gatekeeper` → `obsidian-memory-gatekeeper`).
+  If no unambiguous slug is available (both fields absent or empty), confirm
+  with the user. A non-placeholder id (e.g. `acme-api`) passes silently;
+  slash-normalisation still applies afterwards.
 - **Delegate the analysis.** In MULTI mode the `conflict-analyst` decides the
   set; you never compute footprints yourself. In SINGLE mode you only read the
   title for a slug — no footprint analysis.
