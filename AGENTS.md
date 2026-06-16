@@ -14,13 +14,20 @@ Skills and MCP tools take priority over raw file tools — and this **explicitly
 
 Concretely: any *"where is X defined / what does the code support / which Y exist / how does X work / find the callers of X"* question is a **code-understanding task → use the matching skill first** (e.g. the `serena-wrapper` symbol-aware tools), never raw Glob/Grep/Read.
 
-## Two-lane invariant (cross-file)
+## Dispatcher-guard invariant (cross-file)
 
-`orchestrate-tickets` runs **only** on the main checkout; `process-ticket` runs **only**
-inside a linked worktree on a feature branch. Each enforces a mirror-image guard (`HEAD`
-plus `git-dir` vs `git-common-dir`). They are a **matched pair**: if you touch one lane's
-guard, change the other's to match — otherwise a fleet and its workers can land in the same
-lane and collide. Neither skill knows about the other's guard, so this pairing lives here.
+Lane detection is now centralized in a single thin `dispatch` skill. Both `orchestrate-tickets`
+and `process-ticket` carry `disable-model-invocation: true` — neither is auto-selected by the
+model. The dispatcher runs `git rev-parse --git-dir` vs `--git-common-dir`, compares the
+outputs, and calls the appropriate backing skill.
+
+The branch+worktree guard inside `process-ticket`'s Preconditions 2 is now defense-in-depth
+(a backstop for power-user direct invocation), not the primary gate. The `orchestrate-tickets`
+lane guard (Preconditions 1) likewise remains as a backstop.
+
+**Invariant for contributors:** if you change the dispatcher's lane check logic, verify both
+backing skills still receive the correct invocation arguments. The "change one guard, update
+the other" rule no longer applies — there is only one guard.
 
 ## Developer and reviewer tool boundaries (denylist, not allowlist)
 

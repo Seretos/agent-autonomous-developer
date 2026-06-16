@@ -11,10 +11,11 @@ other plugins' MCP servers (see [Dependencies](#dependencies)).
 
 ## What it does
 
-Two skills, split into two lanes that never overlap:
+Three skills: one model-facing dispatcher that routes to two lane-specific backing skills:
 
 | Skill | Runs from | Does |
 |---|---|---|
+| **dispatch** | anywhere | Model-facing entry point. Normally selected automatically by the model; runs a git lane check and routes to the right skill. To invoke a backing skill directly, use `/orchestrate-tickets` or `/process-ticket`. |
 | **orchestrate-tickets** | the **main** checkout | Picks a parallel-safe set of open tickets (via the `conflict-analyst` subagent — disjoint file footprints **and** no unmet "must come after" dependency stated in a ticket; the rest are deferred, tagged `file-collision` or `logical-dependency`), creates one git worktree per ticket, and starts one idle background Claude session per worktree. Implements nothing itself. |
 | **process-ticket** | inside a **worktree** on a feature branch | Runs one ticket end-to-end through five subagents — `context-extractor → planner → developer → reviewer` — and ends with a pushed feature branch + an open **draft** PR and traceability comments on the ticket. |
 

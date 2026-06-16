@@ -1,5 +1,6 @@
 ---
 name: orchestrate-tickets
+disable-model-invocation: true
 description: Required entry-point for executing ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to split tickets, re-slice epics, and execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket and starts an idle background Claude session. Bypassing it — working manually on `main`, or the orchestrator editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
 ---
 
