@@ -111,12 +111,16 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   (`auth.loggedIn: false` but `auth.requiresOpenaiAuth` not `true`) is NOT treated as
   not-authenticated — the broker starts on-demand and the existing non-zero-exit degradation
   is the backstop. No opt-in setting.
-- **Why a direct `Bash` call to the companion script, not `/codex:review`.** That slash command
-  is `disable-model-invocation: true` (user-typed only) and subagents have no `Skill`/`Agent`
-  tool — so the only programmatic entries are `node "<script>" adversarial-review --wait --base
-  origin/<default-branch>` (normal path, diff ≤ ~180 KB) and `node "<script>" task
-  --prompt-file <tmpfile>` (oversized path, diff > ~180 KB). `--write` is never passed to
-  either: Codex must stay review-only, like the reviewer.
+- **Why a bundled script (`scripts/codex-review.mjs`), not a direct companion call.** The
+  slash command `/codex:review` is `disable-model-invocation: true` (user-typed only) and
+  subagents have no `Skill`/`Agent` tool. The old direct-companion paths (`adversarial-review
+  --wait --base origin/<default-branch>` and `task --prompt-file` size-branching) were
+  replaced by the bundled script because `adversarial-review` produces an empty diff in the
+  App-Server sandbox on Windows with unstaged changes — silently skipping the review. The
+  bundled script's `working-tree` mode runs `git add -A` then `git diff --staged` to collect
+  the diff robustly before feeding it to Codex via `task --prompt-file` — platform-independent,
+  works on Windows with unstaged changes. `--write` is never passed: Codex must stay
+  review-only, like the reviewer.
 - **Fragile bit.** The cross-plugin path discovery depends on the cache layout above; if the
   marketplace/plugin dir names change, discovery returns nothing and the reviewer **degrades
   silently** to its built-in review (never a hard error).
