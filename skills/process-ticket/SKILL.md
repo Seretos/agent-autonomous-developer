@@ -1,5 +1,6 @@
 ---
 name: process-ticket
+disable-model-invocation: true
 description: End-to-end ticket processing inside a prepared worktree on a feature branch — serial or parallel, one ticket at a time. Enforces mandatory safety gates: planner approval, developer QA/tests, code review (reviewer + optional Codex pass), draft PR (no force-push on shared branches), and traceability comments. Invoke e.g. "process ticket #42". Bypassing it — editing manually on `main`, or editing directly inside a worktree without this skill — forfeits all safety guarantees and is not permitted. Worktree/branch are prepared by orchestrate-tickets or the user; this skill never creates them.
 ---
 
@@ -50,7 +51,7 @@ checkout to *verify* behaviour (without editing) is not a bypass; *editing* is.
    the ticket number is missing, ask. If the project id is missing or unclear,
    resolve it via `find_projects` and confirm with the user — never guess.
    Capture `project_id` for every downstream call.
-2. **Branch + worktree guard.** This skill runs **only inside a worktree** on a
+2. **Branch + worktree guard.** This guard is now defense-in-depth; the dispatcher normally ensures the correct skill is loaded before reaching this point. This skill runs **only inside a worktree** on a
    feature branch — it is the worker half of `orchestrate-tickets` (which runs
    only on the main checkout). Two checks:
    - `git rev-parse --abbrev-ref HEAD` — if `main`/`master`, STOP.
