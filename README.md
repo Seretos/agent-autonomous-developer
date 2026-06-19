@@ -16,7 +16,7 @@ Three skills: one model-facing dispatcher that routes to two lane-specific backi
 | Skill | Runs from | Does |
 |---|---|---|
 | **dispatch** | anywhere | Model-facing entry point. Normally selected automatically by the model; runs a git lane check and routes to the right skill. To invoke a backing skill directly, use `/orchestrate-tickets` or `/process-ticket`. |
-| **orchestrate-tickets** | the **main** checkout | Picks a parallel-safe set of open tickets (via the `conflict-analyst` subagent — disjoint file footprints **and** no unmet "must come after" dependency stated in a ticket; the rest are deferred, tagged `file-collision` or `logical-dependency`), creates one git worktree per ticket, and starts one idle background Claude session per worktree. Implements nothing itself. |
+| **orchestrate-tickets** | the **main** checkout | Picks a parallel-safe set of open tickets (via the `conflict-analyst` subagent — disjoint file footprints **and** no unmet "must come after" dependency stated in a ticket; the rest are deferred, tagged `file-collision` or `logical-dependency`), and creates one git worktree per ticket. Implements nothing itself. |
 | **process-ticket** | inside a **worktree** on a feature branch | Runs one ticket end-to-end through five subagents — `context-extractor → planner → developer → reviewer` — and ends with a pushed feature branch + an open **draft** PR and traceability comments on the ticket. |
 
 The five subagents (`agents/`): `conflict-analyst`, `context-extractor`, `planner`,
@@ -73,10 +73,9 @@ orchestrate tickets in <project>            # all open tickets
 orchestrate ticket 7 in <project>           # one ticket
 ```
 
-It creates the worktrees and starts idle background sessions. In each session you then run:
+It creates the worktrees. In each worktree you then run:
 
 ```
-/reload-plugins        # fresh worktree sessions don't auto-load plugin MCPs
 process ticket #7 in <project>
 ```
 

@@ -125,8 +125,8 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   marketplace/plugin dir names change, discovery returns nothing and the reviewer **degrades
   silently** to its built-in review (never a hard error).
 - **Teardown coupling (cross-file).** The Codex pass spawns an `app-server-broker.mjs` helper
-  that can **outlive** its `--bg` session — it isn't a daemon-tracked job, so `claude stop`
-  doesn't reach it. `orchestrate-tickets` teardown must force-kill that broker **before**
+  that is not a daemon-tracked job and is not stopped by worktree teardown automatically.
+  `orchestrate-tickets` teardown must force-kill that broker **before**
   `worktree_remove`, or on Windows the worktree dir stays locked, the remove half-completes,
   and the agent-worktree MCP state desyncs into an unremovable phantom entry. If you change how
   the reviewer launches Codex (process name or `--cwd`), update the teardown matcher in
