@@ -79,9 +79,15 @@ If the context-extractor is blocked by the MCP-availability hook (i.e. the
 and stop — do not attempt Phase 2 with an empty or missing summary.
 
 ### Phase 2 — planner (read-only, question-loop)
-Spawn the planner **with a name** so you can resume it:
-`Agent(name="planner-<ticket>", subagent_type="planner", prompt=…)`. Pass the
-`context_summary` and the repo cwd.
+Spawn the planner **synchronously and unnamed**:
+`Agent(subagent_type="planner", prompt=…, run_in_background: false)`. Pass
+the `context_summary` and the repo cwd.
+
+Do not pass a `name`. Naming this call switches it into background/mailbox
+delivery regardless of `run_in_background`, and the planner has no
+`SendMessage` tool to push a reply back once it's in that mode — the
+orchestrator then only ever receives `idle_notification` pings and Phase 2
+deadlocks permanently. Always use a plain, unnamed, foreground call.
 
 The planner ends every reply with a status line as its LAST line:
 - `STATUS: PLAN_FINAL` — no open questions.
@@ -89,17 +95,22 @@ The planner ends every reply with a status line as its LAST line:
   section (each question 2-4 options, one marked *(recommended)*).
 
 Loop:
-1. Read the status line.
+1. Read the status line of the synchronous reply.
 2. `PLAN_FINAL` → capture full plan text as `plan`, exit loop.
 3. `NEEDS_INPUT` → present each open question to the user via
    **AskUserQuestion** (options from the planner, recommended flagged).
-   Collect answers, then **resume the same agent** with
-   `SendMessage(name="planner-<ticket>", …)` carrying the answers keyed to
-   question numbers. Back to step 1.
+   Collect answers, then issue a **fresh synchronous planner call** (same
+   unnamed, `run_in_background: false` pattern as above) whose prompt
+   inlines: the `context_summary`, the repo cwd, the planner's full previous
+   plan draft **verbatim**, and the user's answers keyed to question numbers
+   — with the explicit instruction to fold the answers into that same plan
+   and revise, not start over. Back to step 1.
 
-Never re-spawn a fresh planner inside the loop — always `SendMessage` the
-named one so its context survives. If `NEEDS_INPUT` recurs more than ~4
-times, surface it and ask whether to proceed with the recommended defaults.
+Each round is a brand-new subagent process with no memory of the previous
+one — continuity comes from the orchestrator re-inlining the full plan draft
+into every follow-up prompt, not from any runtime session. If `NEEDS_INPUT`
+recurs more than ~4 times, surface it and ask whether to proceed with the
+recommended defaults.
 
 **After PLAN_FINAL — post short plan comment.** Condense `plan` to a
 short-form summary (goal + approach bullets + affected files; NOT every
