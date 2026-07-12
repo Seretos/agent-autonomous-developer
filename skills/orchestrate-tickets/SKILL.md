@@ -1,16 +1,23 @@
 ---
 name: orchestrate-tickets
 disable-model-invocation: true
-description: Required entry-point for executing ticket work — one ticket, several, or all open — for a project (language/stack auto-detected). Use to split tickets, re-slice epics, and execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet is the optimisation on top. Creates one worktree per ticket. Bypassing it — working manually on `main`, or the orchestrator editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
+description: Required entry-point for executing ticket work — one ticket, several, or all open — for a project (stack auto-detected). Use to split tickets, re-slice epics, and execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet drives per-wave process-ticket(mode=integration) runs to a shared integration branch, merges and gates each wave, and opens exactly one combined draft PR at the end. Bypassing it — manual work on `main`, or editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
 ---
 
 # orchestrate-tickets — fleet orchestrator
 
-You dispatch ticket work across parallel, isolated worktrees. You decide *what*
-runs (via the `conflict-analyst` subagent), create the worktrees, and stop. You
-implement nothing. The user drives each worktree session independently:
-`process ticket #<n>` (the `process-ticket` skill: context → plan → code →
-review → draft-PR).
+You drive ticket work across parallel, isolated worktrees end-to-end, wave by
+wave, to one combined PR. You decide *what* runs (via the `conflict-analyst`
+subagent, laying tickets out into ordered waves), create each wave's
+worktrees, and then drive `process-ticket` yourself for every wave member in
+`mode=integration` (context → plan → code → review). You implement nothing —
+`process-ticket` still owns the actual editing — but you no longer stop after
+worktree creation: you merge each wave's approved-and-green members into a
+shared integration branch, gate the merge with a full-suite run, push on
+green, and repeat for the next wave. At the end of the run you open the
+**single combined draft PR** yourself — the user is not required to drive any
+worktree session manually. See Phase C (the wave loop) and Phase D (the
+single combined PR) below for the full mechanics.
 
 There is **no cwd→project auto-detection**. The `project_id` is supplied at
 invocation (see Inputs); pass it to the analyst and to every project-issues call.
@@ -67,9 +74,12 @@ MULTI mode.
 ## Fit-awareness — when this workflow is (and isn't) the right tool
 
 This plugin's execution model is **isolated workers with no shared context**: each
-ticket gets its own worktree and its own PR.
-That model has fixed overhead per ticket and a parallelism ceiling set by how
-independent the tickets are. It fits some ticket shapes well and others poorly.
+ticket gets its own worktree, but tickets merge wave-by-wave into one shared
+integration branch and land in exactly **one combined PR** per run, not one
+PR per ticket.
+That model has fixed overhead per ticket (worktree creation, review) and a
+parallelism ceiling set by how independent the tickets are. It fits some
+ticket shapes well and others poorly.
 
 ### Good fit signals
 
@@ -101,8 +111,10 @@ independent the tickets are. It fits some ticket shapes well and others poorly.
   full-stack slice of the feature) fits the isolated model; horizontal slicing
   does not.
 - **High ticket count with low parallelism** — when most tickets end up
-  deferred, the fixed per-ticket overhead (worktree creation, PR overhead)
-  dominates over the parallelism actually gained.
+  deferred, the fixed per-ticket overhead (worktree creation, review) dominates
+  over the parallelism actually gained. This is not PR overhead — there is
+  exactly one PR per run, not per ticket — but worktree creation and review
+  still scale with ticket count.
 - **`min_wave_width == 1`** — at least one wave is a serial bottleneck: only
   one ticket can run in that wave. A narrow bottleneck wave stalls all
   downstream work.
@@ -171,16 +183,27 @@ invoke the conflict-analyst and produces no fit evaluation.
    from the project's main checkout — otherwise the worktrees it spawns and the
    orchestrator's own branch/state collide with the workers.
 1. **Capture repo + base branch.** `git rev-parse --show-toplevel` → `repo_root`.
-   Determine the repo's default branch → `base`. All worktrees branch off `base`.
+   Determine the repo's default branch → `base`. `base` is only the starting
+   point for the run's integration branch (step 3) — worktrees branch off the
+   **integration branch's current head**, not `base` directly (see Phase C).
 2. **Refresh `base` from the remote — guard against stale worktrees.** Before
    creating any worktree, bring the main checkout's default branch up to date so
-   the worktrees don't branch off a stale `base`: `git fetch origin` then
-   `git pull --ff-only` (you are on the default branch per Precondition 0). If it
-   can't fast-forward (the local branch has diverged) or a dirty working tree
-   blocks it, **STOP** and tell the user to reconcile the main checkout first —
-   never merge, rebase, or force. Stopgap: `worktree_create` does **not** refresh
-   from the remote itself yet, so the skill must do it here.
-3. **Worktree mechanism — agent-worktree MCP only.** Worktree creation uses the
+   the integration branch doesn't start from a stale `base`: `git fetch origin`
+   then `git pull --ff-only` (you are on the default branch per Precondition 0).
+   If it can't fast-forward (the local branch has diverged) or a dirty working
+   tree blocks it, **STOP** and tell the user to reconcile the main checkout
+   first — never merge, rebase, or force. Stopgap: `worktree_create` does
+   **not** refresh from the remote itself yet, so the skill must do it here.
+3. **Create the shared integration branch.** After the refresh above, create a
+   run-scoped integration branch off the freshly-pulled `base`:
+   `git branch <integration> <base>` where `<integration>` is
+   `integration/<run-slug>` (`<run-slug>` — a short, unique identifier for this
+   run, e.g. a date-stamp plus the lead ticket number, such as
+   `integration/2026-07-13-171`). Push it once right away:
+   `git push -u origin <integration>`. Capture `<integration>` — every wave's
+   worktrees, merges, and the final combined PR all key off this one branch for
+   the rest of the run.
+4. **Worktree mechanism — agent-worktree MCP only.** Worktree creation uses the
    **agent-worktree MCP** (`worktree_create`). If that MCP is **not loaded** in
    this session (fresh sessions don't auto-load plugin MCPs), **STOP** and tell
    the user to `/reload-plugins` (or do a one-time `--scope user` install of the
@@ -189,39 +212,44 @@ invoke the conflict-analyst and produces no fit evaluation.
    Windows leaves locked/ports-leaked state on teardown). Confirm the MCP is
    available before Phase B.
 
-## Phase A — decide the target tickets
+## Phase A — decide the target tickets, laid out into waves
 
 **SINGLE mode** (one ticket `#n`): do **not** spawn the analyst. Fetch only the
 title for the branch slug — `get_ticket(project_id, n, include_comments=False,
 include_relations=False)` — and form `branch = fix/<n>-<slug>` (title
-lower-cased, non-alphanumerics → hyphens, ~4 words). The target set is just
-`[{ticket: n, branch}]`.
+lower-cased, non-alphanumerics → hyphens, ~4 words). **SINGLE mode still
+synthesizes one wave** — `waves = [[{ticket: n, branch}]]`, a single-member
+wave 0 — so it flows through the exact same wave-based pipeline as MULTI mode
+(one iteration of Phase C, one integration-gate run, one final PR), just with
+nothing to parallelize.
 
 **MULTI mode** (none, or several): spawn the analyst —
 `Agent(subagent_type="conflict-analyst", prompt=…)` — passing `project_id` and
 either "all open" or the explicit subset. It returns a readable summary and a
-trailing fenced ```json block with `parallel` and `deferred` arrays. Parse the
-**json block only**; the target set is `parallel`. Each `deferred` entry carries
+trailing fenced ```json block with `waves` and `deferred` arrays. Parse the
+**json block only**; the target set is the ordered `waves` array — a list of
+parallel-safe sets (`waves[0]`, `waves[1]`, …), each element keeping the
+`ticket`/`branch`/`title`/`files`/`scope` shape. Each `deferred` entry carries
 a **`type`**: `"file-collision"` (footprint overlap) or `"logical-dependency"`
 (disjoint files, but the ticket states it must come *after* an unmet predecessor —
 e.g. a doc/integration ticket). Keep that `type` through to the confirm step
 (Phase B) — the two kinds mean different things to the human.
 
-## Phase B — confirm, then create worktrees
+## Phase B — confirm the fleet
 
 1. **Confirm before launching.** Present the planned fleet to the user via
-   **AskUserQuestion**: the tickets that will run in parallel (with branch +
+   **AskUserQuestion**: the waves in order (each wave's tickets, with branch +
    footprint), and the deferred ones **grouped by `type`** — `file-collision`
    (would conflict in a shared file) vs `logical-dependency` (clean footprint but
    must wait on an unmet predecessor, with which tickets in its `depends_on`).
-   Surfacing the `logical-dependency` group explicitly is the point: the parallel
-   set is conflict-free **and** dependency-respecting, so the human sees that
+   Surfacing the `logical-dependency` group explicitly is the point: each wave
+   is conflict-free **and** dependency-respecting, so the human sees that
    ordering was checked, not silently skipped. If the analyst returned **no**
    deferrals at all, state plainly that logical-ordering dependencies were
    checked and none applied — so the blind spot never stays silent.
 
    **Fit Warning (MULTI mode only, when `fit.verdict == "poor"`):** After
-   presenting the parallel and deferred groups — and before the go-ahead question
+   presenting the waves and deferred groups — and before the go-ahead question
    — display a **Fit Warning** block. Include:
    - The specific signals that triggered `"poor"`, drawn directly from the
      analyst's `fit` field:
@@ -236,48 +264,127 @@ e.g. a doc/integration ticket). Keep that `type` through to the confirm step
    When `fit.verdict == "good"`, or in SINGLE mode (no `fit` field), show no
    fit block — proceed directly to the go-ahead question.
 
-   Launching N worktrees is hard to undo, so get a go-ahead (or let the user
-   drop/keep tickets) first. For SINGLE mode keep it light, but still confirm
-   the one launch.
-2. **Create one worktree per selected ticket, SEQUENTIALLY.** Never in parallel —
+   Launching N worktrees across M waves is hard to undo, so get a go-ahead (or
+   let the user drop/keep tickets) first. For SINGLE mode keep it light, but
+   still confirm the one launch.
+
+## Phase C — the wave loop
+
+Iterate the `waves` array **wave-by-wave, in order**. For each wave:
+
+1. **Create that wave's worktrees, SEQUENTIALLY.** Never in parallel —
    concurrent `git worktree` ops on one repo race on the index lock.
-   `worktree_create(repo_root, branch=<branch>, base=<base>)`. Capture the
-   returned `path` for each — **use that returned path**, never construct a
+   `worktree_create(repo_root, branch=<branch>, base=<integration>)` — branch
+   off the **current integration-branch head**, not `base` directly, so each
+   wave builds on top of everything already merged from earlier waves. Capture
+   the returned `path` for each — **use that returned path**, never construct a
    directory from the branch name (the `fix/<n>-…` convention contains a `/`).
+2. **Drive `process-ticket` per member, in parallel.** For every ticket in the
+   wave, invoke `process-ticket` with `mode=integration` and
+   `worktree_path=<path>` (the path captured above). Each member runs the full
+   Phase 1-4 pipeline (context → plan → code → review) and does its own local
+   commit, but does **not** push, open a PR, or comment — this skill owns that,
+   once, at the end of the whole run (Phase D). Collect each member's ending
+   state: `APPROVE`/`CHANGES_REQUESTED` verdict and test PASS/FAIL.
+3. **Checkout the integration branch, then B4 — clean-checkout gate, before
+   any merge.** On the main checkout (`repo_root`), first switch onto the
+   integration branch itself: `git checkout <integration>` (or
+   `git switch <integration>`) — the checkout stayed on `base` since
+   Precondition 0/3, and the merges in step 4 below must land on
+   `<integration>`, not `base`. Then confirm there is nothing uncommitted
+   sitting in the way of the merges about to happen: `git status --porcelain`
+   and `git diff` must both be **empty**. If either is non-empty, **STOP** —
+   do not merge into a dirty integration-branch checkout.
+4. **Merge approved + green members into the integration branch.** For every
+   member that ended `APPROVE` with a green test run, merge its branch with
+   `git merge --no-ff <branch>` into `<integration>`. Members that were
+   `CHANGES_REQUESTED` or reported failing tests are **dropped from this
+   merge** — no special handling needed, they simply roll into a later
+   (possibly solo, single-member) wave for a subsequent run.
+5. **Integration gate — run the full suite on the integration branch**, after
+   merging the wave's approved members. This is the cross-wave safety net: it
+   catches interactions between this wave's changes and everything merged so
+   far, which no single member's own test run could see.
+   - **On GREEN:** tear down this wave's worktrees (see Teardown below, with
+     the B2/B3 extensions), **then push the integration branch** —
+     `git push origin <integration>` is a **hard precondition before the next
+     wave creates any worktree (B1)**. Never let a later wave branch off an
+     unpushed integration head.
+   - **On RED: STOP immediately. There is no automatic revert.** Leave the
+     state exactly as it is:
+     - The wave's `--no-ff` merge commits remain in the **local** integration
+       branch at the failed state, **unpushed** (push only ever happens after
+       green, per B1 above) — so a pushed integration branch is never broken.
+     - The wave's worktrees are left **intact** — **skip teardown** — so the
+       user can inspect them.
+     - Already-pushed prior waves **stay pushed** — no rewind, no force-push.
+     Report to the user: **which wave failed**, **which member branches got
+     merged** into the failed attempt, the **failing test names**, and that
+     resolution (fix, drop a member and re-merge, or abandon the run) is the
+     user's call, not this skill's.
 
-## Phase C — report
+## Phase D — end of run: one combined draft PR
 
-Print one table: `ticket · branch · worktree path`. Then list the deferred
-tickets (what still needs a later, sequential pass), keeping the
-`file-collision` vs `logical-dependency` split — for `logical-dependency` ones,
-name the predecessors so the user knows what must land first. Then stop — the
-worktrees are ready; the user drives each one from here.
+Once every wave has been processed (all merged-and-pushed, or the run STOPped
+per the RED path above and the user has resolved it), close out the run:
+
+1. **Open exactly ONE draft PR** via MCP: `create_pr(project_id=<project>,
+   title=<recap>, head=<integration>, base=<default branch>, draft=True,
+   body=<run recap listing every merged ticket + "Closes #<n>" for each>)`.
+   Never type `#ai-generated` — the MCP prepends it. (`Closes #<n>` auto-links
+   on GitHub/GitLab; if the project's provider is Azure DevOps or Jira this
+   keyword differs — see AGENTS.md's Provider-portability note, which still
+   applies here unchanged.)
+2. **Post one link-comment per processed ticket** —
+   `add_comment(project_id=<project>, ticket_id=<#>,
+   body="Draft PR opened: <PR URL>. <one-line status>")` — for every ticket
+   that made it into the integration branch across every wave.
+3. **Report to the user:** the PR URL, the full wave-by-wave recap (what
+   merged, what was deferred, what — if anything — is still pending
+   resolution from a RED gate).
+4. **Switch the main checkout back to the default branch.** The main checkout
+   has been sitting on `<integration>` since Phase C step 3; now that the
+   combined PR is open, `git checkout <base>` (or `git switch <base>`) on the
+   main checkout so Precondition 0 holds again for the next invocation of this
+   skill.
 
 ## Teardown — remove a worktree
 
-When a worktree is no longer needed (its PR merged, or the user asks to tear it
-down), remove it **safely and statelessly**:
+When a worktree is no longer needed (its wave's integration gate went green
+and it has been merged, or the user asks to tear one down after resolving a
+RED gate), remove it **safely and statelessly**:
 
-1. **Kill any orphaned Codex broker holding this worktree.** If the worktree's
-   `process-ticket` run invoked the reviewer's Codex pass, a
-   `node … app-server-broker.mjs --cwd <worktree-path> …` helper can still be
-   running and holding the directory open — it is **not** a `claude --bg` job, so
-   `claude stop` does not reach it and force-killing it triggers **no** daemon
-   respawn. Kill it **before** `worktree_remove`, while git still knows the
-   worktree, so the MCP's remove stays in sync. On Windows / PowerShell (surgical
-   match — the broker script **and** this worktree's path):
+1. **B2 — kill any process still holding this worktree open.** A
+   `process-ticket` run can leave more than one long-lived helper bound to the
+   worktree directory: the reviewer's optional Codex pass spawns
+   `node … app-server-broker.mjs --cwd <worktree-path> …`, and Serena
+   navigation tooling can leave its LSP chain (`node`, `uvx`/`uv`,
+   `serena.exe`, `python.exe`) running against the same path. None of these
+   are `claude --bg` jobs, so `claude stop` does not reach them, and
+   force-killing them triggers **no** daemon respawn. Kill **any process whose
+   command-line or cwd references the worktree path** — not just a
+   name-matched allowlist — **before** `worktree_remove`, while git still
+   knows the worktree, so the MCP's remove stays in sync. On Windows /
+   PowerShell (match on the worktree path, generalized beyond a single process
+   name):
    ```powershell
    Get-CimInstance Win32_Process |
      Where-Object {
-       $_.Name -eq 'node.exe' -and
-       $_.CommandLine -like '*app-server-broker.mjs*' -and
-       $_.CommandLine -like '*<worktree-path>*'
+       $_.CommandLine -like '*<worktree-path>*' -and
+       ($_.Name -in @('node.exe', 'uvx.exe', 'uv.exe', 'serena.exe', 'python.exe') -or
+        $_.CommandLine -like '*app-server-broker.mjs*')
      } |
      ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
    ```
    The directory-lock failure is Windows-specific (POSIX lets `git worktree remove`
-   unlink a directory with an open handle), but killing the orphan is good hygiene
-   everywhere — POSIX equivalent: `pkill -f "app-server-broker.mjs.*<worktree-path>"`.
+   unlink a directory with an open handle), but killing orphans is good hygiene
+   everywhere — POSIX equivalent, generalized the same way:
+   `pkill -f "<worktree-path>"` (broad enough to catch the broker, the Serena
+   LSP chain, or any other process rooted in that path). Caveat: this is
+   intentionally broad — it kills **any** process whose command line
+   references the worktree path, not just the Codex broker/Serena LSP chain,
+   so a user-launched editor or shell pointed at that path would also be
+   killed.
 2. **Confirm the directory is free**, then remove the worktree via the
    agent-worktree MCP (`worktree_remove`) so it releases ports, runs teardown,
    and updates its state store. Do not `rm -rf` the directory or run
@@ -286,11 +393,28 @@ down), remove it **safely and statelessly**:
 **Recovery — already-desynced phantom entry.** If a worktree was left desynced
 (git no longer lists it, the directory persists, and the MCP still shows
 `status: created`), `worktree_remove` — even with `force=true` — fails with
-`fatal: '<path>' is not a working tree`. Recover by hand: kill the broker (snippet
-above) → remove the directory (`Remove-Item -Recurse -Force '<worktree-path>'`) →
-delete the merged local branch (`git branch -d <branch>`). The phantom MCP entry
-then remains — cosmetic; no agent-worktree MCP call currently prunes it (its own
+`fatal: '<path>' is not a working tree`. Recover by hand: kill any lingering
+process per B2 above → remove the directory
+(`Remove-Item -Recurse -Force '<worktree-path>'`) → delete the merged local
+branch (`git branch -d <branch>`). The phantom MCP entry then remains —
+cosmetic; no agent-worktree MCP call currently prunes it (its own
 self-reconcile is tracked in the agent-worktree repo).
+
+**B3 — force-unregister fallback (same branch name reuse).** The recovery
+above frees the *directory* and the *local branch*, but the agent-worktree
+MCP's own state can still list the phantom entry against that branch name,
+which can block creating a **new** worktree under the **same original branch
+name** later (e.g. a later wave re-attempting a dropped member on
+`fix/9-slug`). If `worktree_create` refuses to reuse the branch name because
+the MCP's state still shows the old (already physically-removed) entry as
+`created`, **force-unregister without a physical delete**: call
+`worktree_remove(..., force=true)` again purely to clear the MCP's bookkeeping
+entry (it is a no-op on disk at this point — the directory is already gone)
+rather than treating the MCP's stale record as a hard block. This frees the
+branch name for reuse without requiring a rename. If the MCP has no
+force-unregister-only affordance yet, fall back to picking a disambiguated
+branch name (e.g. `fix/9-slug-retry`) for the retry and note the phantom entry
+for manual cleanup — never silently fail to retry a dropped member.
 
 ## Hard rules
 
@@ -305,20 +429,40 @@ self-reconcile is tracked in the agent-worktree repo).
   If no unambiguous slug is available (both fields absent or empty), confirm
   with the user. A non-placeholder id (e.g. `acme-api`) passes silently.
 - **Delegate the analysis.** In MULTI mode the `conflict-analyst` decides the
-  set; you never compute footprints yourself. In SINGLE mode you only read the
+  waves; you never compute footprints yourself. In SINGLE mode you only read the
   title for a slug — no footprint analysis.
 - **Parallel-safe = disjoint file footprints AND no unmet logical dependency**
   (the analyst's contract). Tickets that share a source file, *or* that state an
   explicit "must come after #x" dependency on a predecessor not yet done, are
-  never launched together; they go to `deferred` (tagged `file-collision` or
+  never placed in the same wave; they go to `deferred` (tagged `file-collision` or
   `logical-dependency`) for a later run. Surface the `logical-dependency` group at
   the confirm step so the ordering check is visible, never silently skipped.
 - **agent-worktree MCP only — no raw-git fallback.** If the MCP isn't loaded,
   hard-fail and tell the user to `/reload-plugins`. Never `git worktree add`.
-- **Sequential, not parallel**, for worktree creation (git index lock races).
-- **Teardown order is load-bearing:** kill the worktree's Codex broker → confirm
-  the dir is free → `worktree_remove`. The **Codex broker** is a plain helper
-  process — force-killing it is correct and safe.
+- **Sequential, not parallel**, for worktree creation within a wave (git index
+  lock races). Driving `process-ticket` for each wave member IS parallel —
+  only the `git worktree` creation step is serialized.
+- **Worktrees branch off the integration-branch head, not `base`.** Only the
+  integration branch itself (created once, at run start) branches off `base`.
+  Every wave's worktrees branch off whatever the integration branch's head is
+  at that point in the run, so each wave builds on everything merged before it.
+- **B1 — push is a hard precondition before the next wave.** The integration
+  branch is pushed only after a wave's integration gate goes GREEN, and that
+  push must complete before the next wave creates any worktree. Never let a
+  later wave branch off an unpushed integration head.
+- **No automatic revert on a RED integration gate.** STOP immediately, leave
+  the failed wave's merge commits local/unpushed, leave its worktrees intact
+  (skip teardown), and never rewind already-pushed prior waves. Resolution is
+  the user's call.
+- **Teardown order is load-bearing:** kill any process still holding the
+  worktree open (B2 — the Codex broker and/or the Serena LSP chain, matched by
+  worktree path, not a narrow name allowlist) → confirm the dir is free →
+  `worktree_remove`. These are plain helper processes — force-killing them is
+  correct and safe.
+- **Exactly one combined PR, at the very end of the run.** Individual wave
+  members never open their own PR or push their own branch — `process-ticket`
+  runs in `mode=integration` for every wave member specifically so this skill
+  is the sole owner of the push/PR/comment steps, once, in Phase D.
 - **Lane separation (load-bearing).** orchestrate-tickets runs **only** from the
   main checkout; `process-ticket` runs **only** inside a worktree on a feature
   branch. Never invoke orchestrate-tickets from a worktree, and never run

@@ -115,8 +115,9 @@ call — never assume a fixed one.
      boundaries.
    - **`ticket_count`** — total number of candidates (before collision/dependency
      filtering).
-   - **`parallel_count`** — number of tickets in the `parallel` array (selected in
-     step 5).
+   - **`parallel_count`** — number of tickets selected to run at all across
+     every wave (the union of every `waves[i]` entry — i.e. the step-8 layering
+     of the step-5 selection, not `waves[0]` alone).
    - **`verdict`** — `"poor"` if **any** of the following hold:
      - `dag_depth > 2`
      - `min_wave_width == 1`
@@ -133,11 +134,38 @@ call — never assume a fixed one.
 
 7. **Name a branch per selected ticket:** `fix/<n>-<slug>`, where `<slug>` is the
    ticket title lower-cased, non-alphanumerics → hyphens, trimmed to ~4 words.
+8. **Lay the selected tickets out into ordered waves.** The single `parallel`
+   set from step 5 is only the *first* parallel-safe set. Build the full
+   **DAG-layering** on top of the same file-disjointness and dependency data
+   you already computed (this is the same layering `min_wave_width` already
+   uses in the fit assessment — now exposed in full, not just summarized):
+   - **`waves[0]`** — every candidate with no unmet dependency, file-disjoint
+     from every other member of `waves[0]`. This is exactly the step-5
+     `parallel` set.
+   - **`waves[1]`** — candidates whose only dependencies are satisfied by
+     tickets in `waves[0]` (i.e. `depends_on` ⊆ `waves[0]` ticket numbers,
+     union closed/merged predecessors), file-disjoint within `waves[1]`
+     itself. Only **intra-wave** (concurrent) file overlap matters here — a
+     ticket reusing a file that a `waves[0]` ticket already touched is not a
+     conflict, since waves run sequentially with a merge gate in between and
+     `waves[0]` is fully merged before `waves[1]` starts. A ticket that would
+     collide on files with another `waves[1]` candidate stays out of
+     `waves[1]` and is pushed to a later wave; it is only `deferred` if no
+     later wave can ever be file-disjoint for it (e.g. it permanently collides
+     with a candidate that itself cannot move any later, leaving no wave where
+     both fit).
+   - **`waves[2]`, `waves[3]`, …** — continue the same layering: each wave's
+     members depend only on tickets already placed in strictly earlier waves,
+     and are file-disjoint within their own wave. Keep layering until every
+     ticket that can run at all (i.e. is not held back for `deferred` reasons)
+     has a wave.
+   - Each wave element keeps the **same entry shape** as the old `parallel`
+     entries: `ticket`, `branch`, `title`, `files`, `scope`.
 
 ## What you return
 
-A short readable summary (one table: ticket · branch · footprint files · scope),
-then a **deferred** list (ticket · **why** — `file-collision` or
+A short readable summary (one table: ticket · branch · footprint files · scope
+· wave), then a **deferred** list (ticket · **why** — `file-collision` or
 `logical-dependency` · the file(s) or predecessor ticket(s) involved · which
 selected/blocking ticket). Make the deferral *type* visible in the prose, not
 only the JSON, so the human reading the confirm step sees that some tickets are
@@ -146,11 +174,19 @@ block as the LAST thing in your reply — the orchestrator parses ONLY this bloc
 
 ```json
 {
-  "parallel": [
-    {"ticket": "7", "branch": "fix/7-token-refresh",
-     "title": "refresh the auth token before expiry …",
-     "files": ["src/yourpkg/auth.py"],
-     "scope": "token refresh + neutral empty-state hint"}
+  "waves": [
+    [
+      {"ticket": "7", "branch": "fix/7-token-refresh",
+       "title": "refresh the auth token before expiry …",
+       "files": ["src/yourpkg/auth.py"],
+       "scope": "token refresh + neutral empty-state hint"}
+    ],
+    [
+      {"ticket": "11", "branch": "fix/11-refresh-metrics",
+       "title": "emit a metric when the token refresh path fires …",
+       "files": ["src/yourpkg/metrics.py"],
+       "scope": "metrics hook on the refresh path landed in wave 0"}
+    ]
   ],
   "deferred": [
     {"ticket": "3", "type": "file-collision",
@@ -181,10 +217,11 @@ shared file(s) and the selected ticket). For `logical-dependency` fill
 `depends_on` (the unmet predecessor ticket numbers); `collides_with` may be empty
 and `files` is informational. `reason` is always a one-line human explanation.
 
-If only one candidate survives, return it as the sole `parallel` entry with an
-empty `deferred` (nothing was held back). If none survive (all in flight, all
-conflicting, or all blocked by unmet dependencies), return `parallel` as `[]`
-but **populate `deferred` fully** — every held ticket must appear with its
+If only one candidate survives, return it as the sole entry of the sole
+`waves[0]` array with an empty `deferred` (nothing was held back). If none
+survive (all in flight, all conflicting, or all blocked by unmet
+dependencies), return `waves` as `[]` but **populate `deferred` fully** —
+every held ticket must appear with its
 `type`, `reason`, and the relevant `depends_on`/`collides_with`/`files` fields.
 The orchestrator (Phase B) parses only this JSON block to group held tickets by
 `type` for the user; an empty `deferred` when tickets were held throws that data
@@ -196,7 +233,7 @@ in the `deferred` array, not only in prose.
 
 - **Fit assessment is always computed in MULTI mode and always appears in the JSON
   output.** It is informational — the analyst never suppresses or modifies the
-  `parallel` set based on fit. The human at Phase B decides whether to proceed.
+  `waves` selection based on fit. The human at Phase B decides whether to proceed.
 - **Read-only.** No `Edit`, `Write`, `Bash`. No project-issues write calls. Never
   create a worktree, branch, comment, or PR — that is the orchestrator's job.
 - **Footprints come from the code, not the title.** Always confirm the implicated
@@ -207,7 +244,7 @@ in the `deferred` array, not only in prose.
 - **Disjoint footprint is necessary, not sufficient.** A ticket that states an
   explicit ordering dependency (body marker or `blocked_by` relation) on an unmet
   predecessor is **deferred as `logical-dependency`** even when its files don't
-  collide. Never put a clean-but-too-early ticket in `parallel`. When in doubt
+  collide. Never put a clean-but-too-early ticket into any `waves` entry. When in doubt
   about whether a phrase is a real ordering dependency, defer it and say why —
   same conservative bias as file-level conflicts.
 - **Only the dependency, never invent ordering.** Defer for a dependency only when
