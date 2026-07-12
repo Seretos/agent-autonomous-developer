@@ -62,6 +62,58 @@ server has write operations that the reviewer (or developer) must not use, add
 them to the respective `disallowedTools:` list. The agents' Hard Rules remain
 the behavioral backstop, but the denylist is the primary enforcement mechanism.
 
+## Wave-based fleet orchestration + integration branch (cross-file)
+
+`orchestrate-tickets` runs as a **wave-based fleet** over a single shared
+**integration branch** (`integration/<run-slug>`, created off the refreshed
+`base` at run start and pushed once), not a one-worktree-per-ticket-then-stop
+model. The `conflict-analyst` lays the selected tickets out into an ordered
+`waves` array (DAG-layered parallel-safe sets) instead of a single flat
+`parallel` set; `orchestrate-tickets` iterates `waves` in order. Per wave: its
+worktrees branch off the **current integration-branch head** (not `base`
+directly — only the integration branch itself branches off `base`);
+`process-ticket` runs per member in `mode=integration`; a B4 clean-checkout
+gate runs before merging; approved-and-green members are merged `--no-ff`
+into the integration branch; a full-suite **integration gate** runs on the
+result. On GREEN, the wave's worktrees are torn down and the integration
+branch is **pushed before the next wave creates any worktree (B1)** — a
+hard precondition, never skipped. On RED, the run **STOPs immediately with no
+automatic revert**: the failed wave's merge commits stay local/unpushed, its
+worktrees stay intact for inspection, and already-pushed prior waves are never
+rewound — resolution is the user's call. At the end of the run, exactly
+**one** combined draft PR is opened (`head=<integration-branch>`) with
+`Closes #<n>` for every processed ticket, followed by one link-comment per
+ticket.
+
+This is the concrete implementation of the isolated-worker model described in
+"Why ticket-slicing knowledge lives in the orchestrator, not a standalone
+skill" below — the `process-ticket` `mode` parameter (`solo` default vs.
+`integration`, orchestrator-invoked) is the single-pipeline mechanism that
+lets the same skill serve both a manually-driven single worktree and a
+wave-orchestrated fleet member without forking the pipeline: `solo` keeps
+today's own-push/own-PR/own-comment behaviour; `integration` runs the
+identical Phase 1-4 and local commit but yields push/PR/comment to the
+caller, because the caller is merging multiple members into one shared
+branch and opening one combined PR, not one per ticket.
+
+**Invariant for contributors:** if you change the wave loop's merge, gate, or
+push ordering in `skills/orchestrate-tickets/SKILL.md`, keep B1 (push before
+next wave) and the RED no-auto-revert behavior intact — they are what makes a
+pushed integration branch a safe, always-green base for the next wave to
+build on.
+
+**B5 — developer working-directory/Serena-project safeguard (distinct from
+B4).** Under wave-based parallel processing, several `developer` subagents can
+run concurrently across different worktrees; `agents/developer.md` documents
+a **B5** safeguard — verifying the working directory (`git -C <worktree>
+rev-parse --show-toplevel`) and the active Serena project match the intended
+worktree, both before the first edit and again immediately before handing off
+for commit — so a silent context mismatch can't ship a commit built in the
+wrong tree. **B5 is deliberately a different label from B4** (this file's and
+`skills/orchestrate-tickets/SKILL.md`'s wave-loop clean-checkout gate, above)
+to avoid a naming collision between two unrelated safeguards that happen to
+live in adjacent files.
+
 ## Why the project id is always a parameter
 
 agent-project-issues does not resolve cwd→project (`local_path` is null, `source: config`),
@@ -94,6 +146,16 @@ Enforcement rides the existing one-round fix loop in `process-ticket`: a blockin
 finding sends the developer back to add the test, then the reviewer re-checks. There is
 deliberately **no separate test phase/agent** — test scope stays in these worker agents for
 the same reason the stack-detection scope does (one place, not smeared across the skill).
+
+**TDD tightening (all ticket types, red→green reporting).** The test-first mandate was
+originally scoped to "for a bug/defect ticket, write a regression test first" — feature
+tickets had no equivalent requirement. Both `developer` and `reviewer` now apply the same
+red→green discipline to **every** ticket type: write the test first, confirm it fails against
+the unfixed/pre-change code (red — a regression test for a bug, a new-behaviour test for a
+feature), then confirm it passes after the change (green). The developer's change report must
+show **both** runs, not just the final green one; the reviewer's test-coverage hard gate now
+also checks for that red→green evidence and returns `CHANGES_REQUESTED` with a `[blocking]`
+finding when it's missing — a final-green-only report no longer passes review.
 
 ## Optional Codex review augmentation lives in the reviewer
 
@@ -130,7 +192,11 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   `worktree_remove`, or on Windows the worktree dir stays locked, the remove half-completes,
   and the agent-worktree MCP state desyncs into an unremovable phantom entry. If you change how
   the reviewer launches Codex (process name or `--cwd`), update the teardown matcher in
-  `skills/orchestrate-tickets/SKILL.md` to match.
+  `skills/orchestrate-tickets/SKILL.md` to match. **This sweep was generalized (B2)** beyond a
+  single named process: teardown now kills **any process whose command-line or cwd references
+  the worktree path**, explicitly naming the Codex broker (`app-server-broker.mjs`) alongside
+  the Serena LSP chain (`node`/`uvx`/`uv`/`serena.exe`/`python.exe`) as known offenders, rather
+  than relying on a narrow process-name allowlist that a future helper could silently evade.
 
 ## Long-lived process guardrail (cross-file)
 

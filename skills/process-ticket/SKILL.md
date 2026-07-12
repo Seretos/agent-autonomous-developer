@@ -17,6 +17,32 @@ There is **no cwd→project auto-detection**. The `project_id` is supplied at
 invocation (see preconditions); thread it into every subagent prompt and every
 project-issues call.
 
+### Mode parameter
+
+This skill takes an optional **`mode`** parameter: `solo` or `integration`.
+
+- **`solo` (default).** Today's behaviour, unchanged: the branch+worktree
+  guard self-detects the invoking session's cwd, and the Final step commits,
+  pushes (`git push -u origin <branch>`), opens its own draft PR
+  (`create_pr`), and posts its own ticket link-comment. Use this when the
+  user (or a power-user direct invocation) drives a single worktree by hand.
+- **`integration` (orchestrator-invoked).** Runs the **identical** Phase 1-4,
+  and the Final step still does the local commit — but push, `create_pr`,
+  and the ticket link-comment are **skipped**: the **caller** (the
+  `orchestrate-tickets` wave loop) owns those, because it merges several
+  approved members into one shared integration branch and opens a single
+  combined PR at the end of the run. In this mode the caller supplies an
+  explicit **`worktree_path`** (and branch name) so the branch+worktree guard
+  can validate the right directory instead of self-detecting cwd — see
+  Preconditions 2. If `mode=integration` is given with no `worktree_path`,
+  **STOP**.
+
+The commit step runs in **both modes**; push/create_pr/the ticket comment run
+**ONLY in `solo` mode**; the final report-to-caller step runs in both modes
+(adjusted wording — see Final step). The never-on-main invariant (branch
+guard STOP on `main`/`master`) is **not relaxed** in either mode — it is
+still checked, unconditionally, in both.
+
 ### Mandatory safety gates (apply to every ticket — serial or parallel)
 
 This skill is the required processing path whether the ticket is a single
@@ -53,14 +79,26 @@ checkout to *verify* behaviour (without editing) is not a bypass; *editing* is.
    Capture `project_id` for every downstream call.
 2. **Branch + worktree guard.** This guard is now defense-in-depth; the dispatcher normally ensures the correct skill is loaded before reaching this point. This skill runs **only inside a worktree** on a
    feature branch — it is the worker half of `orchestrate-tickets` (which runs
-   only on the main checkout). Two checks:
-   - `git rev-parse --abbrev-ref HEAD` — if `main`/`master`, STOP.
-   - `git rev-parse --git-dir` vs `git rev-parse --git-common-dir` — if they are
-     EQUAL you're in the main checkout, not a worktree → STOP.
-   On STOP, tell the user this skill must run inside a prepared feature-branch
-   worktree, which the user (or orchestrate-tickets) owns. Do not create a branch
-   or worktree yourself. Capture the branch name and the default branch (for the
-   PR base).
+   only on the main checkout). The check target depends on `mode`:
+   - **`solo` mode (default):** checks run against the invoking session's own
+     cwd, unchanged:
+     - `git rev-parse --abbrev-ref HEAD` — if `main`/`master`, STOP.
+     - `git rev-parse --git-dir` vs `git rev-parse --git-common-dir` — if they
+       are EQUAL you're in the main checkout, not a worktree → STOP.
+   - **`integration` mode:** the orchestrator passes an explicit
+     `worktree_path` and branch name. If `mode=integration` but no
+     `worktree_path` was supplied, **STOP** — do not guess a directory. When
+     it is supplied, run the same two checks against that path instead of
+     self-detecting cwd:
+     - `git -C <worktree_path> rev-parse --abbrev-ref HEAD` — if
+       `main`/`master`, STOP. This invariant is **not relaxed** for
+       integration mode — still STOP.
+     - `git -C <worktree_path> rev-parse --git-dir` vs
+       `git -C <worktree_path> rev-parse --git-common-dir` — if EQUAL, STOP.
+   On STOP, tell the user (or the caller, in integration mode) this skill must
+   run inside a prepared feature-branch worktree, which the user (or
+   orchestrate-tickets) owns. Do not create a branch or worktree yourself.
+   Capture the branch name and the default branch (for the PR base).
 
 ## Phase sequence
 
@@ -147,29 +185,59 @@ The orchestrator owns this (not the developer): it depends on the whole
 pipeline's outcome (final plan + review verdict) and the branch/ticket the
 orchestrator holds, and it keeps the developer's tool scope minimal.
 
-1. **Commit** (raw git — no MCP for a local commit): `git add -A`, then:
-   - **Single-line message** (summary only, no body or trailers):
-     `git commit -m "<concise summary> (#<ticket>)"`.
-   - **Multi-line message** (body text, Co-Authored-By trailer, etc.): use the
-     Write tool to write the full message to `/tmp/commit-msg.txt`, then run
-     `git commit -F /tmp/commit-msg.txt`. Writing via the Write tool sidesteps
-     shell quoting entirely — no heredoc, no escaping. Never compose a
-     multi-line commit message as a PowerShell here-string (`@'...'@`) and run
-     it through the Bash tool. The Bash tool executes real `bash`, not
+**Mode-gated.** Step 1 (commit) runs in **both** `solo` and `integration`
+mode. Steps 2-4 (push, create_pr, ticket comment) run **ONLY in `solo`
+mode** — in `integration` mode the **caller** (the `orchestrate-tickets` wave
+loop) owns the push, the merge into the shared integration branch, and the
+single end-of-run combined PR + comments, so this skill skips them here.
+Step 5 (report) runs in both modes, with adjusted wording for integration
+mode.
+
+1. **Commit** (raw git — no MCP for a local commit; both modes). The commit
+   target depends on `mode`, mirroring the branch/worktree guard in
+   Preconditions 2:
+   - **`solo` mode:** commit against the invoking session's own cwd, unchanged
+     — `git add -A`, then:
+     - **Single-line message** (summary only, no body or trailers):
+       `git commit -m "<concise summary> (#<ticket>)"`.
+     - **Multi-line message** (body text, Co-Authored-By trailer, etc.): use
+       the Write tool to write the full message to `/tmp/commit-msg.txt`, then
+       run `git commit -F /tmp/commit-msg.txt`.
+   - **`integration` mode:** the orchestrator's session cwd may be the main
+     checkout, not the worktree, by the time this step runs — do **not** rely
+     on cwd. Target the supplied `worktree_path` explicitly on every git call:
+     - `git -C <worktree_path> add -A`, then:
+     - **Single-line message:**
+       `git -C <worktree_path> commit -m "<concise summary> (#<ticket>)"`.
+     - **Multi-line message:** use the Write tool to write the full message to
+       `/tmp/commit-msg.txt`, then run
+       `git -C <worktree_path> commit -F /tmp/commit-msg.txt`.
+   - In both modes, for a multi-line message, writing via the Write tool
+     sidesteps shell quoting entirely — no heredoc, no escaping. Never compose
+     a multi-line commit message as a PowerShell here-string (`@'...'@`) and
+     run it through the Bash tool. The Bash tool executes real `bash`, not
      PowerShell — `@'...'@` delimiters have no meaning in bash and pass `@`
      literally as text, corrupting the commit subject line.
-2. **Push** the feature branch: `git push -u origin <branch>`.
-3. **Open the PR as a draft via MCP** (MCP over CLI per the priority law):
+2. **Push** the feature branch (**`solo` mode only**):
+   `git push -u origin <branch>`.
+3. **Open the PR as a draft via MCP** (**`solo` mode only**; MCP over CLI per
+   the priority law):
    `create_pr(project_id=<project>, title=<from plan>,
    head=<branch>, base=<default branch>, draft=True,
    body=<summary + "Closes #<ticket>" + plan recap + review verdict>)`.
    Never type `#ai-generated` — the MCP prepends it.
    (`Closes #<n>` auto-links on GitHub/GitLab; if the project's provider is
    Azure DevOps or Jira this keyword differs — adjust if you ever target those.)
-4. **Comment on the ticket** linking the PR:
+4. **Comment on the ticket** linking the PR (**`solo` mode only**):
    `add_comment(project_id=<project>, ticket_id=<#>,
    body="Draft PR opened: <PR URL>. <one-line status>")`.
-5. **Report to the user:** PR URL, branch, review verdict, test result.
+5. **Report back:**
+   - **`solo` mode:** report to the user — PR URL, branch, review verdict,
+     test result.
+   - **`integration` mode:** report to the caller (the orchestrator) instead
+     of the user — branch, review verdict, test result, and the local commit
+     is ready for the caller to merge. No PR URL exists yet at this point;
+     the caller opens the single combined PR at the end of the run.
 
 ## Hard rules
 - **Delegate everything.** Never call `get_ticket`, `Edit`/`Write`, or review
@@ -191,3 +259,10 @@ orchestrator holds, and it keeps the developer's tool scope minimal.
   path (e.g. `/tmp/commit-msg.txt`) and commit with `git commit -F
   <tempfile>`. The single-line `-m` form remains correct for summary-only
   messages.
+- **`integration` mode's commit must target `-C <worktree_path>` explicitly —
+  never a bare `git add`/`git commit` relying on cwd.** The orchestrator's
+  session cwd is not pinned to the worktree the way a `solo`-mode invoking
+  session's cwd is, so a bare `git commit` in integration mode risks landing
+  in the wrong repository/branch. This mirrors the branch/worktree guard's own
+  `-C <worktree_path>` fix in Preconditions 2 — same assumption, same fix,
+  applied at the point where files actually get committed.

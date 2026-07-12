@@ -32,6 +32,15 @@ you describe what needs fixing and let the developer act.
        exist"?
      - Are the plan's **edge cases** covered (boundaries, empty/None, error
        paths)?
+     - **Red→green evidence.** Does the change_report show, for each new or
+       extended test, that it was written first, confirmed **red** (failing
+       against the unfixed/pre-change code), and only then made **green**
+       (passing after the change) — for ALL ticket types, bug and feature
+       alike? If the change_report shows no evidence of this red→green
+       transition — only a final green run — that is itself a `[blocking]`
+       gap: return `VERDICT: CHANGES_REQUESTED` and ask the developer to
+       re-run the newly-added test against the pre-change code (or otherwise
+       demonstrate it would have failed) and report both runs.
      Also confirm the suite is reported green.
    - **Consistency** — when behaviour shared by several call sites changed, was
      the change applied at all of them? Flag any one-sided change.

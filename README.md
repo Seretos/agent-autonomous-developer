@@ -16,11 +16,39 @@ Three skills: one model-facing dispatcher that routes to two lane-specific backi
 | Skill | Runs from | Does |
 |---|---|---|
 | **dispatch** | anywhere | Model-facing entry point. Normally selected automatically by the model; runs a git lane check and routes to the right skill. To invoke a backing skill directly, use `/orchestrate-tickets` or `/process-ticket`. |
-| **orchestrate-tickets** | the **main** checkout | Picks a parallel-safe set of open tickets (via the `conflict-analyst` subagent — disjoint file footprints **and** no unmet "must come after" dependency stated in a ticket; the rest are deferred, tagged `file-collision` or `logical-dependency`), and creates one git worktree per ticket. Implements nothing itself. |
-| **process-ticket** | inside a **worktree** on a feature branch | Runs one ticket end-to-end through five subagents — `context-extractor → planner → developer → reviewer` — and ends with a pushed feature branch + an open **draft** PR and traceability comments on the ticket. |
+| **orchestrate-tickets** | the **main** checkout | Drives the whole run: lays out open tickets into an ordered set of parallel-safe **waves** (via the `conflict-analyst` subagent — disjoint file footprints **and** no unmet "must come after" dependency stated in a ticket; the rest are deferred, tagged `file-collision` or `logical-dependency`), then executes wave-by-wave against one shared **integration branch** — see below. |
+| **process-ticket** | inside a **worktree** on a feature branch | Runs one ticket end-to-end through four subagents — `context-extractor → planner → developer → reviewer` — committing locally. In `solo` mode (direct/manual invocation) it also pushes its own branch and opens its own draft PR; in `integration` mode (driven by `orchestrate-tickets`) it leaves the push/PR/ticket-comment to the caller. |
 
 The five subagents (`agents/`): `conflict-analyst`, `context-extractor`, `planner`,
 `developer`, `reviewer`. Each has a narrow, mostly read-only scope; only `developer` edits code.
+
+### The wave-based fleet run
+
+`orchestrate-tickets` no longer stops after handing off a batch of worktrees for the user to
+drive by hand — it runs the whole fleet to completion:
+
+1. Creates one shared **integration branch** (`integration/<run-slug>`) off the refreshed
+   default branch, and pushes it once.
+2. Asks the `conflict-analyst` for an ordered `waves` array (DAG-layered parallel-safe sets),
+   or synthesizes a single one-member wave for a single ticket.
+3. For each wave, **sequentially**: creates that wave's worktrees off the integration branch's
+   **current head** (not the default branch — only the integration branch itself branches off
+   that), then runs `process-ticket(mode=integration)` **in parallel** across the wave's
+   members.
+4. Merges every approved-and-green member into the integration branch with `git merge --no-ff`,
+   then runs the project's **full test suite** on the integration branch as a cross-wave
+   integration gate.
+   - **Green** → tears down the wave's worktrees, pushes the integration branch, and moves on
+     to the next wave.
+   - **Red** → **stops immediately, with no automatic revert.** The failed wave's merge stays
+     local and unpushed, its worktrees are left intact for inspection, and every already-pushed
+     prior wave is left untouched. Resolving it is the user's call.
+5. Once every wave is processed, opens **exactly one** combined draft PR (`head` = the
+   integration branch) with `Closes #<n>` for every ticket that landed, and comments once per
+   ticket.
+
+A single ticket still goes through the identical pipeline — SINGLE mode is just a one-member,
+one-wave run, so it gets the same safety gates without any of the fleet ceremony mattering.
 
 > **Optional Codex review.** If the [Codex plugin](https://github.com/openai/codex-plugin-cc)
 > is installed and logged in, the `reviewer` automatically adds a Codex correctness pass and
@@ -73,7 +101,13 @@ orchestrate tickets in <project>            # all open tickets
 orchestrate ticket 7 in <project>           # one ticket
 ```
 
-It creates the worktrees. In each worktree you then run:
+This runs the whole fleet automatically — wave by wave, against one shared integration
+branch — and ends with a single combined draft PR. There is nothing to run by hand in each
+worktree; `process-ticket` is invoked for you, per wave member, in `mode=integration`.
+
+To drive a single worktree yourself instead (bypassing the fleet, e.g. for a one-off manual
+fix on a branch/worktree you prepared outside this flow), run `process-ticket` directly in
+`solo` mode:
 
 ```
 process ticket #7 in <project>

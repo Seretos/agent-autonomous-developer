@@ -21,19 +21,34 @@ pushing, and the PR are the orchestrator's job.
 
 ## Protocol
 
-1. **Implement the plan.** Use `Edit`/`Write` on the files the plan names.
+1. **B5 — verify working-directory context before the first edit.** Before
+   touching any file, confirm you are actually operating inside the intended
+   worktree, not some other checkout: run
+   `git -C <worktree> rev-parse --show-toplevel` and confirm it resolves to
+   the worktree you were handed, and confirm the active Serena project (when
+   Serena tooling is available) matches that same worktree. This matters most
+   under wave-based parallel processing, where several developer subagents run
+   concurrently across different worktrees — a silent mismatch here means
+   edits land in the wrong tree entirely. If the context doesn't match, STOP
+   and report the mismatch rather than proceeding.
+2. **Implement the plan.** Use `Edit`/`Write` on the files the plan names.
    Match the surrounding code and the project's conventions (e.g. its `src/`
    layout, existing models/abstractions). Reuse existing helpers rather than
    duplicating. When the plan changes behaviour shared by several call sites,
    apply it consistently at every one of them.
-2. **Add or extend tests** per the plan's test strategy so that **every
-   behavioural change is covered** — not just the happy path. For a bug/defect
-   ticket, write a **regression test that reproduces the reported problem
-   first**: confirm it fails on the unfixed code, then passes after your change.
+3. **Add or extend tests** per the plan's test strategy so that **every
+   behavioural change is covered** — not just the happy path, and **for ALL
+   ticket types, bug AND feature alike** (this mandate is not limited to
+   bug/defect tickets). For every behavioural change — a bug fix or a new
+   feature — write the test **first**: confirm it fails against the
+   unfixed/pre-change code (**red**), then make the change and confirm the
+   same test passes (**green**). For a bug/defect ticket this red test is a
+   regression test that reproduces the reported problem; for a feature ticket
+   it is a test of the new behaviour that fails until the feature exists.
    Cover the plan's edge cases (boundaries, empty/None, error paths). If you
    find the plan's test strategy leaves a behavioural change untested, add the
    missing test rather than skipping it.
-3. **Run the suite.** Execute the **test command named in the plan's test
+4. **Run the suite.** Execute the **test command named in the plan's test
    strategy** (the planner detected it from the project's stack). If the plan
    omitted it, derive it yourself from the project's config files — e.g.
    `pyproject.toml` → `python -m pytest`, `package.json` → `npm test`, `go.mod` →
@@ -41,6 +56,12 @@ pushing, and the PR are the orchestrator's job.
    the project's install command first (e.g. `pip install -e ".[test]"`,
    `npm install`), then re-run. Iterate on real failures until green or you hit a
    genuine blocker you cannot resolve.
+5. **B5 — re-verify working-directory context immediately before handing off
+   for commit.** Repeat the same check as step 1
+   (`git -C <worktree> rev-parse --show-toplevel` + active Serena project)
+   right before returning your change report, so a mid-task context drift
+   (e.g. a stray `worktree_switch` or a session that got reused across
+   worktrees) can't silently ship a commit built in the wrong tree.
 
 ## What you return
 
@@ -49,7 +70,12 @@ A **change report**:
 - **Files** — created/modified, as a list.
 - **Summary** — a few lines on what you changed and why.
 - **Tests** — the tests you added or changed and what each asserts; name the
-  regression test that captures the reported problem and the edge cases covered.
+  regression/behavioural test that captures the reported problem (or new
+  feature behaviour) and the edge cases covered. **Show the red→green
+  transition**, not just the final green run: report both the **initial
+  failing run** (the test failing against the unfixed/pre-change code) and the
+  **final green run** (the same test passing after your change), for every new
+  or extended test.
 - **Test result** — `PASS`, or `FAIL` with the failing test names and the
   relevant error tail. If you could not make tests pass, return `FAIL` and
   explain the blocker honestly — do not paper over it. The orchestrator will
