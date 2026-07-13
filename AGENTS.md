@@ -177,17 +177,24 @@ it rolls into a later wave, exactly like a `CHANGES_REQUESTED`/red member
 today. Checking `verdict` alone is not sufficient: the ordinary
 (non-fallback) merge criterion is `APPROVE` **with a green test run**, so the
 fallback path must disqualify on `test` too, or it would be silently weaker
-than the normal path. Symmetrically, once a member is confirmed-done (its
-report arrived, or the fallback validated its git state and marker), any
-further idle pings from it are a no-op set-membership check, not a repeated
-B6 evaluation — the mirror of the idle-without-report trigger, and scoped so
-it cannot weaken B6.
+than the normal path. Symmetrically, once a member is confirmed-done — its
+report carried the explicit **`final: true`** terminal marker (see
+`skills/process-ticket/SKILL.md`'s Final step 7 — the report's field, not
+the `.process-ticket-result.json` marker *file*), or the fallback validated
+its git state and marker — any further idle pings from it are **idempotent**
+no-op set-membership checks, not a repeated B6 evaluation — the mirror of
+the idle-without-report trigger, and scoped so it cannot weaken B6.
 
 **Cross-file consistency invariant.** The literal filename
 `.process-ticket-result.json` must stay identical in both
 `skills/process-ticket/SKILL.md` (the writer) and
 `skills/orchestrate-tickets/SKILL.md` (the reader) — a rename in one without
-the other silently breaks the B6 fallback.
+the other silently breaks the B6 fallback. The same applies to the report
+message's terminal-marker field, `final: true`: it must stay identical
+between `skills/process-ticket/SKILL.md`'s Final step 7 (the writer) and
+`skills/orchestrate-tickets/SKILL.md`'s Phase C confirmed-done set (the
+reader) — a rename or field-value change in one without the other would
+silently break the confirmed-done-set keying.
 
 **Target-repo `.gitignore`, not this plugin's (finding from ticket #64 round
 2; ordering corrected in round 3).** `process-ticket` always runs against an

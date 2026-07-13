@@ -1331,3 +1331,146 @@ def test_agents_md_coherent_reply_not_added_to_confirmed_done_set():
         "AGENTS.md's B6 subsection must explicitly say no second ping is "
         "sent following a coherent reply"
     )
+
+
+# ---------------------------------------------------------------------------
+# Group 21 — ticket #71: explicit `final: true` terminal marker keys the
+# confirmed-done set (replaces inferred "report received" correlation)
+# ---------------------------------------------------------------------------
+#
+# Root cause: ticket #69 introduced a confirmed-done set that a member enters
+# "the moment its Final-step report is received" — an inferred correlation,
+# not a marker the orchestrator can check directly. Because members are known
+# to ping idle more than once after reporting, and the entry condition was
+# never pinned to an explicit field in the report, repeated post-report idle
+# pings risked being re-evaluated rather than cheaply short-circuited.
+#
+# Fix: process-ticket's Final step 7 report format now carries an explicit
+# terminal-marker field, `final: true`, in BOTH `solo` and `integration`
+# mode. orchestrate-tickets' Phase C confirmed-done set is re-keyed on the
+# PRESENCE of that marker in the received report, and documents that
+# repeated/consecutive idle pings from an already-confirmed-done member are
+# all idempotent no-ops — zero B6 evaluations, not one per ping. AGENTS.md's
+# B6 paragraph and Cross-file consistency invariant are updated to match.
+#
+# Red -> green: these tests fail against the pre-#71 SKILL.md/AGENTS.md (no
+# `final: true` terminal marker anywhere, no "zero B6 evaluation(s)" phrasing)
+# and pass once process-ticket's Final step 7, orchestrate-tickets' Phase C,
+# its Hard Rules B6 bullet, and AGENTS.md's B6 section all document the
+# terminal-marker keying and idempotency guarantee.
+
+
+def test_phase_c_two_consecutive_idle_pings_from_confirmed_done_member_zero_b6_evals():
+    """The required regression test: Phase C must document that two
+    consecutive / repeated idle pings from one already-confirmed-done member
+    are all no-ops that resolve to zero B6 evaluations in total."""
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(
+        r"(idempotent|consecutive|repeated).{0,200}(idempotent|consecutive|repeated)?",
+        phase_c, re.DOTALL | re.IGNORECASE,
+    ) and re.search(r"idempotent", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly describe the confirmed-done short-circuit "
+        "as idempotent for repeated/consecutive idle pings"
+    )
+    assert re.search(r"zero\s+B6\s+evaluations?", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly say repeated idle pings from a "
+        "confirmed-done member cost zero B6 evaluations, not one each"
+    )
+
+
+def test_process_ticket_report_carries_terminal_marker_both_modes():
+    """process-ticket's Final step 7 report format must carry the literal
+    `final: true` terminal-marker field, and the requirement must apply to
+    both `solo` and `integration` mode."""
+    process_body = _extract_body(_read(PROCESS_MD))
+    report_back_m = re.search(
+        r"7\.\s+\*\*Report back:\*\*.*?(?=\n## Hard rules)",
+        process_body, re.DOTALL,
+    )
+    assert report_back_m, "process-ticket SKILL.md must contain a '7. **Report back:**' step"
+    report_back = report_back_m.group(0)
+
+    # Bind `final: true` to EACH mode's own bullet block, not just somewhere
+    # in the whole step-7 section — a report format where the marker was
+    # dropped from one mode's bullet (e.g. left only in the explanatory
+    # paragraph below both bullets) must fail this test.
+    solo_bullet_m = re.search(
+        r"-\s+\*\*`solo`\s+mode:\*\*.*?(?=\n\s+-\s+\*\*|\Z)",
+        report_back, re.DOTALL,
+    )
+    integration_bullet_m = re.search(
+        r"-\s+\*\*`integration`\s+mode:\*\*.*?(?=\n\s+-\s+\*\*|\Z)",
+        report_back, re.DOTALL,
+    )
+    assert solo_bullet_m, (
+        "process-ticket's Final step 7 must have a dedicated `solo` mode "
+        "bullet"
+    )
+    assert integration_bullet_m, (
+        "process-ticket's Final step 7 must have a dedicated `integration` "
+        "mode bullet"
+    )
+    assert "final: true" in solo_bullet_m.group(0), (
+        "process-ticket's Final step 7 `solo` mode bullet must itself carry "
+        "the literal `final: true` terminal-marker field, not just mention "
+        "it elsewhere in step 7"
+    )
+    assert "final: true" in integration_bullet_m.group(0), (
+        "process-ticket's Final step 7 `integration` mode bullet must "
+        "itself carry the literal `final: true` terminal-marker field, not "
+        "just mention it elsewhere in step 7"
+    )
+
+
+def test_phase_c_confirmed_done_keyed_on_terminal_marker():
+    """Phase C must re-key confirmed-done set entry on the presence of the
+    explicit `final: true` terminal marker, directly tied to the 'enters it'
+    set-entry sentence — not an inferred correlation, and not merely a
+    marker mention somewhere else in Phase C."""
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+
+    # (b) the marker must appear directly adjacent to the set-entry
+    # ("enters it") sentence, not just anywhere in Phase C.
+    adjacency_m = re.search(
+        r"enters it the moment its report carries[\s\S]{0,80}?final:\s*true",
+        phase_c,
+    )
+    assert adjacency_m, (
+        "Phase C's confirmed-done set-entry sentence ('a member enters it "
+        "the moment ...') must be directly tied to the explicit `final: "
+        "true` terminal marker within that same sentence — a marker "
+        "mention elsewhere in Phase C is not sufficient"
+    )
+
+    # (a) the old inferred-correlation phrasing (set entry keyed on "a
+    # report arrived", with no marker qualifier) must be gone.
+    assert not re.search(
+        r"enters it the moment its Final-step report is received\b",
+        phase_c,
+    ), (
+        "Phase C must not retain the old inferred-correlation phrasing "
+        "('enters it the moment its Final-step report is received') that "
+        "keys set entry on report arrival alone, without the explicit "
+        "terminal marker"
+    )
+
+
+def test_agents_md_b6_documents_terminal_marker_keying():
+    """AGENTS.md's B6 section must mention the `final: true` terminal marker
+    and the idempotency guarantee for repeated post-report idle pings."""
+    text = _read(AGENTS_MD)
+    b6_section = _extract_b6_section(text)
+    assert re.search(r"final:\s*true", b6_section) or re.search(
+        r"terminal\s+marker", b6_section, re.IGNORECASE
+    ), (
+        "AGENTS.md's B6 section must mention the `final: true` terminal "
+        "marker"
+    )
+    assert re.search(r"idempotent", b6_section, re.IGNORECASE), (
+        "AGENTS.md's B6 section must document the idempotency guarantee for "
+        "repeated post-report idle pings"
+    )

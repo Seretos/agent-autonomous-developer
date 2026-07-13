@@ -334,13 +334,21 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
    member's self-report — verify its real ending state directly:
 
    Concretely, the orchestrator keeps a **confirmed-done set**: a member
-   enters it the moment its Final-step report is received, or — via this
-   fallback — the moment its ending state is confirmed (git HEAD-ahead check
-   passed and the result-marker validated). Any subsequent `idle_notification`
+   enters it the moment its report carries the explicit **`final: true`**
+   terminal marker (see `skills/process-ticket/SKILL.md`'s Final step 7) —
+   set entry is keyed on the **presence of that marker** in the received
+   report, not merely on "a report arrived" — or, via this fallback, the
+   moment its ending state is confirmed (git HEAD-ahead check passed and the
+   result-marker validated). Any subsequent `idle_notification`
    (`idleReason: "available"`) from a member already in the confirmed-done set
    is a cheap set-membership no-op — acknowledge and discard it; it is **not**
-   a fresh B6 evaluation. B6 is scoped to idle-*without*-a-report from a
-   member **not** yet confirmed-done, so this short-circuit cannot weaken it.
+   a fresh B6 evaluation. This short-circuit is **idempotent**: members are
+   known to ping idle more than once after reporting, and every
+   consecutive/repeated idle ping from an already-confirmed-done member
+   resolves to the same no-op, so two (or any number of) consecutive pings
+   from one confirmed-done member cost **zero B6 evaluations** in total, not
+   one each. B6 is scoped to idle-*without*-a-report from a member **not**
+   yet confirmed-done, so this short-circuit cannot weaken it.
    - Run `git -C <worktree_path> log -1` and
      `git -C <worktree_path> status --porcelain`. Expect the marker file
      (see below) to be **absent** from plain `status --porcelain` output on a
@@ -662,8 +670,9 @@ for manual cleanup — never silently fail to retry a dropped member.
   (empty/error/incoherent reply or another idle-without-report → falls
   through to disqualification unchanged) — one ping, no timer, no retry
   count, and it never relaxes the git-state criteria above. Once a member is
-  confirmed-done (report received or B6-confirmed), later idle pings from it
-  are a no-op set lookup, never a re-triggered B6 check.
+  confirmed-done — its report carried the explicit `final: true` terminal
+  marker, or it was B6-confirmed via the fallback — later idle pings from it
+  are idempotent no-op set lookups, never a re-triggered B6 check.
 - **Exactly one combined PR, at the very end of the run.** Individual wave
   members never open their own PR or push their own branch — `process-ticket`
   runs in `mode=integration` for every wave member specifically so this skill

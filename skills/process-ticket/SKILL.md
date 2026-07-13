@@ -361,11 +361,20 @@ end-of-run combined PR + comments, so this skill skips them here. Step 6
      fallback does), so no cleanup step is needed here.
 7. **Report back:**
    - **`solo` mode:** report to the user — PR URL, branch, review verdict,
-     test result.
+     test result, and `final: true`.
    - **`integration` mode:** report to the caller (the orchestrator) instead
-     of the user — branch, review verdict, test result, and the local commit
-     is ready for the caller to merge. No PR URL exists yet at this point;
-     the caller opens the single combined PR at the end of the run.
+     of the user — branch, review verdict, test result, `final: true`, and
+     the local commit is ready for the caller to merge. No PR URL exists yet
+     at this point; the caller opens the single combined PR at the end of
+     the run.
+   - **`final: true`** is an explicit terminal-marker field carried by the
+     report message itself — distinct from the `.process-ticket-result.json`
+     marker *file* (step 6 above), which already carries
+     ticket/branch/verdict/test/mode. It marks this report as the definitive
+     terminal signal a caller keys its confirmed-done-set entry on (see
+     AGENTS.md's **B6** note). Required in **both** modes for a single
+     uniform report contract, even though in `solo` mode no orchestrator
+     ever reads it.
 
 ## Hard rules
 - **Delegate everything.** Never call `get_ticket`, `Edit`/`Write`, or review
