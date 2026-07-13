@@ -54,8 +54,9 @@ def test_creates_integration_branch():
     assert "integration/" in body, (
         "SKILL.md must document creating an 'integration/<run-slug>' branch"
     )
-    assert "git branch" in body, (
-        "SKILL.md must document 'git branch' to create the integration branch"
+    assert re.search(r"git\s+-C\s+<repo_root>\s+branch", body), (
+        "SKILL.md must document 'git branch' (now -C-pinned per ticket #66) "
+        "to create the integration branch"
     )
 
 
@@ -134,9 +135,11 @@ def test_invokes_process_ticket_integration_mode():
 def test_b4_clean_checkout_gate_before_merge():
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
-    assert "git status --porcelain" in body, (
+    assert re.search(r"git\s+-C\s+<repo_root>\s+status\s+--porcelain", body), (
         "SKILL.md must document the B4 clean-checkout gate using "
-        "'git status --porcelain'"
+        "'git status --porcelain' (now -C-pinned per ticket #66; the "
+        "idle-fallback protocol's separate 'git -C <worktree_path> status "
+        "--porcelain' is unaffected)"
     )
     assert re.search(r"clean.{0,120}before.{0,40}merge|before.{0,40}merge.{0,120}clean",
                       body, re.DOTALL | re.IGNORECASE), (
@@ -158,14 +161,15 @@ def test_checks_out_integration_branch_before_merge():
     phase_c_m = re.search(r"## Phase C.*?(?=\n## Phase D)", body, re.DOTALL)
     assert phase_c_m, "SKILL.md must contain a '## Phase C' section"
     phase_c = phase_c_m.group(0)
-    assert re.search(r"git\s+(checkout|switch)\s+<integration>", phase_c), (
+    assert re.search(r"git\s+-C\s+<repo_root>\s+(checkout|switch)\s+<integration>", phase_c), (
         "Phase C must document an explicit 'git checkout <integration>' (or "
-        "'git switch <integration>') on the main checkout before the merge "
-        "step, otherwise 'git merge --no-ff' lands on whatever branch the "
-        "main checkout is currently on (base), not <integration>"
+        "'git switch <integration>', now -C-pinned per ticket #66) on the "
+        "main checkout before the merge step, otherwise 'git merge --no-ff' "
+        "lands on whatever branch the main checkout is currently on (base), "
+        "not <integration>"
     )
-    checkout_m = re.search(r"git\s+(checkout|switch)\s+<integration>", phase_c)
-    merge_m = re.search(r"git merge --no-ff", phase_c)
+    checkout_m = re.search(r"git\s+-C\s+<repo_root>\s+(checkout|switch)\s+<integration>", phase_c)
+    merge_m = re.search(r"git\s+-C\s+<repo_root>\s+merge --no-ff", phase_c)
     assert merge_m, "Phase C must still document 'git merge --no-ff'"
     assert checkout_m.start() < merge_m.start(), (
         "The checkout/switch onto <integration> must be documented BEFORE "
@@ -328,10 +332,11 @@ def test_switches_back_to_default_branch_at_end_of_phase_d():
     phase_d_m = re.search(r"## Phase D.*?(?=\n## Teardown)", body, re.DOTALL)
     assert phase_d_m, "SKILL.md must contain a '## Phase D' section"
     phase_d = phase_d_m.group(0)
-    assert re.search(r"git\s+(checkout|switch)\s+<?base>?", phase_d, re.IGNORECASE), (
+    assert re.search(r"git\s+-C\s+<repo_root>\s+(checkout|switch)\s+<?base>?", phase_d, re.IGNORECASE), (
         "Phase D must document switching the main checkout back to the "
-        "default branch ('git checkout <base>' or 'git switch <base>') after "
-        "opening the combined PR, so Precondition 0 holds for the next run"
+        "default branch ('git checkout <base>' or 'git switch <base>', now "
+        "-C-pinned per ticket #66) after opening the combined PR, so "
+        "Precondition 0 holds for the next run"
     )
     assert re.search(r"Precondition\s+0", phase_d), (
         "Phase D's switch-back step should explicitly reference Precondition "
