@@ -923,3 +923,110 @@ def test_hard_rules_b6_bullet_lists_all_five_disqualifying_conditions():
         "the B6 Hard Rules bullet must list marker `test` not `PASS` as a "
         "disqualifying condition"
     )
+
+
+# ---------------------------------------------------------------------------
+# Group 19 — ticket #69: confirmed-done short-circuit for post-report idle
+# pings
+# ---------------------------------------------------------------------------
+#
+# Root cause: during live orchestrate-tickets runs (named/background Agent
+# spawns per wave member, Phase C), a worker that has already sent its
+# complete Final-step report keeps emitting idle_notification
+# (idleReason: "available") pings afterward. Each ping carries zero new info
+# but costs the orchestrator a message-read + "is this the B6 trigger?"
+# reasoning step. This is not a correctness bug — it's the harmless mirror of
+# #64's idle-without-report case — but it must be documented so the
+# orchestrator can cheaply short-circuit it WITHOUT weakening the #64 B6
+# idle-without-report fallback (which must still fire whenever a member goes
+# idle before its report arrives).
+#
+# Fix: Phase C step 2 documents a confirmed-done set. A member enters it the
+# moment its Final-step report is received, or — via the B6 fallback — the
+# moment its ending state is confirmed (HEAD-ahead check passed and the
+# result-marker validated). Any subsequent idle_notification from a member
+# already in the confirmed-done set is a cheap set-membership no-op —
+# acknowledge and discard it; it is NOT a fresh B6 evaluation. The Hard Rules
+# B6 bullet and AGENTS.md's B6 paragraph both mirror this addition.
+#
+# Red -> green: these tests fail against the pre-#69 SKILL.md/AGENTS.md (no
+# confirmed-done set documented at all) and pass once Phase C, the Hard Rules
+# B6 bullet, and AGENTS.md's B6 paragraph all document the short-circuit.
+
+
+def test_phase_c_documents_confirmed_done_short_circuit_for_post_report_idle():
+    """The required regression test: Phase C must document a confirmed-done
+    set and that a subsequent idle ping from an already-confirmed-done member
+    is a no-op, not a fresh B6 evaluation."""
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"confirmed[- ]done", phase_c, re.IGNORECASE), (
+        "Phase C must document a 'confirmed-done' set that a member enters "
+        "once its Final-step report is received or the B6 fallback confirms "
+        "its ending state"
+    )
+    assert re.search(
+        r"(no-op|set.membership|not\s+a\s+fresh|already.{0,40}confirmed)"
+        r".{0,160}(idle|B6)|"
+        r"idle.{0,160}(no-op|not\s+a\s+fresh\s+B6|set.membership)",
+        phase_c, re.DOTALL | re.IGNORECASE,
+    ), (
+        "Phase C must explicitly say a subsequent idle ping from a "
+        "confirmed-done member is a cheap no-op / set-membership check, not "
+        "a fresh B6 evaluation"
+    )
+
+
+def test_phase_c_short_circuit_does_not_weaken_b6_trigger():
+    """The confirmed-done short-circuit must NOT weaken or replace the #64
+    B6 idle-WITHOUT-report trigger — that phrasing must survive verbatim."""
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"without\*{0,2}\s+having\s+sent\s+its\s+Final-step\s+report", phase_c, re.IGNORECASE), (
+        "Phase C must still scope the B6 fallback trigger to idle-WITHOUT-"
+        "having-sent-its-report — the confirmed-done short-circuit must not "
+        "weaken this"
+    )
+
+
+def test_hard_rules_b6_bullet_mentions_confirmed_done_short_circuit():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    hard_rules = _extract_hard_rules(body)
+    b6_m = re.search(r"\*\*Never merge on self-report alone \(B6\)\.\*\*.*", hard_rules, re.DOTALL)
+    assert b6_m, "Hard rules must contain the 'Never merge on self-report alone (B6)' bullet"
+    b6_bullet = b6_m.group(0)
+    next_bullet_m = re.search(r"\n- \*\*", b6_bullet)
+    if next_bullet_m:
+        b6_bullet = b6_bullet[: next_bullet_m.start()]
+    assert re.search(r"confirmed[- ]done", b6_bullet, re.IGNORECASE), (
+        "the B6 Hard Rules bullet must mention the 'confirmed-done' "
+        "short-circuit for post-report idle pings"
+    )
+    assert re.search(r"no-op|set.membership", b6_bullet, re.IGNORECASE), (
+        "the B6 Hard Rules bullet must say a later idle ping from an "
+        "already-confirmed-done member is a no-op, never a re-triggered B6 "
+        "check"
+    )
+
+
+def test_agents_md_documents_confirmed_done_short_circuit():
+    text = _read(AGENTS_MD)
+    assert re.search(r"confirmed[- ]done", text, re.IGNORECASE), (
+        "AGENTS.md must document the 'confirmed-done' set introduced by "
+        "ticket #69"
+    )
+    assert re.search(
+        r"(no-op|set.membership).{0,160}B6|B6.{0,160}(no-op|set.membership)",
+        text, re.DOTALL | re.IGNORECASE,
+    ), (
+        "AGENTS.md must say further idle pings from a confirmed-done member "
+        "are a no-op set-membership check, not a repeated B6 evaluation"
+    )
+    assert not re.search(r"\?\?\s*\.process-ticket-result\.json", text), (
+        "AGENTS.md must NOT reintroduce the false claim that the marker "
+        "shows up as '?? .process-ticket-result.json' in 'status "
+        "--porcelain' output"
+    )

@@ -332,6 +332,15 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
    **not** re-trigger this fallback; the trigger is scoped to idle-**without**-
    a-report, not idle alone. When that happens, do not rely solely on the
    member's self-report — verify its real ending state directly:
+
+   Concretely, the orchestrator keeps a **confirmed-done set**: a member
+   enters it the moment its Final-step report is received, or — via this
+   fallback — the moment its ending state is confirmed (git HEAD-ahead check
+   passed and the result-marker validated). Any subsequent `idle_notification`
+   (`idleReason: "available"`) from a member already in the confirmed-done set
+   is a cheap set-membership no-op — acknowledge and discard it; it is **not**
+   a fresh B6 evaluation. B6 is scoped to idle-*without*-a-report from a
+   member **not** yet confirmed-done, so this short-circuit cannot weaken it.
    - Run `git -C <worktree_path> log -1` and
      `git -C <worktree_path> status --porcelain`. Expect the marker file
      (see below) to be **absent** from plain `status --porcelain` output on a
@@ -577,7 +586,9 @@ for manual cleanup — never silently fail to retry a dropped member.
   unreadable marker, marker `ticket` not matching this member's actual ticket
   number, marker `verdict` not `APPROVE`, or marker `test` not `PASS`) is not
   merged; it rolls into a later wave. See Phase C step 2 for the full
-  protocol.
+  protocol. Once a member is confirmed-done (report received or B6-confirmed),
+  later idle pings from it are a no-op set lookup, never a re-triggered B6
+  check.
 - **Exactly one combined PR, at the very end of the run.** Individual wave
   members never open their own PR or push their own branch — `process-ticket`
   runs in `mode=integration` for every wave member specifically so this skill

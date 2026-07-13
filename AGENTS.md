@@ -143,7 +143,11 @@ it rolls into a later wave, exactly like a `CHANGES_REQUESTED`/red member
 today. Checking `verdict` alone is not sufficient: the ordinary
 (non-fallback) merge criterion is `APPROVE` **with a green test run**, so the
 fallback path must disqualify on `test` too, or it would be silently weaker
-than the normal path.
+than the normal path. Symmetrically, once a member is confirmed-done (its
+report arrived, or the fallback validated its git state and marker), any
+further idle pings from it are a no-op set-membership check, not a repeated
+B6 evaluation — the mirror of the idle-without-report trigger, and scoped so
+it cannot weaken B6.
 
 **Cross-file consistency invariant.** The literal filename
 `.process-ticket-result.json` must stay identical in both
