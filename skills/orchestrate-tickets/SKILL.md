@@ -173,36 +173,53 @@ invoke the conflict-analyst and produces no fit evaluation.
 
 ## Preconditions
 
+**Bootstrap — capture `repo_root` first, before anything else.**
+`git rev-parse --show-toplevel` → `repo_root`. This is the **one intentional
+ambient git call** in this skill: every other git invocation below (and
+throughout Phase C, Phase D, and Teardown) is pinned with `git -C
+<repo_root> …` so it never depends on the shell's persisted/ambient cwd —
+which background/job-mode invocations can silently reset between tool calls,
+potentially onto one of the fleet's own worker worktrees (see AGENTS.md's
+cwd-independent-git invariant). This one call is unavoidably ambient — you
+cannot `-C` into a root you have not yet discovered — but a wrong resolution
+here is caught immediately by Precondition 0's `--git-dir`/`--git-common-dir`
+check below, which itself runs `-C <repo_root>` and fails closed if
+`repo_root` was miscaptured as a worktree.
+
 0. **Run only from the main checkout — never inside a worktree.** This skill is
    the mirror of `process-ticket` (which runs only *inside* a worktree on a
    feature branch). Guard before doing anything else:
-   - `git rev-parse --abbrev-ref HEAD` must be the repo's default branch.
-   - `git rev-parse --git-dir` must EQUAL `git rev-parse --git-common-dir`
-     (they differ when you are inside a linked worktree).
+   - `git -C <repo_root> rev-parse --abbrev-ref HEAD` must be the repo's
+     default branch.
+   - `git -C <repo_root> rev-parse --git-dir` must EQUAL
+     `git -C <repo_root> rev-parse --git-common-dir` (they differ when
+     `repo_root` resolved to a linked worktree).
    If either check fails, **STOP** and tell the user to run orchestrate-tickets
    from the project's main checkout — otherwise the worktrees it spawns and the
    orchestrator's own branch/state collide with the workers.
-1. **Capture repo + base branch.** `git rev-parse --show-toplevel` → `repo_root`.
-   Determine the repo's default branch → `base`. `base` is only the starting
-   point for the run's integration branch (step 3) — worktrees branch off the
-   **integration branch's current head**, not `base` directly (see Phase C).
+1. **Determine the base branch.** Determine the repo's default branch → `base`
+   (`repo_root` was already captured in the Bootstrap step above). `base` is
+   only the starting point for the run's integration branch (step 3) —
+   worktrees branch off the **integration branch's current head**, not `base`
+   directly (see Phase C).
 2. **Refresh `base` from the remote — guard against stale worktrees.** Before
    creating any worktree, bring the main checkout's default branch up to date so
-   the integration branch doesn't start from a stale `base`: `git fetch origin`
-   then `git pull --ff-only` (you are on the default branch per Precondition 0).
+   the integration branch doesn't start from a stale `base`:
+   `git -C <repo_root> fetch origin` then `git -C <repo_root> pull --ff-only`
+   (you are on the default branch per Precondition 0).
    If it can't fast-forward (the local branch has diverged) or a dirty working
    tree blocks it, **STOP** and tell the user to reconcile the main checkout
    first — never merge, rebase, or force. Stopgap: `worktree_create` does
    **not** refresh from the remote itself yet, so the skill must do it here.
 3. **Create the shared integration branch.** After the refresh above, create a
    run-scoped integration branch off the freshly-pulled `base`:
-   `git branch <integration> <base>` where `<integration>` is
+   `git -C <repo_root> branch <integration> <base>` where `<integration>` is
    `integration/<run-slug>` (`<run-slug>` — a short, unique identifier for this
    run, e.g. a date-stamp plus the lead ticket number, such as
    `integration/2026-07-13-171`). Push it once right away:
-   `git push -u origin <integration>`. Capture `<integration>` — every wave's
-   worktrees, merges, and the final combined PR all key off this one branch for
-   the rest of the run.
+   `git -C <repo_root> push -u origin <integration>`. Capture `<integration>` —
+   every wave's worktrees, merges, and the final combined PR all key off this
+   one branch for the rest of the run.
 4. **Worktree mechanism — agent-worktree MCP only.** Worktree creation uses the
    **agent-worktree MCP** (`worktree_create`). If that MCP is **not loaded** in
    this session (fresh sessions don't auto-load plugin MCPs), **STOP** and tell
@@ -315,6 +332,23 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
    **not** re-trigger this fallback; the trigger is scoped to idle-**without**-
    a-report, not idle alone. When that happens, do not rely solely on the
    member's self-report — verify its real ending state directly:
+
+   Concretely, the orchestrator keeps a **confirmed-done set**: a member
+   enters it the moment its report carries the explicit **`final: true`**
+   terminal marker (see `skills/process-ticket/SKILL.md`'s Final step 7) —
+   set entry is keyed on the **presence of that marker** in the received
+   report, not merely on "a report arrived" — or, via this fallback, the
+   moment its ending state is confirmed (git HEAD-ahead check passed and the
+   result-marker validated). Any subsequent `idle_notification`
+   (`idleReason: "available"`) from a member already in the confirmed-done set
+   is a cheap set-membership no-op — acknowledge and discard it; it is **not**
+   a fresh B6 evaluation. This short-circuit is **idempotent**: members are
+   known to ping idle more than once after reporting, and every
+   consecutive/repeated idle ping from an already-confirmed-done member
+   resolves to the same no-op, so two (or any number of) consecutive pings
+   from one confirmed-done member cost **zero B6 evaluations** in total, not
+   one each. B6 is scoped to idle-*without*-a-report from a member **not**
+   yet confirmed-done, so this short-circuit cannot weaken it.
    - Run `git -C <worktree_path> log -1` and
      `git -C <worktree_path> status --porcelain`. Expect the marker file
      (see below) to be **absent** from plain `status --porcelain` output on a
@@ -353,6 +387,49 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
      match, the marker is stale (left over from a different ticket ever
      processed in this worktree) and must be **rejected and treated as
      unconfirmed**, exactly as if the marker were missing.
+   - **B6 status-check ping — disambiguate busy vs. dead before
+     disqualifying.** This sub-step fires only when both are true: the
+     member is on the already-narrow B6 trigger (idle-without-report, not
+     yet in the confirmed-done set), **and** the git-state check above came
+     back **unconfirmed** — HEAD not ahead of the branch point, or the
+     marker missing/unreadable/ticket-mismatched/`verdict` not
+     `APPROVE`/`test` not `PASS`. A member whose git-state check **passed**
+     is confirmed-done exactly as described above and is **never pinged** —
+     this sub-step only ever runs in front of a disqualification that is
+     otherwise about to happen.
+
+     The orchestrator sends **exactly one** direct status-check
+     `SendMessage` to the member, asking it to report its current pipeline
+     phase/state. This is legitimate and asymmetric, not a violation of
+     "never merge on self-report alone": the member (callee) has no
+     `SendMessage` tool to push a reply back on its own initiative, but the
+     orchestrator (caller) can send *to* a background/named member and read
+     its reply — the same asymmetry the root-cause note above already
+     describes.
+
+     **Bound: single ping, reply-or-next-idle — no wall-clock timeout, no
+     retry count**, consistent with "the orchestrator has no timer and must
+     not wait on one" above. Outcomes:
+     - A **coherent progress reply** (the member describes a plausible
+       in-progress state, e.g. "in Phase 4 review, awaiting reviewer
+       sub-agent") means it is still legitimately working: **do not
+       disqualify it and do not merge it yet.** It stays eligible and is
+       resolved later, either by its eventual Final-step report or by a
+       subsequent idle-without-report signal, which simply re-enters this
+       same B6 path. Send no second ping in response to this reply. A
+       coherent-reply member is **not** added to the confirmed-done set —
+       it isn't confirmed, only kept alive.
+     - An **empty or error reply, an incoherent reply, or the member's very
+       next signal being another idle-without-report** falls through to the
+       **Conservative non-merge rule** below, unchanged: genuinely
+       unconfirmed, roll into a later wave.
+
+     Judging "coherent" is the orchestrator's own read of the reply content
+     — a plausible mid-pipeline state versus gibberish or an empty body —
+     not a new automated check. This ping only adds a disambiguation gate
+     in front of disqualification; it never relaxes any of the git-state
+     criteria above or the Conservative non-merge rule below, which remain
+     the last-resort gate for a genuinely dropped or dead spawn.
 
    **Conservative non-merge rule.** A member whose ending state cannot be
    confirmed this way is **not merged**: HEAD not ahead of the branch point
@@ -369,28 +446,35 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
    self-report alone.
 3. **Checkout the integration branch, then B4 — clean-checkout gate, before
    any merge.** On the main checkout (`repo_root`), first switch onto the
-   integration branch itself: `git checkout <integration>` (or
-   `git switch <integration>`) — the checkout stayed on `base` since
-   Precondition 0/3, and the merges in step 4 below must land on
+   integration branch itself: `git -C <repo_root> checkout <integration>` (or
+   `git -C <repo_root> switch <integration>`) — the checkout stayed on `base`
+   since Precondition 0/3, and the merges in step 4 below must land on
    `<integration>`, not `base`. Then confirm there is nothing uncommitted
-   sitting in the way of the merges about to happen: `git status --porcelain`
-   and `git diff` must both be **empty**. If either is non-empty, **STOP** —
-   do not merge into a dirty integration-branch checkout.
+   sitting in the way of the merges about to happen:
+   `git -C <repo_root> status --porcelain` and `git -C <repo_root> diff` must
+   both be **empty**. If either is non-empty, **STOP** — do not merge into a
+   dirty integration-branch checkout.
 4. **Merge approved + green members into the integration branch.** For every
    member that ended `APPROVE` with a green test run, merge its branch with
-   `git merge --no-ff <branch>` into `<integration>`. Members that were
-   `CHANGES_REQUESTED` or reported failing tests are **dropped from this
-   merge** — no special handling needed, they simply roll into a later
+   `git -C <repo_root> merge --no-ff <branch>` into `<integration>`. Members
+   that were `CHANGES_REQUESTED` or reported failing tests are **dropped from
+   this merge** — no special handling needed, they simply roll into a later
    (possibly solo, single-member) wave for a subsequent run.
 5. **Integration gate — run the full suite on the integration branch**, after
    merging the wave's approved members. This is the cross-wave safety net: it
    catches interactions between this wave's changes and everything merged so
-   far, which no single member's own test run could see.
+   far, which no single member's own test run could see. The test runner
+   itself is the one non-git, cwd-dependent step in this skill — `-C` has no
+   test-runner equivalent — so make its first statement an explicit
+   `Set-Location <repo_root>` (PowerShell) / `cd <repo_root>` (POSIX) before
+   invoking the detected test command; this is not a strategy mix with the
+   `-C` convention above, it is the one place where a location change (rather
+   than a per-command flag) is the only option.
    - **On GREEN:** tear down this wave's worktrees (see Teardown below, with
      the B2/B3 extensions), **then push the integration branch** —
-     `git push origin <integration>` is a **hard precondition before the next
-     wave creates any worktree (B1)**. Never let a later wave branch off an
-     unpushed integration head.
+     `git -C <repo_root> push origin <integration>` is a **hard precondition
+     before the next wave creates any worktree (B1)**. Never let a later wave
+     branch off an unpushed integration head.
    - **On RED: STOP immediately. There is no automatic revert.** Leave the
      state exactly as it is:
      - The wave's `--no-ff` merge commits remain in the **local** integration
@@ -422,12 +506,15 @@ per the RED path above and the user has resolved it), close out the run:
    that made it into the integration branch across every wave.
 3. **Report to the user:** the PR URL, the full wave-by-wave recap (what
    merged, what was deferred, what — if anything — is still pending
-   resolution from a RED gate).
+   resolution from a RED gate), and — if non-empty — the run's
+   `manual-cleanup-needed` list from Teardown step 3 (self-cwd-locked worktree
+   directories that need a human to delete them by hand), so stale
+   directories are always flagged, never silently accumulated.
 4. **Switch the main checkout back to the default branch.** The main checkout
    has been sitting on `<integration>` since Phase C step 3; now that the
-   combined PR is open, `git checkout <base>` (or `git switch <base>`) on the
-   main checkout so Precondition 0 holds again for the next invocation of this
-   skill.
+   combined PR is open, `git -C <repo_root> checkout <base>` (or
+   `git -C <repo_root> switch <base>`) so Precondition 0 holds again for the
+   next invocation of this skill.
 
 ## Teardown — remove a worktree
 
@@ -470,6 +557,27 @@ RED gate), remove it **safely and statelessly**:
    agent-worktree MCP (`worktree_remove`) so it releases ports, runs teardown,
    and updates its state store. Do not `rm -rf` the directory or run
    `git worktree remove` by hand — that desyncs the MCP's state.
+3. **Self-cwd-lock terminal case (Windows-specific, distinct from B2) — detect
+   and flag, do not loop.** If B2's path-matched sweep found **zero**
+   processes, and the first `force=true` `worktree_remove` attempt from step 2
+   still reports the literal signature
+   `"directory is still locked after killing 0 blocking process(es)"`
+   or a raw `Permission denied` on an otherwise-empty directory, this is
+   **not** a foreign-process case — B2 already came back empty, so there is
+   no PID left to find or kill. The blocker is the orchestrator's **own
+   background-job shell**, whose cwd silently sits inside the worktree being
+   torn down (the same cwd-drift mechanism #66 fixed for git invocations —
+   see AGENTS.md's cwd-independent-git invariant). On this signature:
+   - **Do not loop** the B2 kill logic — re-running the sweep will keep
+     finding zero processes forever, since the holder isn't a foreign PID.
+   - **Do not attempt a `cd`/`Set-Location` away** from the directory to free
+     it — cwd control from within the shell holding the lock is unreliable
+     (per #66).
+   - Instead, **record the worktree path on a run-level
+     `manual-cleanup-needed` list** and move on — teardown is routine hygiene
+     and, like the rest of this section, does not gate run correctness.
+     Surface that list to the user in Phase D step 3 so stale directories are
+     always flagged, never silently accumulated.
 
 **Recovery — already-desynced phantom entry.** If a worktree was left desynced
 (git no longer lists it, the directory persists, and the MCP still shows
@@ -477,7 +585,8 @@ RED gate), remove it **safely and statelessly**:
 `fatal: '<path>' is not a working tree`. Recover by hand: kill any lingering
 process per B2 above → remove the directory
 (`Remove-Item -Recurse -Force '<worktree-path>'`) → delete the merged local
-branch (`git branch -d <branch>`). The phantom MCP entry then remains —
+branch (`git -C <repo_root> branch -d <branch>`). The phantom MCP entry then
+remains —
 cosmetic; no agent-worktree MCP call currently prunes it (its own
 self-reconcile is tracked in the agent-worktree repo).
 
@@ -538,7 +647,10 @@ for manual cleanup — never silently fail to retry a dropped member.
 - **Teardown order is load-bearing:** kill any process still holding the
   worktree open (B2 — the Codex broker and/or the Serena LSP chain, matched by
   worktree path, not a narrow name allowlist) → confirm the dir is free →
-  `worktree_remove`. These are plain helper processes — force-killing them is
+  `worktree_remove` → **if still locked/Permission-denied with zero foreign
+  PIDs found by B2, that's the self-cwd-lock terminal case: flag the path on
+  the `manual-cleanup-needed` list, don't loop the B2 kill logic, and don't
+  try to cd away.** These are plain helper processes — force-killing them is
   correct and safe.
 - **Never merge on self-report alone (B6).** If a wave member goes idle
   without having sent its Final-step report, that is the trigger to confirm
@@ -552,7 +664,15 @@ for manual cleanup — never silently fail to retry a dropped member.
   unreadable marker, marker `ticket` not matching this member's actual ticket
   number, marker `verdict` not `APPROVE`, or marker `test` not `PASS`) is not
   merged; it rolls into a later wave. See Phase C step 2 for the full
-  protocol.
+  protocol. Before that disqualification lands, a single status-check
+  `SendMessage` ping disambiguates a busy-but-alive member (coherent reply
+  → keep waiting, not merged, not disqualified) from a genuinely dropped one
+  (empty/error/incoherent reply or another idle-without-report → falls
+  through to disqualification unchanged) — one ping, no timer, no retry
+  count, and it never relaxes the git-state criteria above. Once a member is
+  confirmed-done — its report carried the explicit `final: true` terminal
+  marker, or it was B6-confirmed via the fallback — later idle pings from it
+  are idempotent no-op set lookups, never a re-triggered B6 check.
 - **Exactly one combined PR, at the very end of the run.** Individual wave
   members never open their own PR or push their own branch — `process-ticket`
   runs in `mode=integration` for every wave member specifically so this skill

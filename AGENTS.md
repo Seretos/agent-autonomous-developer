@@ -135,7 +135,41 @@ above has already proven a genuine new commit landed this run, and (2) its
 own `ticket` field must equal this wave member's actual ticket number — a
 mismatch means the marker is stale (left over from a different ticket ever
 processed in this worktree) and it is rejected, treated the same as a
-missing marker. **Conservative non-merge rule:** a member that can't be
+missing marker.
+
+**Status-check ping — disambiguate busy vs. dead before disqualifying.**
+Before the Conservative non-merge rule below fires, a sanctioned single-ping
+`SendMessage` step gets a chance to distinguish a legitimately-busy member
+(idle while blocked on its own nested sub-agent reply, e.g. mid Phase-4
+review) from a genuinely dropped/dead spawn. It fires only when both are
+true: the trigger is the already-narrow idle-without-report case (a member
+not yet in the confirmed-done set), **and** the git-state check above came
+back unconfirmed. A member whose git-state check passed is confirmed-done
+exactly as above and is never pinged. When it fires, the orchestrator sends
+**exactly one** direct status-check `SendMessage` to the member, asking it
+to report its current pipeline phase/state — legitimate and asymmetric,
+because the member (callee) has no `SendMessage` tool to push a reply back
+on its own initiative, but the orchestrator (caller) can send to a
+background/named member and read its reply. The bound is **single ping,
+reply-or-next-idle** — no wall-clock timeout and no retry-count number,
+consistent with the timer-free trigger described above (the orchestrator has
+no timer). A **coherent progress reply** (a plausible in-progress state, not
+gibberish or empty) means the member is still legitimately working: it is
+**not disqualified and not merged yet**, stays eligible, and is resolved
+later by its own eventual Final-step report or by a subsequent
+idle-without-report signal, which simply re-enters this same path; no second
+ping follows a coherent reply, and a coherent-reply member is **not** added
+to the confirmed-done set — only kept alive, not confirmed. An **empty/error
+reply, an incoherent reply, or the member's very next signal being another
+idle-without-report** instead falls through to the Conservative non-merge
+rule below, unchanged. Judging "coherent" stays the orchestrator's own read
+of the reply content, not a new automated check, and the ping never relaxes
+any of the #64 git-state criteria — it only adds a disambiguation gate in
+front of disqualification. This description must stay consistent with Phase
+C step 2's ping sub-step and the Hard Rules B6 bullet in
+`skills/orchestrate-tickets/SKILL.md`.
+
+**Conservative non-merge rule:** a member that can't be
 confirmed this way — HEAD not ahead of the branch point, marker missing/
 unreadable, marker `ticket` not matching this member's actual ticket number,
 marker `verdict` not `APPROVE`, or marker `test` not `PASS` — is not merged;
@@ -143,13 +177,24 @@ it rolls into a later wave, exactly like a `CHANGES_REQUESTED`/red member
 today. Checking `verdict` alone is not sufficient: the ordinary
 (non-fallback) merge criterion is `APPROVE` **with a green test run**, so the
 fallback path must disqualify on `test` too, or it would be silently weaker
-than the normal path.
+than the normal path. Symmetrically, once a member is confirmed-done — its
+report carried the explicit **`final: true`** terminal marker (see
+`skills/process-ticket/SKILL.md`'s Final step 7 — the report's field, not
+the `.process-ticket-result.json` marker *file*), or the fallback validated
+its git state and marker — any further idle pings from it are **idempotent**
+no-op set-membership checks, not a repeated B6 evaluation — the mirror of
+the idle-without-report trigger, and scoped so it cannot weaken B6.
 
 **Cross-file consistency invariant.** The literal filename
 `.process-ticket-result.json` must stay identical in both
 `skills/process-ticket/SKILL.md` (the writer) and
 `skills/orchestrate-tickets/SKILL.md` (the reader) — a rename in one without
-the other silently breaks the B6 fallback.
+the other silently breaks the B6 fallback. The same applies to the report
+message's terminal-marker field, `final: true`: it must stay identical
+between `skills/process-ticket/SKILL.md`'s Final step 7 (the writer) and
+`skills/orchestrate-tickets/SKILL.md`'s Phase C confirmed-done set (the
+reader) — a rename or field-value change in one without the other would
+silently break the confirmed-done-set keying.
 
 **Target-repo `.gitignore`, not this plugin's (finding from ticket #64 round
 2; ordering corrected in round 3).** `process-ticket` always runs against an
@@ -190,6 +235,39 @@ wrong tree. **B5 is deliberately a different label from B4** (this file's and
 `skills/orchestrate-tickets/SKILL.md`'s wave-loop clean-checkout gate, above)
 to avoid a naming collision between two unrelated safeguards that happen to
 live in adjacent files.
+
+## Every git invocation in orchestrate-tickets must be cwd-independent
+
+Ticket #66: in background/job-mode invocations, the shell's cwd can be silently
+reset between tool calls — potentially onto one of the fleet's own worker
+worktrees. A plain, ambient-cwd git command (`git checkout <integration>`,
+`git merge --no-ff <branch>`, `git status --porcelain`, `git push origin
+<integration>`, …) can therefore be silently redirected into the wrong working
+tree; a misdirected `git merge` in particular can report a bogus "Already up
+to date." with no error, risking a combined PR that silently omits a ticket's
+changes. Reproduced in a live run, not hypothetical.
+
+Fix: every git invocation in `skills/orchestrate-tickets/SKILL.md` uses `git -C
+<repo_root> …` — the same form the file already used for Phase C's
+branch-point capture and (with `<worktree_path>` instead) the idle-fallback
+protocol. `repo_root` is bootstrapped once, via a single ambient `git
+rev-parse --show-toplevel` call at the very top of Preconditions, before
+Precondition 0's own guard runs (itself now `-C <repo_root>`-pinned). That one
+bootstrap call is the sole intentional exception — you cannot `-C` into a root
+you haven't discovered yet — and a wrong resolution there is caught
+immediately by the guard it precedes. The one non-git, cwd-dependent step (the
+Phase C integration-gate test run) is not a git command, so it instead opens
+with an explicit `Set-Location <repo_root>` / `cd <repo_root>` as its first
+statement — not a strategy mix, just the one place a location change is the
+only option.
+
+**Invariant for contributors:** any new git command added to
+`orchestrate-tickets` (Preconditions, Phase C, Phase D, or Teardown) must be
+written as `git -C <repo_root> …` from the start, never a bare/ambient form.
+The only two standing exceptions are the single bootstrap `git rev-parse
+--show-toplevel` call, and the idle-fallback protocol's `git -C
+<worktree_path> …` commands (which intentionally target a *different*
+directory, not the main checkout).
 
 ## Why the project id is always a parameter
 
@@ -274,6 +352,13 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   the worktree path**, explicitly naming the Codex broker (`app-server-broker.mjs`) alongside
   the Serena LSP chain (`node`/`uvx`/`uv`/`serena.exe`/`python.exe`) as known offenders, rather
   than relying on a narrow process-name allowlist that a future helper could silently evade.
+  **Self-cwd-lock terminal case (#67).** When B2's sweep finds zero processes and
+  `worktree_remove` still reports the dir locked/`Permission denied`, the holder isn't a
+  foreign PID at all — it's the orchestrator's own background-job shell whose cwd silently
+  sits inside the worktree (the same cwd-drift mechanism #66 fixed for git invocations).
+  `skills/orchestrate-tickets/SKILL.md`'s Teardown handles this as detect-and-flag-only: no
+  looping the B2 kill logic, no `cd`/`Set-Location` away, just record the path on the
+  `manual-cleanup-needed` list surfaced in Phase D.
 
 ## Long-lived process guardrail (cross-file)
 
