@@ -1030,3 +1030,304 @@ def test_agents_md_documents_confirmed_done_short_circuit():
         "shows up as '?? .process-ticket-result.json' in 'status "
         "--porcelain' output"
     )
+
+
+# ---------------------------------------------------------------------------
+# Group 20 — ticket #68: B6 status-check ping disambiguates busy vs. dead
+# before disqualifying
+# ---------------------------------------------------------------------------
+#
+# Root cause: the B6 idle-without-report fallback (#64) made its merge/
+# no-merge decision purely from a git-state snapshot. In a live run this
+# wrongly demoted a healthy wave member that was still mid-pipeline (Phase 4
+# review, waiting on its own nested reviewer sub-agent reply) — the git-state
+# check came back unconfirmed even though the member was legitimately busy,
+# not dead.
+#
+# Fix: before the Conservative non-merge rule disqualifies such a member,
+# Phase C now documents a sanctioned single-ping `SendMessage` status check.
+# It fires only when the member is on the already-narrow B6 trigger AND the
+# git-state check came back unconfirmed. A coherent progress reply keeps the
+# member eligible (not merged, not disqualified, not added to the
+# confirmed-done set); an empty/error/incoherent reply, or the member's very
+# next signal being another idle-without-report, falls through to the
+# existing Conservative non-merge rule unchanged. The bound is single ping,
+# reply-or-next-idle — no wall-clock timeout, no retry count — consistent
+# with the pre-existing timer-free invariant. None of the #64 git-state
+# criteria are relaxed.
+#
+# Red -> green: these tests fail against the pre-#68 SKILL.md/AGENTS.md (no
+# status-check ping documented at all — the git-state snapshot alone decides
+# merge/no-merge) and pass once Phase C, the Hard Rules B6 bullet, and
+# AGENTS.md's B6 subsection all document the ping.
+
+
+def _extract_ping_first_paragraph(phase_c: str) -> str:
+    """Extract just the B6 status-check ping sub-step's opening paragraph
+    (the one stating the firing condition and the git-state-passed/never-
+    pinged outcome) — narrower than the whole Phase C block, so a proximity
+    assertion against this substring can't be satisfied by the two phrases
+    appearing anywhere unrelated in Phase C."""
+    ping_m = re.search(r"\*\*B6 status-check ping.*?(?=\n\n)", phase_c, re.DOTALL)
+    assert ping_m, "Phase C must contain the B6 status-check ping sub-step"
+    return ping_m.group(0)
+
+
+def _extract_ping_substep(phase_c: str) -> str:
+    """Extract the FULL B6 status-check ping sub-step (opening paragraph +
+    Bound/Outcomes text), from '**B6 status-check ping' through (not
+    including) the '**Conservative non-merge rule.**' paragraph — wider than
+    `_extract_ping_first_paragraph` (which stops at the first blank line),
+    needed because the 'Send no second ping' sentence sits in the Outcomes
+    bullet list, a later paragraph of the same sub-step. Still narrower than
+    the whole Phase C block."""
+    ping_m = re.search(
+        r"\*\*B6 status-check ping.*?(?=\n\s*\*\*Conservative non-merge rule)",
+        phase_c, re.DOTALL,
+    )
+    assert ping_m, "Phase C must contain the B6 status-check ping sub-step"
+    return ping_m.group(0)
+
+
+def _extract_b6_section(text: str) -> str:
+    """Extract just the AGENTS.md B6 subsection (from its opening '**B6 —
+    idle-triggered report-loss fallback' heading through the end of the
+    section, immediately before the 'Cross-file consistency invariant'
+    paragraph) — the AGENTS.md analogue of `_extract_phase_c`/
+    `_extract_hard_rules`, so B6-subsection-specific assertions can't be
+    satisfied by a stray/duplicate mention of the same wording elsewhere in
+    the file."""
+    b6_m = re.search(
+        r"\*\*B6.{0,3}idle-triggered report-loss fallback.*?"
+        r"(?=\n\*\*Cross-file consistency invariant)",
+        text, re.DOTALL,
+    )
+    assert b6_m, "AGENTS.md must contain the B6 subsection"
+    return b6_m.group(0)
+
+
+def test_phase_c_documents_status_check_ping_before_conservative_rule():
+    """The required regression test: Phase C must document a single-ping
+    SendMessage status check, positioned BEFORE the Conservative non-merge
+    rule so it has a chance to keep a busy-but-alive member from being
+    wrongly disqualified."""
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    ping_idx = phase_c.find("status-check")
+    non_merge_idx = phase_c.find("**Conservative non-merge rule.**")
+    assert ping_idx != -1, (
+        "Phase C must document a 'status-check' ping sub-step"
+    )
+    assert non_merge_idx != -1, (
+        "Phase C must still contain the Conservative non-merge rule"
+    )
+    assert ping_idx < non_merge_idx, (
+        "the status-check ping sub-step must be documented BEFORE the "
+        "Conservative non-merge rule, so it gets a chance to keep a "
+        "busy-but-alive member eligible before disqualification"
+    )
+    assert re.search(r"`SendMessage`", phase_c), (
+        "Phase C must document the ping as a `SendMessage` call"
+    )
+    assert re.search(r"exactly\s+one", phase_c, re.IGNORECASE), (
+        "Phase C must say the orchestrator sends exactly one status-check "
+        "ping"
+    )
+
+
+def test_status_check_ping_fires_only_when_git_state_unconfirmed():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    ping_para = _extract_ping_first_paragraph(phase_c)
+    assert re.search(r"never\s+pinged", ping_para, re.IGNORECASE), (
+        "Phase C must document that a member whose git-state check PASSED "
+        "is confirmed-done as usual and is never pinged"
+    )
+    # Tightened (ticket #68 review round 1, Codex finding 1): the "never
+    # pinged" outcome must be textually TIED to the unconfirmed-gating
+    # precondition, not merely present somewhere in the same Phase C block.
+    # This single regex requires the "unconfirmed" gating clause to be
+    # immediately followed (within a bounded window, no paragraph break) by
+    # the "git-state check passed -> confirmed-done -> never pinged" clause
+    # — an edit that kept the words "never pinged" but detached them from
+    # the unconfirmed-gating condition (e.g. moved to an unrelated
+    # sentence) would fail this.
+    assert re.search(
+        r"unconfirmed\*{0,2}.{0,260}\*{0,2}passed\*{0,2}\s+is\s+confirmed-done"
+        r".{0,80}\*{0,2}never\s+pinged\*{0,2}",
+        ping_para, re.IGNORECASE | re.DOTALL,
+    ), (
+        "Phase C must tie 'never pinged' directly to the git-state-check-"
+        "passed / confirmed-done outcome, which must itself appear close "
+        "after the unconfirmed-gating precondition within the same "
+        "clause/paragraph window — detaching 'never pinged' from that "
+        "precondition must fail this test"
+    )
+
+
+def test_status_check_ping_is_single_ping_no_timer_no_retry():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"no\s+wall-clock\s+timeout", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly say the ping introduces no wall-clock "
+        "timeout"
+    )
+    assert re.search(r"no\s+retry\s+count", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly say the ping introduces no retry-count "
+        "number"
+    )
+    assert re.search(r"reply-or-next-idle", phase_c, re.IGNORECASE), (
+        "Phase C must bound the ping as single-ping, reply-or-next-idle"
+    )
+
+
+def test_coherent_reply_keeps_member_eligible_not_merged_not_confirmed_done():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"coherent\s+progress\s+reply", phase_c, re.IGNORECASE), (
+        "Phase C must document the 'coherent progress reply' outcome"
+    )
+    assert re.search(
+        r"do\s+not\s+disqualify.{0,40}do\s+not\s+merge", phase_c,
+        re.IGNORECASE | re.DOTALL,
+    ), (
+        "Phase C must say a coherent reply means: do not disqualify, do "
+        "not merge yet"
+    )
+    assert re.search(
+        r"not\*{0,2}\s+added\s+to\s+the\s+confirmed-done\s+set", phase_c,
+        re.IGNORECASE,
+    ), (
+        "Phase C must explicitly say a coherent-reply member is NOT added "
+        "to the confirmed-done set — it is kept alive, not confirmed"
+    )
+    # Added (ticket #68 review round 1, follow-up finding): the "no second
+    # ping after a coherent reply" invariant is a distinct, load-bearing
+    # part of the plan's bound and was not asserted by any of the original
+    # 9 tests — a future edit could reintroduce re-pinging a coherent-reply
+    # member on its next idle signal and every existing test would stay
+    # green. Scope to the full ping sub-step (the "Send no second ping"
+    # sentence sits in the Outcomes bullet, past the first-paragraph cutoff
+    # `_extract_ping_first_paragraph` uses).
+    ping_substep = _extract_ping_substep(phase_c)
+    assert re.search(r"no\s+second\s+ping", ping_substep, re.IGNORECASE), (
+        "Phase C's coherent-reply outcome must explicitly say 'no second "
+        "ping' is sent in response to a coherent reply"
+    )
+
+
+def test_incoherent_or_next_idle_falls_through_to_conservative_rule():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(
+        r"empty\s+or\s+error\s+reply.{0,120}incoherent\s+reply.{0,160}"
+        r"idle-without-report", phase_c, re.IGNORECASE | re.DOTALL,
+    ), (
+        "Phase C must document that an empty/error reply, an incoherent "
+        "reply, or the member's next idle-without-report signal falls "
+        "through to the Conservative non-merge rule"
+    )
+    assert re.search(r"falls\s+through", phase_c, re.IGNORECASE), (
+        "Phase C must use fall-through language for the disqualifying "
+        "outcomes"
+    )
+
+
+def test_status_check_ping_never_relaxes_git_state_criteria():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"never\s+relaxes", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly say the ping never relaxes the existing "
+        "git-state criteria or the Conservative non-merge rule"
+    )
+
+
+def test_hard_rules_b6_bullet_mentions_status_check_ping():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    hard_rules = _extract_hard_rules(body)
+    b6_m = re.search(r"\*\*Never merge on self-report alone \(B6\)\.\*\*.*", hard_rules, re.DOTALL)
+    assert b6_m, "Hard rules must contain the 'Never merge on self-report alone (B6)' bullet"
+    b6_bullet = b6_m.group(0)
+    next_bullet_m = re.search(r"\n- \*\*", b6_bullet)
+    if next_bullet_m:
+        b6_bullet = b6_bullet[: next_bullet_m.start()]
+    assert re.search(r"status-check", b6_bullet, re.IGNORECASE), (
+        "the B6 Hard Rules bullet must mention the status-check ping "
+        "disambiguation step"
+    )
+    assert re.search(r"`SendMessage`", b6_bullet), (
+        "the B6 Hard Rules bullet must name SendMessage as the ping "
+        "mechanism"
+    )
+    assert re.search(r"never\s+relax", b6_bullet, re.IGNORECASE), (
+        "the B6 Hard Rules bullet must say the ping never relaxes the "
+        "git-state criteria"
+    )
+
+
+def test_agents_md_documents_status_check_ping_before_conservative_rule():
+    text = _read(AGENTS_MD)
+    b6_section = _extract_b6_section(text)
+    # Tightened (ticket #68 review round 1, Codex finding 2): scope every
+    # sub-assertion to the extracted B6 subsection, not the whole file — a
+    # stray/duplicate mention of this wording elsewhere in AGENTS.md must
+    # not be able to satisfy these checks.
+    ping_idx = b6_section.find("Status-check ping")
+    non_merge_idx = b6_section.find("**Conservative non-merge rule:**")
+    assert ping_idx != -1, (
+        "AGENTS.md's B6 subsection must document the status-check ping"
+    )
+    assert non_merge_idx != -1, (
+        "AGENTS.md's B6 subsection must still contain the Conservative "
+        "non-merge rule"
+    )
+    assert ping_idx < non_merge_idx, (
+        "AGENTS.md's B6 subsection must document the status-check ping "
+        "BEFORE the Conservative non-merge rule clause"
+    )
+    assert re.search(r"`SendMessage`", b6_section), (
+        "AGENTS.md's B6 subsection must document the ping as a SendMessage "
+        "call"
+    )
+    assert re.search(r"reply-or-next-idle", b6_section, re.IGNORECASE), (
+        "AGENTS.md's B6 subsection must bound the ping as single-ping, "
+        "reply-or-next-idle"
+    )
+    assert re.search(r"no\s+wall-clock\s+timeout", b6_section, re.IGNORECASE), (
+        "AGENTS.md's B6 subsection must say the ping introduces no "
+        "wall-clock timeout"
+    )
+    assert re.search(r"no\s+retry-count\s+number", b6_section, re.IGNORECASE), (
+        "AGENTS.md's B6 subsection must say the ping introduces no "
+        "retry-count number"
+    )
+
+
+def test_agents_md_coherent_reply_not_added_to_confirmed_done_set():
+    text = _read(AGENTS_MD)
+    # Tightened (ticket #68 review round 1, Codex finding 2): scope to the
+    # extracted B6 subsection, not the whole file, so a stray/duplicate
+    # mention elsewhere in AGENTS.md can't satisfy this check.
+    b6_section = _extract_b6_section(text)
+    assert re.search(
+        r"not\*{0,2}\s+added\s+to\s+the\s+confirmed-done\s+set", b6_section,
+        re.IGNORECASE,
+    ), (
+        "AGENTS.md's B6 subsection must say a coherent-reply member is NOT "
+        "added to the confirmed-done set — kept alive, not confirmed"
+    )
+    # Added (ticket #68 review round 1, follow-up finding): AGENTS.md
+    # counterpart of the "no second ping after a coherent reply" invariant
+    # (SKILL.md: "Send no second ping"; AGENTS.md: "no second ping follows
+    # a coherent reply"). Already within `_extract_b6_section`'s scope.
+    assert re.search(r"no\s+second\s+ping", b6_section, re.IGNORECASE), (
+        "AGENTS.md's B6 subsection must explicitly say no second ping is "
+        "sent following a coherent reply"
+    )
