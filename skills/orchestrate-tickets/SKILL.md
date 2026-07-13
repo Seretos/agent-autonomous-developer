@@ -273,7 +273,13 @@ e.g. a doc/integration ticket). Keep that `type` through to the confirm step
 Iterate the `waves` array **wave-by-wave, in order**. For each wave:
 
 1. **Create that wave's worktrees, SEQUENTIALLY.** Never in parallel —
-   concurrent `git worktree` ops on one repo race on the index lock.
+   concurrent `git worktree` ops on one repo race on the index lock. Before
+   creating any worktree, capture this wave's **branch point**: `git -C
+   <repo_root> rev-parse <integration>`, the integration branch's current head
+   SHA (call it `<branch_point_sha>`) — every member's worktree in this wave
+   branches from exactly this commit, and step 2's fallback protocol needs it
+   to prove a member produced a genuine new commit this run, not merely
+   inherited the branch-point commit.
    `worktree_create(repo_root, branch=<branch>, base=<integration>)` — branch
    off the **current integration-branch head**, not `base` directly, so each
    wave builds on top of everything already merged from earlier waves. Capture
@@ -286,6 +292,81 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
    commit, but does **not** push, open a PR, or comment — this skill owns that,
    once, at the end of the whole run (Phase D). Collect each member's ending
    state: `APPROVE`/`CHANGES_REQUESTED` verdict and test PASS/FAIL.
+
+   **Root cause — why a member's report-back can silently never arrive.**
+   Driving several members **in parallel** necessarily means each is a
+   background/named `Agent` spawn (that's the only mechanism that runs
+   concurrently). This is the same delivery mechanism whose failure mode
+   caused the planner-spawn deadlock fixed in **#58/#60** (a named spawn
+   switches into background/mailbox delivery, and the callee has no
+   `SendMessage` tool to push a reply back if that delivery silently drops)
+   — see `skills/process-ticket/SKILL.md`'s Phase 2 note for the original
+   case. Here it surfaces one level up: a wave member can finish all its real
+   work — local commit made, reviewer verdict `APPROVE` — and still go idle
+   without ever sending its mandated Final-step report, making an otherwise-
+   successful run look stalled. Unlike the planner fix, members here must run
+   in parallel, so eliminating background/named spawns is not viable — the
+   fix is a fallback, not elimination (this is **AGENTS.md's B6** safeguard).
+
+   **Idle-triggered, timer-free fallback protocol.** The orchestrator has no
+   timer and must not wait on one. The trigger is a member going **idle**
+   (`idle_notification`/`idleReason: "available"`) **without** having sent its
+   Final-step report — a member that reports first and *then* goes idle does
+   **not** re-trigger this fallback; the trigger is scoped to idle-**without**-
+   a-report, not idle alone. When that happens, do not rely solely on the
+   member's self-report — verify its real ending state directly:
+   - Run `git -C <worktree_path> log -1` and
+     `git -C <worktree_path> status --porcelain`. Expect the marker file
+     (see below) to be **absent** from plain `status --porcelain` output on a
+     fully successful run — `process-ticket`'s Final step 1 ensures the
+     target repo's `.gitignore` contains the marker's line **before** the
+     commit, so by the time the marker is written it is already gitignored,
+     and a gitignored untracked file produces no entry at all (not even an
+     untracked-file marker) in plain `status --porcelain`. This absence is
+     expected and is **not** itself a sign of uncommitted work — do not treat
+     it as anomalous.
+   - Confirm HEAD is actually **ahead of** this wave's branch point (the
+     `<branch_point_sha>` captured in step 1 above, the integration-branch
+     head this worktree was created from): `git -C <worktree_path> rev-list
+     --count <branch_point_sha>..HEAD` must be **> 0**. This check is
+     required, not optional — a worktree that never did any real work still
+     has a valid `git log -1` (the branch-point commit itself) and can show a
+     clean `status --porcelain`, so "a commit exists at HEAD" alone does not
+     prove *this run* produced one; combined with a possibly-stale leftover
+     marker file, that could otherwise be misread as a confirmed success.
+     Only "HEAD is ahead of the branch point" proves a genuine new commit
+     landed this run.
+   - Only **after** the HEAD-ahead-of-branch-point check above has passed,
+     read the result-marker file
+     `<worktree_path>/.process-ticket-result.json` (written unconditionally
+     by `process-ticket`'s Final step, in both `solo` and `integration` mode
+     — see `skills/process-ticket/SKILL.md`) to recover the reviewer
+     `verdict` and `test` result — git alone cannot recover those. The marker
+     is **not trusted on its own**: since a RED wave deliberately leaves its
+     worktrees intact for inspection (no auto-revert), a worktree could in
+     principle be reused or retried, and a stale marker from an earlier
+     attempt could otherwise be misread as confirming this run. Tying the
+     marker's trustworthiness to the already-proven "HEAD is ahead of the
+     branch point" fact — a genuine new commit landed this run — is what
+     makes reading it safe. Additionally, verify the marker's own `ticket`
+     field equals this wave member's actual ticket number; if it does not
+     match, the marker is stale (left over from a different ticket ever
+     processed in this worktree) and must be **rejected and treated as
+     unconfirmed**, exactly as if the marker were missing.
+
+   **Conservative non-merge rule.** A member whose ending state cannot be
+   confirmed this way is **not merged**: HEAD not ahead of the branch point
+   (no genuine commit this run), the marker file missing or unreadable, the
+   marker's `ticket` field not matching this member's actual ticket number
+   (stale marker from a different run), the marker's `verdict` is not
+   `APPROVE`, **or the marker's `test` is not `PASS`** — any one of these
+   disqualifies the member. This matches the ordinary (non-fallback) merge
+   criterion in step 4 below — "every member that ended `APPROVE` **with a
+   green test run**" — so the fallback path is never weaker than the normal
+   path; checking `verdict` alone is not sufficient. A disqualified member
+   rolls into a later wave, exactly like today's `CHANGES_REQUESTED`/red
+   members; do not merge on the strength of a
+   self-report alone.
 3. **Checkout the integration branch, then B4 — clean-checkout gate, before
    any merge.** On the main checkout (`repo_root`), first switch onto the
    integration branch itself: `git checkout <integration>` (or
@@ -459,6 +540,19 @@ for manual cleanup — never silently fail to retry a dropped member.
   worktree path, not a narrow name allowlist) → confirm the dir is free →
   `worktree_remove`. These are plain helper processes — force-killing them is
   correct and safe.
+- **Never merge on self-report alone (B6).** If a wave member goes idle
+  without having sent its Final-step report, that is the trigger to confirm
+  its real ending state directly — `git -C <worktree_path> log`/`status` plus
+  `rev-list --count <branch_point_sha>..HEAD` (must be `> 0`, proving HEAD is
+  ahead of the wave's branch point — not merely that a commit exists at HEAD,
+  which a never-touched worktree would also show) for a landed commit, plus
+  `<worktree_path>/.process-ticket-result.json` for the reviewer verdict and
+  test result — not a timer, and never the self-report alone. A member that
+  can't be confirmed this way (HEAD not ahead of the branch point, missing/
+  unreadable marker, marker `ticket` not matching this member's actual ticket
+  number, marker `verdict` not `APPROVE`, or marker `test` not `PASS`) is not
+  merged; it rolls into a later wave. See Phase C step 2 for the full
+  protocol.
 - **Exactly one combined PR, at the very end of the run.** Individual wave
   members never open their own PR or push their own branch — `process-ticket`
   runs in `mode=integration` for every wave member specifically so this skill
