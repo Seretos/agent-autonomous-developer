@@ -160,6 +160,16 @@ how that worker-level analogue is handled — unlike here, the fix there is a
 fallback, not elimination of named spawns, because Phase C's members must run
 in parallel.
 
+The same class of bug also recurs a third time, *within this pipeline*, at
+the Phase 3/4 fix loop: re-dispatching the developer or re-running the
+reviewer by resuming the same, already-spawned agent via `SendMessage` is
+inherently background/mailbox delivery too, regardless of how the original
+spawn was made — see Phase 4's fix-loop bullet below. It is resolved the same
+way as Phase 2: every fix-loop re-dispatch is a fresh, synchronous, unnamed
+`Agent()` call, never a `SendMessage` resume of the prior spawn. Keep this in
+mind before reintroducing a fourth instance of the bug elsewhere in the
+pipeline.
+
 **After PLAN_FINAL — post short plan comment.** Condense `plan` to a
 short-form summary (goal + approach bullets + affected files; NOT every
 detail) and post it to the ticket via
@@ -167,26 +177,57 @@ detail) and post it to the ticket via
 Do not type `#ai-generated` — the MCP prepends it.
 
 ### Phase 3 — developer (Edit / Write / Bash)
-Spawn `developer`. Pass the full `plan` and the `context_summary`. It
-implements on the **current branch/worktree**, edits/writes files, and runs
-the project's test suite (the test command is auto-detected from the stack and
-named in the plan). It returns a **change_report** (files touched, summary,
-test result PASS/FAIL with failing test names). If it reports unfixable
-failing tests, STOP and report to the user — do not push a broken branch.
+Spawn the developer **synchronously and unnamed**, mirroring Phase 2:
+`Agent(subagent_type="developer", prompt=…, run_in_background: false)`. Pass
+the full `plan` and the `context_summary`. It implements on the **current
+branch/worktree**, edits/writes files, and runs the project's test suite (the
+test command is auto-detected from the stack and named in the plan). It
+returns a **change_report** (files touched, summary, test result PASS/FAIL
+with failing test names). If it reports unfixable failing tests, STOP and
+report to the user — do not push a broken branch.
+
+Do not pass a `name`. Naming this call switches it into background/mailbox
+delivery regardless of `run_in_background`, and the developer has no
+`SendMessage` tool to push a reply back once it's in that mode — the
+orchestrator then only ever receives `idle_notification` pings and Phase 3
+deadlocks permanently. Always use a plain, unnamed, foreground call. This
+applies to the initial spawn here **and** to every fix-loop re-dispatch in
+Phase 4 below — see that section for why resuming this same spawn via
+`SendMessage` is not a substitute.
 
 ### Phase 4 — reviewer (read-only)
-Spawn `reviewer`. Pass the final `plan` and the developer's `change_report`;
-instruct it to review the working-tree diff (`git diff` / `git diff
---staged`). It returns `VERDICT: APPROVE` or `VERDICT: CHANGES_REQUESTED`
-plus severity-tagged findings (`[blocking]` / `[nit]`).
+Spawn the reviewer **synchronously and unnamed**, mirroring Phase 2 and
+Phase 3: `Agent(subagent_type="reviewer", prompt=…, run_in_background:
+false)`. Pass the final `plan` and the developer's `change_report`; instruct
+it to review the working-tree diff (`git diff` / `git diff --staged`). It
+returns `VERDICT: APPROVE` or `VERDICT: CHANGES_REQUESTED` plus
+severity-tagged findings (`[blocking]` / `[nit]`).
 (If the Codex plugin is active, the reviewer adds a Codex correctness pass on
 its own — the verdict format and this fix loop are unchanged.)
-- `CHANGES_REQUESTED` with blocking findings → re-spawn `developer` once with
-  the findings appended to the plan, then re-run `reviewer` once for a
+
+Do not pass a `name` to this spawn either, for the same reason as Phase 3:
+naming it switches delivery to background/mailbox regardless of
+`run_in_background`, and the reviewer has no `SendMessage` tool to push a
+reply back once it's in that mode.
+
+- `CHANGES_REQUESTED` with blocking findings → re-dispatch the developer and
+  reviewer, **each as a brand-new, fresh, synchronous, unnamed `Agent(...)`
+  call** — `Agent(subagent_type="developer", prompt=…, run_in_background:
+  false)` with the findings appended to the plan, then, once it reports,
+  `Agent(subagent_type="reviewer", prompt=…, run_in_background: false)` for a
   **full review** (correctness, test coverage, consistency, and — if the Codex
   plugin is active — the Codex correctness pass). Do not narrow the re-review
-  prompt to only checking that prior blocking findings are resolved. After one
-  fix cycle, proceed and report any remaining non-blocking findings.
+  prompt to only checking that prior blocking findings are resolved. As with
+  Phase 2's question-loop, each round is a brand-new subagent process with no
+  memory of the previous one — re-inline the plan (plus the findings) and the
+  `change_report` into each fresh prompt for continuity.
+  This re-dispatch is **never a `SendMessage` resume** of the prior developer
+  or reviewer spawn: resuming an existing agent via `SendMessage` is
+  *inherently* background/mailbox delivery regardless of how the original
+  spawn was made, silently reintroducing the same idle-without-report gap on
+  every fix-cycle iteration. Always issue a fresh foreground `Agent()` call
+  instead. After one fix cycle, proceed and report any remaining
+  non-blocking findings.
 - `APPROVE` → proceed to the final step.
 
 ## Final step — commit, push, open draft PR, comment (orchestrator does this)
