@@ -191,6 +191,39 @@ wrong tree. **B5 is deliberately a different label from B4** (this file's and
 to avoid a naming collision between two unrelated safeguards that happen to
 live in adjacent files.
 
+## Every git invocation in orchestrate-tickets must be cwd-independent
+
+Ticket #66: in background/job-mode invocations, the shell's cwd can be silently
+reset between tool calls — potentially onto one of the fleet's own worker
+worktrees. A plain, ambient-cwd git command (`git checkout <integration>`,
+`git merge --no-ff <branch>`, `git status --porcelain`, `git push origin
+<integration>`, …) can therefore be silently redirected into the wrong working
+tree; a misdirected `git merge` in particular can report a bogus "Already up
+to date." with no error, risking a combined PR that silently omits a ticket's
+changes. Reproduced in a live run, not hypothetical.
+
+Fix: every git invocation in `skills/orchestrate-tickets/SKILL.md` uses `git -C
+<repo_root> …` — the same form the file already used for Phase C's
+branch-point capture and (with `<worktree_path>` instead) the idle-fallback
+protocol. `repo_root` is bootstrapped once, via a single ambient `git
+rev-parse --show-toplevel` call at the very top of Preconditions, before
+Precondition 0's own guard runs (itself now `-C <repo_root>`-pinned). That one
+bootstrap call is the sole intentional exception — you cannot `-C` into a root
+you haven't discovered yet — and a wrong resolution there is caught
+immediately by the guard it precedes. The one non-git, cwd-dependent step (the
+Phase C integration-gate test run) is not a git command, so it instead opens
+with an explicit `Set-Location <repo_root>` / `cd <repo_root>` as its first
+statement — not a strategy mix, just the one place a location change is the
+only option.
+
+**Invariant for contributors:** any new git command added to
+`orchestrate-tickets` (Preconditions, Phase C, Phase D, or Teardown) must be
+written as `git -C <repo_root> …` from the start, never a bare/ambient form.
+The only two standing exceptions are the single bootstrap `git rev-parse
+--show-toplevel` call, and the idle-fallback protocol's `git -C
+<worktree_path> …` commands (which intentionally target a *different*
+directory, not the main checkout).
+
 ## Why the project id is always a parameter
 
 agent-project-issues does not resolve cwd→project (`local_path` is null, `source: config`),

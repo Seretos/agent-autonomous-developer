@@ -173,36 +173,53 @@ invoke the conflict-analyst and produces no fit evaluation.
 
 ## Preconditions
 
+**Bootstrap — capture `repo_root` first, before anything else.**
+`git rev-parse --show-toplevel` → `repo_root`. This is the **one intentional
+ambient git call** in this skill: every other git invocation below (and
+throughout Phase C, Phase D, and Teardown) is pinned with `git -C
+<repo_root> …` so it never depends on the shell's persisted/ambient cwd —
+which background/job-mode invocations can silently reset between tool calls,
+potentially onto one of the fleet's own worker worktrees (see AGENTS.md's
+cwd-independent-git invariant). This one call is unavoidably ambient — you
+cannot `-C` into a root you have not yet discovered — but a wrong resolution
+here is caught immediately by Precondition 0's `--git-dir`/`--git-common-dir`
+check below, which itself runs `-C <repo_root>` and fails closed if
+`repo_root` was miscaptured as a worktree.
+
 0. **Run only from the main checkout — never inside a worktree.** This skill is
    the mirror of `process-ticket` (which runs only *inside* a worktree on a
    feature branch). Guard before doing anything else:
-   - `git rev-parse --abbrev-ref HEAD` must be the repo's default branch.
-   - `git rev-parse --git-dir` must EQUAL `git rev-parse --git-common-dir`
-     (they differ when you are inside a linked worktree).
+   - `git -C <repo_root> rev-parse --abbrev-ref HEAD` must be the repo's
+     default branch.
+   - `git -C <repo_root> rev-parse --git-dir` must EQUAL
+     `git -C <repo_root> rev-parse --git-common-dir` (they differ when
+     `repo_root` resolved to a linked worktree).
    If either check fails, **STOP** and tell the user to run orchestrate-tickets
    from the project's main checkout — otherwise the worktrees it spawns and the
    orchestrator's own branch/state collide with the workers.
-1. **Capture repo + base branch.** `git rev-parse --show-toplevel` → `repo_root`.
-   Determine the repo's default branch → `base`. `base` is only the starting
-   point for the run's integration branch (step 3) — worktrees branch off the
-   **integration branch's current head**, not `base` directly (see Phase C).
+1. **Determine the base branch.** Determine the repo's default branch → `base`
+   (`repo_root` was already captured in the Bootstrap step above). `base` is
+   only the starting point for the run's integration branch (step 3) —
+   worktrees branch off the **integration branch's current head**, not `base`
+   directly (see Phase C).
 2. **Refresh `base` from the remote — guard against stale worktrees.** Before
    creating any worktree, bring the main checkout's default branch up to date so
-   the integration branch doesn't start from a stale `base`: `git fetch origin`
-   then `git pull --ff-only` (you are on the default branch per Precondition 0).
+   the integration branch doesn't start from a stale `base`:
+   `git -C <repo_root> fetch origin` then `git -C <repo_root> pull --ff-only`
+   (you are on the default branch per Precondition 0).
    If it can't fast-forward (the local branch has diverged) or a dirty working
    tree blocks it, **STOP** and tell the user to reconcile the main checkout
    first — never merge, rebase, or force. Stopgap: `worktree_create` does
    **not** refresh from the remote itself yet, so the skill must do it here.
 3. **Create the shared integration branch.** After the refresh above, create a
    run-scoped integration branch off the freshly-pulled `base`:
-   `git branch <integration> <base>` where `<integration>` is
+   `git -C <repo_root> branch <integration> <base>` where `<integration>` is
    `integration/<run-slug>` (`<run-slug>` — a short, unique identifier for this
    run, e.g. a date-stamp plus the lead ticket number, such as
    `integration/2026-07-13-171`). Push it once right away:
-   `git push -u origin <integration>`. Capture `<integration>` — every wave's
-   worktrees, merges, and the final combined PR all key off this one branch for
-   the rest of the run.
+   `git -C <repo_root> push -u origin <integration>`. Capture `<integration>` —
+   every wave's worktrees, merges, and the final combined PR all key off this
+   one branch for the rest of the run.
 4. **Worktree mechanism — agent-worktree MCP only.** Worktree creation uses the
    **agent-worktree MCP** (`worktree_create`). If that MCP is **not loaded** in
    this session (fresh sessions don't auto-load plugin MCPs), **STOP** and tell
@@ -369,28 +386,35 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
    self-report alone.
 3. **Checkout the integration branch, then B4 — clean-checkout gate, before
    any merge.** On the main checkout (`repo_root`), first switch onto the
-   integration branch itself: `git checkout <integration>` (or
-   `git switch <integration>`) — the checkout stayed on `base` since
-   Precondition 0/3, and the merges in step 4 below must land on
+   integration branch itself: `git -C <repo_root> checkout <integration>` (or
+   `git -C <repo_root> switch <integration>`) — the checkout stayed on `base`
+   since Precondition 0/3, and the merges in step 4 below must land on
    `<integration>`, not `base`. Then confirm there is nothing uncommitted
-   sitting in the way of the merges about to happen: `git status --porcelain`
-   and `git diff` must both be **empty**. If either is non-empty, **STOP** —
-   do not merge into a dirty integration-branch checkout.
+   sitting in the way of the merges about to happen:
+   `git -C <repo_root> status --porcelain` and `git -C <repo_root> diff` must
+   both be **empty**. If either is non-empty, **STOP** — do not merge into a
+   dirty integration-branch checkout.
 4. **Merge approved + green members into the integration branch.** For every
    member that ended `APPROVE` with a green test run, merge its branch with
-   `git merge --no-ff <branch>` into `<integration>`. Members that were
-   `CHANGES_REQUESTED` or reported failing tests are **dropped from this
-   merge** — no special handling needed, they simply roll into a later
+   `git -C <repo_root> merge --no-ff <branch>` into `<integration>`. Members
+   that were `CHANGES_REQUESTED` or reported failing tests are **dropped from
+   this merge** — no special handling needed, they simply roll into a later
    (possibly solo, single-member) wave for a subsequent run.
 5. **Integration gate — run the full suite on the integration branch**, after
    merging the wave's approved members. This is the cross-wave safety net: it
    catches interactions between this wave's changes and everything merged so
-   far, which no single member's own test run could see.
+   far, which no single member's own test run could see. The test runner
+   itself is the one non-git, cwd-dependent step in this skill — `-C` has no
+   test-runner equivalent — so make its first statement an explicit
+   `Set-Location <repo_root>` (PowerShell) / `cd <repo_root>` (POSIX) before
+   invoking the detected test command; this is not a strategy mix with the
+   `-C` convention above, it is the one place where a location change (rather
+   than a per-command flag) is the only option.
    - **On GREEN:** tear down this wave's worktrees (see Teardown below, with
      the B2/B3 extensions), **then push the integration branch** —
-     `git push origin <integration>` is a **hard precondition before the next
-     wave creates any worktree (B1)**. Never let a later wave branch off an
-     unpushed integration head.
+     `git -C <repo_root> push origin <integration>` is a **hard precondition
+     before the next wave creates any worktree (B1)**. Never let a later wave
+     branch off an unpushed integration head.
    - **On RED: STOP immediately. There is no automatic revert.** Leave the
      state exactly as it is:
      - The wave's `--no-ff` merge commits remain in the **local** integration
@@ -425,9 +449,9 @@ per the RED path above and the user has resolved it), close out the run:
    resolution from a RED gate).
 4. **Switch the main checkout back to the default branch.** The main checkout
    has been sitting on `<integration>` since Phase C step 3; now that the
-   combined PR is open, `git checkout <base>` (or `git switch <base>`) on the
-   main checkout so Precondition 0 holds again for the next invocation of this
-   skill.
+   combined PR is open, `git -C <repo_root> checkout <base>` (or
+   `git -C <repo_root> switch <base>`) so Precondition 0 holds again for the
+   next invocation of this skill.
 
 ## Teardown — remove a worktree
 
@@ -477,7 +501,8 @@ RED gate), remove it **safely and statelessly**:
 `fatal: '<path>' is not a working tree`. Recover by hand: kill any lingering
 process per B2 above → remove the directory
 (`Remove-Item -Recurse -Force '<worktree-path>'`) → delete the merged local
-branch (`git branch -d <branch>`). The phantom MCP entry then remains —
+branch (`git -C <repo_root> branch -d <branch>`). The phantom MCP entry then
+remains —
 cosmetic; no agent-worktree MCP call currently prunes it (its own
 self-reconcile is tracked in the agent-worktree repo).
 
