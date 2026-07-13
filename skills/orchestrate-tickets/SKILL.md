@@ -455,7 +455,10 @@ per the RED path above and the user has resolved it), close out the run:
    that made it into the integration branch across every wave.
 3. **Report to the user:** the PR URL, the full wave-by-wave recap (what
    merged, what was deferred, what — if anything — is still pending
-   resolution from a RED gate).
+   resolution from a RED gate), and — if non-empty — the run's
+   `manual-cleanup-needed` list from Teardown step 3 (self-cwd-locked worktree
+   directories that need a human to delete them by hand), so stale
+   directories are always flagged, never silently accumulated.
 4. **Switch the main checkout back to the default branch.** The main checkout
    has been sitting on `<integration>` since Phase C step 3; now that the
    combined PR is open, `git -C <repo_root> checkout <base>` (or
@@ -503,6 +506,27 @@ RED gate), remove it **safely and statelessly**:
    agent-worktree MCP (`worktree_remove`) so it releases ports, runs teardown,
    and updates its state store. Do not `rm -rf` the directory or run
    `git worktree remove` by hand — that desyncs the MCP's state.
+3. **Self-cwd-lock terminal case (Windows-specific, distinct from B2) — detect
+   and flag, do not loop.** If B2's path-matched sweep found **zero**
+   processes, and the first `force=true` `worktree_remove` attempt from step 2
+   still reports the literal signature
+   `"directory is still locked after killing 0 blocking process(es)"`
+   or a raw `Permission denied` on an otherwise-empty directory, this is
+   **not** a foreign-process case — B2 already came back empty, so there is
+   no PID left to find or kill. The blocker is the orchestrator's **own
+   background-job shell**, whose cwd silently sits inside the worktree being
+   torn down (the same cwd-drift mechanism #66 fixed for git invocations —
+   see AGENTS.md's cwd-independent-git invariant). On this signature:
+   - **Do not loop** the B2 kill logic — re-running the sweep will keep
+     finding zero processes forever, since the holder isn't a foreign PID.
+   - **Do not attempt a `cd`/`Set-Location` away** from the directory to free
+     it — cwd control from within the shell holding the lock is unreliable
+     (per #66).
+   - Instead, **record the worktree path on a run-level
+     `manual-cleanup-needed` list** and move on — teardown is routine hygiene
+     and, like the rest of this section, does not gate run correctness.
+     Surface that list to the user in Phase D step 3 so stale directories are
+     always flagged, never silently accumulated.
 
 **Recovery — already-desynced phantom entry.** If a worktree was left desynced
 (git no longer lists it, the directory persists, and the MCP still shows
@@ -572,7 +596,10 @@ for manual cleanup — never silently fail to retry a dropped member.
 - **Teardown order is load-bearing:** kill any process still holding the
   worktree open (B2 — the Codex broker and/or the Serena LSP chain, matched by
   worktree path, not a narrow name allowlist) → confirm the dir is free →
-  `worktree_remove`. These are plain helper processes — force-killing them is
+  `worktree_remove` → **if still locked/Permission-denied with zero foreign
+  PIDs found by B2, that's the self-cwd-lock terminal case: flag the path on
+  the `manual-cleanup-needed` list, don't loop the B2 kill logic, and don't
+  try to cd away.** These are plain helper processes — force-killing them is
   correct and safe.
 - **Never merge on self-report alone (B6).** If a wave member goes idle
   without having sent its Final-step report, that is the trigger to confirm

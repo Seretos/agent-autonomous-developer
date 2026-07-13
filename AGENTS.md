@@ -311,6 +311,13 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   the worktree path**, explicitly naming the Codex broker (`app-server-broker.mjs`) alongside
   the Serena LSP chain (`node`/`uvx`/`uv`/`serena.exe`/`python.exe`) as known offenders, rather
   than relying on a narrow process-name allowlist that a future helper could silently evade.
+  **Self-cwd-lock terminal case (#67).** When B2's sweep finds zero processes and
+  `worktree_remove` still reports the dir locked/`Permission denied`, the holder isn't a
+  foreign PID at all — it's the orchestrator's own background-job shell whose cwd silently
+  sits inside the worktree (the same cwd-drift mechanism #66 fixed for git invocations).
+  `skills/orchestrate-tickets/SKILL.md`'s Teardown handles this as detect-and-flag-only: no
+  looping the B2 kill logic, no `cd`/`Set-Location` away, just record the path on the
+  `manual-cleanup-needed` list surfaced in Phase D.
 
 ## Long-lived process guardrail (cross-file)
 
