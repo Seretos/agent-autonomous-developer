@@ -1,0 +1,18 @@
+{
+  "name": "agent-autonomous-developer",
+  "description": "Turns agent-project-issues tickets into draft pull requests for projects in any language (stack auto-detected). Ships three skills — dispatch (model-facing lane-aware entry point), orchestrate-tickets (fleet orchestrator, main-checkout lane), and process-ticket (end-to-end ticket pipeline, worktree lane) — backed by five subagents. Drives the agent-project-issues and agent-worktree MCPs.",
+  "version": "0.2.1",
+  "author": {
+    "name": "Arne von Appen"
+  },
+  "dependencies": [
+    {
+      "name": "agent-project-issues",
+      "version": ">=0.0.1 <1.0.0"
+    },
+    {
+      "name": "agent-worktree",
+      "version": ">=0.0.1 <1.0.0"
+    }
+  ]
+}
