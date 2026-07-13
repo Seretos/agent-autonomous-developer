@@ -102,6 +102,83 @@ next wave) and the RED no-auto-revert behavior intact — they are what makes a
 pushed integration branch a safe, always-green base for the next wave to
 build on.
 
+**B6 — idle-triggered report-loss fallback (distinct from B1-B5).** Phase C
+drives wave members **in parallel**, which necessarily means each is a
+background/named `Agent` spawn — the same delivery mechanism whose failure
+mode caused the planner-spawn deadlock originally fixed in #58/#60 (naming an
+`Agent()` call switches it to background/mailbox delivery, and the callee has
+no `SendMessage` tool to push a reply back if that delivery silently drops).
+Ticket #64 found the worker-level analogue one layer up: a wave member can
+finish all its real work — local commit made, reviewer verdict `APPROVE` —
+and still go idle without ever sending its mandated Final-step report,
+leaving an otherwise-successful run looking stalled. Unlike the planner fix,
+eliminating background/named spawns is not viable here because members must
+run in parallel, so the fix is a **fallback**, not elimination: when a member
+goes **idle** without having sent its report — the trigger, not a timer, the
+orchestrator has none — Phase C verifies the member's real ending state
+directly instead of relying on the self-report: `git -C <worktree_path>
+log`/`status --porcelain` plus `rev-list --count <branch_point_sha>..HEAD` (>
+0, proving HEAD is ahead of the wave's branch point — the integration-branch
+head SHA this worktree was created from — not merely that a commit exists at
+HEAD, which a worktree that never did any real work would also show) to
+confirm a genuine local commit landed this run, **only after which** the
+result-marker file `<worktree_path>/.process-ticket-result.json` (written
+unconditionally by `process-ticket`'s Final step, in both `solo` and
+`integration` mode) is read to recover the reviewer verdict and test result
+that git alone can't. The marker is never trusted on its own: because a RED
+wave deliberately leaves its worktrees intact for inspection (no
+auto-revert), a worktree could in principle be reused or retried, and a
+stale marker from an earlier attempt could otherwise be misread as
+confirming this run. Two things tie the marker to *this* run before it's
+trusted: (1) it is only read after the HEAD-ahead-of-branch-point check
+above has already proven a genuine new commit landed this run, and (2) its
+own `ticket` field must equal this wave member's actual ticket number — a
+mismatch means the marker is stale (left over from a different ticket ever
+processed in this worktree) and it is rejected, treated the same as a
+missing marker. **Conservative non-merge rule:** a member that can't be
+confirmed this way — HEAD not ahead of the branch point, marker missing/
+unreadable, marker `ticket` not matching this member's actual ticket number,
+marker `verdict` not `APPROVE`, or marker `test` not `PASS` — is not merged;
+it rolls into a later wave, exactly like a `CHANGES_REQUESTED`/red member
+today. Checking `verdict` alone is not sufficient: the ordinary
+(non-fallback) merge criterion is `APPROVE` **with a green test run**, so the
+fallback path must disqualify on `test` too, or it would be silently weaker
+than the normal path.
+
+**Cross-file consistency invariant.** The literal filename
+`.process-ticket-result.json` must stay identical in both
+`skills/process-ticket/SKILL.md` (the writer) and
+`skills/orchestrate-tickets/SKILL.md` (the reader) — a rename in one without
+the other silently breaks the B6 fallback.
+
+**Target-repo `.gitignore`, not this plugin's (finding from ticket #64 round
+2; ordering corrected in round 3).** `process-ticket` always runs against an
+arbitrary **target project repo** (supplied via `project_id`/`worktree_path`
+— see "Why the project id is always a parameter" above), never "this plugin
+repo itself." This plugin's own `.gitignore` entry for
+`.process-ticket-result.json` has zero effect on real usage — it only helps
+when testing this plugin against its own repo. The actual fix lives in
+`skills/process-ticket/SKILL.md`'s Final step 1 (both modes), which now runs
+**before** step 2's commit: it checks whether the **target repo's own**
+`.gitignore` already contains the line `.process-ticket-result.json` and
+appends it (idempotent, one line, untouched otherwise) if not, and only
+*then* does step 2 run `git add -A` and commit. Running the check before the
+commit (not after, as round 2's fix originally had it) means that when an
+append is needed, it is staged and committed as part of *this run's own*
+commit — properly attributed to the ticket that first needed it, not left as
+an uncommitted stray change for a later, unrelated ticket's `git add -A` to
+silently sweep up unattributed. It also protects every subsequent
+`process-ticket` run against that same worktree/repo — by the time a later
+run reaches its own step 1, `.gitignore` already excludes the marker, so that
+later run's own `git add -A` correctly skips the still-untracked, now-ignored
+marker file left over from this run. The marker write itself (step 6) still
+happens after the commit, unchanged — only the `.gitignore` check/append
+moved earlier. One more consequence of the corrected ordering: because the
+marker is gitignored *before* it's written, `git status --porcelain` in the
+worktree shows **no entry at all** for it (a gitignored untracked file
+produces no `??` line) — see `skills/orchestrate-tickets/SKILL.md`'s Phase C
+fallback, which relies on this.
+
 **B5 — developer working-directory/Serena-project safeguard (distinct from
 B4).** Under wave-based parallel processing, several `developer` subagents can
 run concurrently across different worktrees; `agents/developer.md` documents

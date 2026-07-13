@@ -29,6 +29,8 @@ import re
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ORCHESTRATE_MD = REPO_ROOT / "skills" / "orchestrate-tickets" / "SKILL.md"
+PROCESS_MD = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+AGENTS_MD = REPO_ROOT / "AGENTS.md"
 
 
 def _read(path: pathlib.Path) -> str:
@@ -484,4 +486,435 @@ def test_fit_section_high_ticket_count_signal_not_pr_overhead():
         "The 'High ticket count with low parallelism' signal must not still "
         "attribute overhead to per-ticket PR overhead — PR count is fixed at "
         "one per run, not per ticket, under the wave model"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 14 — ticket #64: idle-triggered git-state + marker fallback when a
+# wave member's Final-step report never arrives
+# ---------------------------------------------------------------------------
+#
+# Root cause: parallel wave members are necessarily background/named `Agent`
+# spawns (required to run concurrently) — the same delivery mechanism whose
+# failure mode caused the planner-spawn deadlock fixed in #58/#60. A member
+# can finish all its real work (local commit, reviewer APPROVE) and still go
+# idle without ever sending its mandated report back, making an otherwise-
+# successful run look stalled. There was no documented fallback for this.
+#
+# Red -> green: these tests fail against the pre-#64 SKILL.md (no fallback
+# documented at all) and pass once Phase C documents the idle-triggered
+# git-state + result-marker fallback and the conservative non-merge rule.
+
+
+def _extract_phase_c(body: str) -> str:
+    phase_c_m = re.search(r"## Phase C.*?(?=\n## Phase D)", body, re.DOTALL)
+    assert phase_c_m, "SKILL.md must contain a '## Phase C' section"
+    return phase_c_m.group(0)
+
+
+def test_phase_c_git_state_fallback_when_report_missing():
+    """The required regression test: Phase C must document verifying a
+    member's completion via `git -C <worktree_path>` directly, rather than
+    relying solely on the worker's own self-report."""
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"git\s+-C\s+<worktree_path>\s+log", phase_c), (
+        "Phase C must document 'git -C <worktree_path> log' as part of a "
+        "fallback that verifies a member's completion directly"
+    )
+    assert re.search(r"git\s+-C\s+<worktree_path>\s+status\s+--porcelain", phase_c), (
+        "Phase C must document 'git -C <worktree_path> status --porcelain' "
+        "as part of the fallback"
+    )
+    assert re.search(r"self-report", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly say the fallback does not rely solely on "
+        "the worker's self-report"
+    )
+
+
+def test_fallback_is_idle_triggered():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"idle", phase_c, re.IGNORECASE), (
+        "Phase C must tie the fallback trigger to a member going idle"
+    )
+    assert re.search(r"timer.free|no\s+timer|not\s+.{0,20}timer|without\s+.{0,20}timer", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly say the check is NOT timer-based — the "
+        "orchestrator has no timer"
+    )
+
+
+def test_fallback_trigger_excludes_already_reported_members():
+    """Regression for ticket #64 review round 1, finding 5: the documented
+    trigger is "idle WITHOUT having sent its Final-step report" — a member
+    that reports first and then goes idle (the fast, successful path) must
+    NOT re-trigger the fallback. The prose must scope the trigger explicitly,
+    not merely say "idle" on its own.
+    """
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"without\*{0,2}\s+having\s+sent\s+its\s+Final-step\s+report", phase_c, re.IGNORECASE), (
+        "Phase C must scope the fallback trigger to idle-WITHOUT-having-sent-"
+        "its-report, not idle alone"
+    )
+    assert re.search(
+        r"reports?\s+first.{0,80}(then\s+)?goes?\s+idle.{0,80}not.{0,20}(re-)?trigger|"
+        r"not.{0,20}re-trigger.{0,120}reports?\s+first",
+        phase_c, re.DOTALL | re.IGNORECASE,
+    ), (
+        "Phase C must explicitly say that a member which reports first and "
+        "then goes idle does NOT re-trigger the fallback — the fast/"
+        "successful path must be excluded from the trigger"
+    )
+
+
+def test_fallback_uses_path_explicit_git_c():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert "git -C <worktree_path>" in phase_c, (
+        "Phase C's fallback must use 'git -C <worktree_path>', not a bare "
+        "cwd-relative git command"
+    )
+
+
+def test_fallback_reads_result_marker_for_verdict():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert ".process-ticket-result.json" in phase_c, (
+        "Phase C must document reading '.process-ticket-result.json' to "
+        "recover the reviewer verdict and test result"
+    )
+
+
+def test_unconfirmed_member_not_merged_rolls_to_later_wave():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"not\s+merged", phase_c, re.IGNORECASE), (
+        "Phase C must document that an unconfirmed member is NOT merged"
+    )
+    assert re.search(r"later\s+wave", phase_c, re.IGNORECASE), (
+        "Phase C must document that an unconfirmed member rolls into a "
+        "later wave"
+    )
+
+
+def test_phase_c_documents_background_spawn_report_can_drop():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"#58|#60", phase_c), (
+        "Phase C must cross-reference the #58/#60 planner-spawn deadlock as "
+        "the root cause of the same class of bug"
+    )
+    assert re.search(r"background|named.{0,20}spawn|mailbox", phase_c, re.IGNORECASE), (
+        "Phase C must document that parallel wave members are necessarily "
+        "background/named Agent spawns whose report can silently drop"
+    )
+
+
+def test_agents_md_documents_b6_report_loss_fallback():
+    text = _read(AGENTS_MD)
+    assert re.search(r"\bB6\b", text), (
+        "AGENTS.md must document a 'B6' safeguard for the wave-member "
+        "report-loss fallback"
+    )
+    assert ".process-ticket-result.json" in text, (
+        "AGENTS.md must reference the '.process-ticket-result.json' marker "
+        "file in the B6 note"
+    )
+    assert re.search(r"idle", text, re.IGNORECASE), (
+        "AGENTS.md's B6 note must mention the idle-triggered fallback"
+    )
+
+
+def test_marker_filename_consistent_across_skills():
+    orchestrate_body = _extract_body(_read(ORCHESTRATE_MD))
+    process_body = _extract_body(_read(PROCESS_MD))
+    assert ".process-ticket-result.json" in orchestrate_body, (
+        "skills/orchestrate-tickets/SKILL.md must reference "
+        "'.process-ticket-result.json'"
+    )
+    assert ".process-ticket-result.json" in process_body, (
+        "skills/process-ticket/SKILL.md must reference "
+        "'.process-ticket-result.json'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 15 — ticket #64 round 2, finding D: dedicated test for the
+# non-merge rule's `test`-field disqualification specifically
+# ---------------------------------------------------------------------------
+#
+# Root cause: round 1's tests only ever asserted generic "not merged"/"later
+# wave" phrasing (test_unconfirmed_member_not_merged_rolls_to_later_wave).
+# None of them pinned down that the Conservative non-merge rule disqualifies
+# on the marker's `test` field specifically, not just `verdict` — a
+# verdict-only fallback (silently weaker than the normal merge path, which
+# requires APPROVE *with* a green test run) would have slipped past every
+# existing assertion undetected.
+#
+# Red -> green: this test fails against a hypothetical verdict-only rewrite
+# of the Conservative non-merge rule (asserted below via a literal
+# "old wording" string that satisfies every *existing* non-merge assertion
+# but not this one) and passes against the current SKILL.md, which
+# explicitly ties disqualification to the marker's `test` field not being
+# `PASS`.
+
+
+def test_conservative_non_merge_rule_checks_test_field_not_just_verdict():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+
+    # A hypothetical verdict-only rewrite of the rule: it says "not merged"
+    # and "later wave" (satisfying the OLD, generic assertions in
+    # test_unconfirmed_member_not_merged_rolls_to_later_wave above) but never
+    # mentions the marker's `test` field at all.
+    verdict_only_wording = (
+        "A member whose ending state cannot be confirmed this way is not "
+        "merged: HEAD not ahead of the branch point, the marker file "
+        "missing or unreadable, or the marker's verdict is not APPROVE — "
+        "any one of these disqualifies the member. A disqualified member "
+        "rolls into a later wave, exactly like today's CHANGES_REQUESTED/"
+        "red members."
+    )
+    assert re.search(r"not\s+merged", verdict_only_wording, re.IGNORECASE)
+    assert re.search(r"later\s+wave", verdict_only_wording, re.IGNORECASE)
+
+    test_field_pattern = r"marker'?s?\s+`test`\s+(is\s+)?not\s+`PASS`"
+
+    # Confirm the test-field pattern genuinely distinguishes the two: the
+    # verdict-only wording must NOT satisfy it (proves this is a real
+    # red->green check, not a tautology that any wording would pass).
+    assert not re.search(test_field_pattern, verdict_only_wording, re.IGNORECASE), (
+        "sanity check failed: the verdict-only wording unexpectedly matched "
+        "the test-field pattern, which would make this test meaningless"
+    )
+
+    # The real SKILL.md must satisfy the stronger, test-field-specific check.
+    assert re.search(test_field_pattern, phase_c, re.IGNORECASE), (
+        "Phase C's Conservative non-merge rule must explicitly disqualify a "
+        "member whose marker `test` field is not `PASS` — checking `verdict` "
+        "alone is not sufficient, since the ordinary (non-fallback) merge "
+        "criterion is APPROVE *with* a green test run, so a verdict-only "
+        "fallback would be silently weaker than the normal merge path"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 16 — ticket #64 round 2, finding C: the marker must be validated as
+# belonging to THIS run/member, not blindly trusted
+# ---------------------------------------------------------------------------
+#
+# Root cause: the Phase C fallback read the result-marker file but never
+# checked it actually belongs to *this* run. Since RED waves deliberately
+# keep worktrees intact (no auto-revert), a worktree could be reused or
+# retried, and a stale marker from an earlier attempt could be misread as
+# confirming a retry that produced no real new work.
+#
+# Fix: the marker is only trusted after the HEAD-ahead-of-branch-point check
+# has already proven a genuine new commit landed, AND the marker's `ticket`
+# field must match the wave member's actual ticket number — a mismatch is
+# rejected and treated as unconfirmed, same as a missing marker.
+#
+# Red -> green: fails against the round-1 SKILL.md (marker read immediately
+# after the HEAD-ahead check with no `ticket`-field cross-check at all) and
+# passes once Phase C documents the staleness/ticket-match check.
+
+
+def test_marker_ticket_field_must_match_member_ticket():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert re.search(r"`ticket`\s+field", phase_c, re.IGNORECASE), (
+        "Phase C must document checking the marker's `ticket` field"
+    )
+    assert re.search(
+        r"`ticket`\s+field.{0,200}(match|equal)|"
+        r"(match|equal).{0,200}`ticket`\s+field",
+        phase_c, re.DOTALL | re.IGNORECASE,
+    ), (
+        "Phase C must document that the marker's `ticket` field must match "
+        "this wave member's actual ticket number"
+    )
+    assert re.search(r"stale", phase_c, re.IGNORECASE), (
+        "Phase C must call a ticket-field mismatch a stale marker"
+    )
+
+
+def test_marker_only_trusted_after_head_ahead_check():
+    """The staleness fix must tie marker trust to the already-proven
+    HEAD-ahead-of-branch-point fact, not read the marker unconditionally."""
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    head_ahead_idx = phase_c.find("rev-list")
+    marker_read_idx = phase_c.find("read the result-marker file")
+    assert head_ahead_idx != -1, "Phase C must document the rev-list HEAD-ahead check"
+    assert marker_read_idx != -1, (
+        "Phase C must document reading the result-marker file with the "
+        "phrase 'read the result-marker file' (distinct from the earlier, "
+        "incidental mention of the marker filename in the 'status "
+        "--porcelain' bullet, which merely notes it's expected to be absent "
+        "since the marker is gitignored by the time it's written)"
+    )
+    assert head_ahead_idx < marker_read_idx, (
+        "the HEAD-ahead-of-branch-point check must be documented BEFORE the "
+        "marker file is read, so the marker is only trusted once a genuine "
+        "new commit has already been proven"
+    )
+    assert re.search(r"only.{0,20}after|not\s+trusted\s+on\s+its\s+own", phase_c, re.IGNORECASE), (
+        "Phase C must explicitly say the marker is only read/trusted AFTER "
+        "the HEAD-ahead check, not merely happen to be documented after it"
+    )
+
+
+def test_ticket_mismatch_disqualifies_member_from_merge():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    non_merge_m = re.search(r"\*\*Conservative non-merge rule\.\*\*.*", phase_c, re.DOTALL)
+    assert non_merge_m, "Phase C must contain the 'Conservative non-merge rule'"
+    non_merge_rule = non_merge_m.group(0)
+    assert re.search(r"`ticket`\s+field\s+not\s+matching|not\s+matching.{0,60}`ticket`",
+                      non_merge_rule, re.IGNORECASE), (
+        "the Conservative non-merge rule must list a `ticket`-field mismatch "
+        "as a disqualifying condition, alongside HEAD-not-ahead, missing "
+        "marker, verdict-not-APPROVE, and test-not-PASS"
+    )
+
+
+def test_agents_md_documents_ticket_field_staleness_check():
+    text = _read(AGENTS_MD)
+    assert re.search(r"`ticket`\s+field", text, re.IGNORECASE), (
+        "AGENTS.md's B6 note must document the marker's `ticket` field "
+        "staleness check"
+    )
+    assert re.search(r"stale", text, re.IGNORECASE), (
+        "AGENTS.md's B6 note must call a mismatched marker a stale marker"
+    )
+
+
+def test_agents_md_documents_target_repo_gitignore_fix():
+    text = _read(AGENTS_MD)
+    assert re.search(r"target repo'?s own\*{0,4}\s*`?\.gitignore`?", text, re.IGNORECASE), (
+        "AGENTS.md must document that the real gitignore fix targets the "
+        "TARGET repo's own .gitignore, not this plugin's own .gitignore"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 17 — ticket #64 round 3, finding 2: Phase C must NOT claim the marker
+# shows up as `??` in plain `status --porcelain` output
+# ---------------------------------------------------------------------------
+#
+# Root cause: round 2's Phase C fallback said to expect `status --porcelain`
+# to show `?? .process-ticket-result.json` "even on a fully successful run."
+# But round 3 finding 1 moved the target-repo .gitignore append to BEFORE
+# process-ticket's own commit (see skills/process-ticket/SKILL.md's Final
+# step 1), so by the time the marker file is written it is already
+# gitignored — and a gitignored untracked file produces NO entry at all in
+# plain `git status --porcelain` (verified: empty, not a `??` line). The old
+# "expect `??`" claim is therefore factually wrong under the corrected
+# ordering and must be corrected to "expect it to be absent."
+#
+# Red -> green: this test fails against the round-2 SKILL.md (which asserts
+# the marker shows up as `?? .process-ticket-result.json`) and passes once
+# Phase C instead documents the marker's absence from plain `status
+# --porcelain` output.
+
+
+def test_phase_c_does_not_claim_marker_shows_as_untracked_porcelain_entry():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    phase_c = _extract_phase_c(body)
+    assert not re.search(r"\?\?\s*\.process-ticket-result\.json", phase_c), (
+        "Phase C must NOT claim 'git status --porcelain' shows "
+        "'?? .process-ticket-result.json' — once the target-repo .gitignore "
+        "append runs before the commit (round 3 finding 1), the marker is "
+        "already gitignored when written and produces no 'status "
+        "--porcelain' entry at all, so the old '??' claim is now false"
+    )
+    assert re.search(r"absent|no\s+entry|not\s+(show|appear)", phase_c, re.IGNORECASE), (
+        "Phase C must instead document that the marker is expected to be "
+        "ABSENT from plain 'status --porcelain' output on a successful run"
+    )
+    assert re.search(r"gitignor", phase_c, re.IGNORECASE), (
+        "Phase C must explain the marker's absence from 'status --porcelain' "
+        "in terms of it already being gitignored by the time it's written"
+    )
+
+
+def test_agents_md_does_not_claim_marker_shows_as_untracked_porcelain_entry():
+    """Cross-check AGENTS.md's B6 paragraph for the same now-false claim."""
+    text = _read(AGENTS_MD)
+    assert not re.search(r"\?\?\s*\.process-ticket-result\.json", text), (
+        "AGENTS.md's B6 note must NOT claim the marker shows up as "
+        "'?? .process-ticket-result.json' in 'status --porcelain' output"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 18 — ticket #64 round 3, finding 3: the Hard Rules summary bullet
+# must list all 5 disqualifying conditions, including ticket-mismatch
+# ---------------------------------------------------------------------------
+#
+# Root cause: the '## Hard rules' section's "Never merge on self-report
+# alone (B6)" bullet restates the Conservative non-merge rule for quick
+# reference, but only listed 4 conditions (HEAD not ahead, missing/unreadable
+# marker, verdict not APPROVE, test not PASS) — missing the 5th condition
+# (marker `ticket` field not matching the wave member's actual ticket
+# number) that round 2 finding C added to Phase C step 2 and AGENTS.md's B6
+# paragraph. All three restatements must list the same 5 conditions.
+#
+# Red -> green: this test fails against a Hard Rules bullet that lists only
+# 4 conditions and passes once it lists the ticket-mismatch condition too.
+
+
+def _extract_hard_rules(body: str) -> str:
+    hard_rules_m = re.search(r"## Hard rules.*", body, re.DOTALL)
+    assert hard_rules_m, "SKILL.md must contain a '## Hard rules' section"
+    return hard_rules_m.group(0)
+
+
+def test_hard_rules_b6_bullet_lists_all_five_disqualifying_conditions():
+    text = _read(ORCHESTRATE_MD)
+    body = _extract_body(text)
+    hard_rules = _extract_hard_rules(body)
+    b6_m = re.search(r"\*\*Never merge on self-report alone \(B6\)\.\*\*.*", hard_rules, re.DOTALL)
+    assert b6_m, "Hard rules must contain the 'Never merge on self-report alone (B6)' bullet"
+    b6_bullet = b6_m.group(0)
+    # Stop at the next top-level bullet so we don't accidentally read past
+    # the B6 bullet into unrelated Hard Rules text below it.
+    next_bullet_m = re.search(r"\n- \*\*", b6_bullet)
+    if next_bullet_m:
+        b6_bullet = b6_bullet[: next_bullet_m.start()]
+    assert re.search(r"HEAD\s+not\s+ahead", b6_bullet, re.IGNORECASE), (
+        "the B6 Hard Rules bullet must list 'HEAD not ahead of the branch "
+        "point' as a disqualifying condition"
+    )
+    assert re.search(r"missing.{0,20}unreadable\s+marker|marker.{0,20}missing", b6_bullet, re.IGNORECASE | re.DOTALL), (
+        "the B6 Hard Rules bullet must list the missing/unreadable marker as "
+        "a disqualifying condition"
+    )
+    assert re.search(r"`ticket`\s+not\s+matching|ticket.{0,60}matching", b6_bullet, re.IGNORECASE | re.DOTALL), (
+        "the B6 Hard Rules bullet must list the marker `ticket` field not "
+        "matching this member's actual ticket number as a disqualifying "
+        "condition — this 5th condition was missing in round 2's summary "
+        "bullet even though Phase C step 2 and AGENTS.md's B6 paragraph "
+        "both correctly list it"
+    )
+    assert re.search(r"verdict.{0,20}not\s+`?APPROVE`?", b6_bullet, re.IGNORECASE | re.DOTALL), (
+        "the B6 Hard Rules bullet must list marker `verdict` not `APPROVE` "
+        "as a disqualifying condition"
+    )
+    assert re.search(r"test.{0,20}not\s+`?PASS`?", b6_bullet, re.IGNORECASE | re.DOTALL), (
+        "the B6 Hard Rules bullet must list marker `test` not `PASS` as a "
+        "disqualifying condition"
     )

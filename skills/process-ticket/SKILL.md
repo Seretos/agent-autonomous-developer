@@ -150,6 +150,16 @@ into every follow-up prompt, not from any runtime session. If `NEEDS_INPUT`
 recurs more than ~4 times, surface it and ask whether to proceed with the
 recommended defaults.
 
+This same class of bug can also surface one level up: when `orchestrate-tickets`
+drives several wave members in parallel, each member is necessarily a
+background/named `Agent` spawn (required to run concurrently), and that
+spawn's mailbox delivery can just as silently drop a worker's final
+report-back. See AGENTS.md's **B6** note and
+`skills/orchestrate-tickets/SKILL.md`'s Phase C idle-triggered fallback for
+how that worker-level analogue is handled — unlike here, the fix there is a
+fallback, not elimination of named spawns, because Phase C's members must run
+in parallel.
+
 **After PLAN_FINAL — post short plan comment.** Condense `plan` to a
 short-form summary (goal + approach bullets + affected files; NOT every
 detail) and post it to the ticket via
@@ -185,15 +195,51 @@ The orchestrator owns this (not the developer): it depends on the whole
 pipeline's outcome (final plan + review verdict) and the branch/ticket the
 orchestrator holds, and it keeps the developer's tool scope minimal.
 
-**Mode-gated.** Step 1 (commit) runs in **both** `solo` and `integration`
-mode. Steps 2-4 (push, create_pr, ticket comment) run **ONLY in `solo`
-mode** — in `integration` mode the **caller** (the `orchestrate-tickets` wave
-loop) owns the push, the merge into the shared integration branch, and the
-single end-of-run combined PR + comments, so this skill skips them here.
-Step 5 (report) runs in both modes, with adjusted wording for integration
-mode.
+**Mode-gated.** Step 1 (the target-repo `.gitignore` guarantee) and Step 2
+(commit) both run in **both** `solo` and `integration` mode — Step 1 runs
+**first**, so its append (when needed) is folded into Step 2's `git add -A`
+and becomes part of *this run's own commit*, correctly attributed. Steps 3-5
+(push, create_pr, ticket comment) run **ONLY in `solo` mode** — in
+`integration` mode the **caller** (the `orchestrate-tickets` wave loop) owns
+the push, the merge into the shared integration branch, and the single
+end-of-run combined PR + comments, so this skill skips them here. Step 6
+(write the result-marker file) runs **unconditionally in both modes**. Step 7
+(report) also runs in both modes, with adjusted wording for integration mode.
 
-1. **Commit** (raw git — no MCP for a local commit; both modes). The commit
+1. **Target-repo `.gitignore` guarantee** (both modes — runs **before** the
+   commit below, so any append lands inside this ticket's own commit rather
+   than sitting uncommitted for a later, unrelated ticket to sweep up via its
+   own `git add -A`). `process-ticket` always runs against an arbitrary
+   **target project repo** supplied via `project_id`/`worktree_path`, never
+   "this plugin repo itself" — see AGENTS.md's "Why the project id is always
+   a parameter". This plugin's own `.gitignore` entry for
+   `.process-ticket-result.json` therefore has **zero effect** on real usage:
+   it only helps when testing this plugin against its own repo, and is not
+   representative of how process-ticket is actually invoked. To make the
+   marker actually safe in an arbitrary target repo, check the
+   **target repo's own `.gitignore`**, not this plugin's:
+   - Read `<target repo root>/.gitignore` (repo root for `solo` mode,
+     `<worktree_path>` for `integration` mode) — treat a missing file as
+     empty.
+   - If it does not already contain the exact line
+     `.process-ticket-result.json`, append that line as a new final line
+     (creating the file if it doesn't exist yet). This is a one-line,
+     idempotent, safe append: check first, and never touch, reorder, or
+     rewrite any other line already in that file.
+   - Because this check/append runs **before** step 2's `git add -A`, when an
+     append is needed it is staged and committed as part of *this run's own*
+     commit — properly attributed to the ticket that first needed it — rather
+     than left as an uncommitted stray change for a later, unrelated ticket's
+     `git add -A` to silently absorb.
+   - **Persistence note (both modes).** Once the line is present, every
+     subsequent `process-ticket` run against this same worktree/repo finds it
+     already there and appends nothing further — by the time a later run
+     reaches its own step 1, `.gitignore` already excludes the marker, so that
+     later run's step 2 `git add -A` correctly skips the still-untracked,
+     now-ignored marker file left over from this run. In `solo` mode no
+     orchestrator ever reads the marker (only the `integration`-mode wave
+     loop's fallback does), so no cleanup step is needed here.
+2. **Commit** (raw git — no MCP for a local commit; both modes). The commit
    target depends on `mode`, mirroring the branch/worktree guard in
    Preconditions 2:
    - **`solo` mode:** commit against the invoking session's own cwd, unchanged
@@ -218,9 +264,9 @@ mode.
      run it through the Bash tool. The Bash tool executes real `bash`, not
      PowerShell — `@'...'@` delimiters have no meaning in bash and pass `@`
      literally as text, corrupting the commit subject line.
-2. **Push** the feature branch (**`solo` mode only**):
+3. **Push** the feature branch (**`solo` mode only**):
    `git push -u origin <branch>`.
-3. **Open the PR as a draft via MCP** (**`solo` mode only**; MCP over CLI per
+4. **Open the PR as a draft via MCP** (**`solo` mode only**; MCP over CLI per
    the priority law):
    `create_pr(project_id=<project>, title=<from plan>,
    head=<branch>, base=<default branch>, draft=True,
@@ -228,10 +274,51 @@ mode.
    Never type `#ai-generated` — the MCP prepends it.
    (`Closes #<n>` auto-links on GitHub/GitLab; if the project's provider is
    Azure DevOps or Jira this keyword differs — adjust if you ever target those.)
-4. **Comment on the ticket** linking the PR (**`solo` mode only**):
+5. **Comment on the ticket** linking the PR (**`solo` mode only**):
    `add_comment(project_id=<project>, ticket_id=<#>,
    body="Draft PR opened: <PR URL>. <one-line status>")`.
-5. **Report back:**
+6. **Write a result-marker file** (raw `Write` tool — **unconditional, in
+   both modes**, not mode-gated). This step exists so a caller can recover
+   this run's ending state even if step 7's report never arrives (e.g. a
+   parallel `orchestrate-tickets` wave-member spawn that goes idle without
+   replying — see AGENTS.md's **B6** note and
+   `skills/orchestrate-tickets/SKILL.md`'s Phase C fallback, which reads this
+   exact file). Write it **after** the commit (step 2) — `git add -A` has
+   already run by then, so the marker is never staged into the ticket's own
+   diff. By this point step 1 has already ensured the target repo's
+   `.gitignore` contains the marker's line, so this newly-written marker file
+   is untracked-and-ignored from the moment it's written, not merely
+   untracked:
+   - **`solo` mode:** write to `<repo root, resolved via `git rev-parse
+     --show-toplevel` from the invoking session's own cwd>/.process-ticket-result.json`.
+   - **`integration` mode:** write to `<worktree_path>/.process-ticket-result.json`
+     (the caller-supplied path, same as the commit step). Unconditional, both
+     modes.
+   - **Contents (JSON object):**
+     ```json
+     {
+       "ticket": <ticket number>,
+       "branch": "<branch>",
+       "verdict": "APPROVE",
+       "test": "PASS",
+       "mode": "integration"
+     }
+     ```
+     `verdict` is one of `APPROVE` / `CHANGES_REQUESTED` (the reviewer's final
+     verdict); `test` is one of `PASS` / `FAIL` (the developer's final test
+     result); `mode` is `solo` or `integration`, whichever this run used.
+     `ticket` is this run's own ticket number — a downstream reader (see
+     AGENTS.md's **B6** note) must treat a `ticket` value that doesn't match
+     the run it thinks it's confirming as untrustworthy, since a worktree
+     left intact after a RED wave (no auto-revert) could in principle carry a
+     stale marker from an earlier attempt. This write itself is unconditional
+     in both modes — only the `mode` field's *value* varies.
+   - **Persistence note (both modes).** This file is expected to persist in
+     the worktree afterward as a harmless untracked, gitignored artifact (see
+     step 1's guarantee, not this plugin's own `.gitignore`) — in `solo` mode
+     no orchestrator ever reads it (only the `integration`-mode wave loop's
+     fallback does), so no cleanup step is needed here.
+7. **Report back:**
    - **`solo` mode:** report to the user — PR URL, branch, review verdict,
      test result.
    - **`integration` mode:** report to the caller (the orchestrator) instead
