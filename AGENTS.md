@@ -135,7 +135,41 @@ above has already proven a genuine new commit landed this run, and (2) its
 own `ticket` field must equal this wave member's actual ticket number — a
 mismatch means the marker is stale (left over from a different ticket ever
 processed in this worktree) and it is rejected, treated the same as a
-missing marker. **Conservative non-merge rule:** a member that can't be
+missing marker.
+
+**Status-check ping — disambiguate busy vs. dead before disqualifying.**
+Before the Conservative non-merge rule below fires, a sanctioned single-ping
+`SendMessage` step gets a chance to distinguish a legitimately-busy member
+(idle while blocked on its own nested sub-agent reply, e.g. mid Phase-4
+review) from a genuinely dropped/dead spawn. It fires only when both are
+true: the trigger is the already-narrow idle-without-report case (a member
+not yet in the confirmed-done set), **and** the git-state check above came
+back unconfirmed. A member whose git-state check passed is confirmed-done
+exactly as above and is never pinged. When it fires, the orchestrator sends
+**exactly one** direct status-check `SendMessage` to the member, asking it
+to report its current pipeline phase/state — legitimate and asymmetric,
+because the member (callee) has no `SendMessage` tool to push a reply back
+on its own initiative, but the orchestrator (caller) can send to a
+background/named member and read its reply. The bound is **single ping,
+reply-or-next-idle** — no wall-clock timeout and no retry-count number,
+consistent with the timer-free trigger described above (the orchestrator has
+no timer). A **coherent progress reply** (a plausible in-progress state, not
+gibberish or empty) means the member is still legitimately working: it is
+**not disqualified and not merged yet**, stays eligible, and is resolved
+later by its own eventual Final-step report or by a subsequent
+idle-without-report signal, which simply re-enters this same path; no second
+ping follows a coherent reply, and a coherent-reply member is **not** added
+to the confirmed-done set — only kept alive, not confirmed. An **empty/error
+reply, an incoherent reply, or the member's very next signal being another
+idle-without-report** instead falls through to the Conservative non-merge
+rule below, unchanged. Judging "coherent" stays the orchestrator's own read
+of the reply content, not a new automated check, and the ping never relaxes
+any of the #64 git-state criteria — it only adds a disambiguation gate in
+front of disqualification. This description must stay consistent with Phase
+C step 2's ping sub-step and the Hard Rules B6 bullet in
+`skills/orchestrate-tickets/SKILL.md`.
+
+**Conservative non-merge rule:** a member that can't be
 confirmed this way — HEAD not ahead of the branch point, marker missing/
 unreadable, marker `ticket` not matching this member's actual ticket number,
 marker `verdict` not `APPROVE`, or marker `test` not `PASS` — is not merged;

@@ -379,6 +379,49 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
      match, the marker is stale (left over from a different ticket ever
      processed in this worktree) and must be **rejected and treated as
      unconfirmed**, exactly as if the marker were missing.
+   - **B6 status-check ping — disambiguate busy vs. dead before
+     disqualifying.** This sub-step fires only when both are true: the
+     member is on the already-narrow B6 trigger (idle-without-report, not
+     yet in the confirmed-done set), **and** the git-state check above came
+     back **unconfirmed** — HEAD not ahead of the branch point, or the
+     marker missing/unreadable/ticket-mismatched/`verdict` not
+     `APPROVE`/`test` not `PASS`. A member whose git-state check **passed**
+     is confirmed-done exactly as described above and is **never pinged** —
+     this sub-step only ever runs in front of a disqualification that is
+     otherwise about to happen.
+
+     The orchestrator sends **exactly one** direct status-check
+     `SendMessage` to the member, asking it to report its current pipeline
+     phase/state. This is legitimate and asymmetric, not a violation of
+     "never merge on self-report alone": the member (callee) has no
+     `SendMessage` tool to push a reply back on its own initiative, but the
+     orchestrator (caller) can send *to* a background/named member and read
+     its reply — the same asymmetry the root-cause note above already
+     describes.
+
+     **Bound: single ping, reply-or-next-idle — no wall-clock timeout, no
+     retry count**, consistent with "the orchestrator has no timer and must
+     not wait on one" above. Outcomes:
+     - A **coherent progress reply** (the member describes a plausible
+       in-progress state, e.g. "in Phase 4 review, awaiting reviewer
+       sub-agent") means it is still legitimately working: **do not
+       disqualify it and do not merge it yet.** It stays eligible and is
+       resolved later, either by its eventual Final-step report or by a
+       subsequent idle-without-report signal, which simply re-enters this
+       same B6 path. Send no second ping in response to this reply. A
+       coherent-reply member is **not** added to the confirmed-done set —
+       it isn't confirmed, only kept alive.
+     - An **empty or error reply, an incoherent reply, or the member's very
+       next signal being another idle-without-report** falls through to the
+       **Conservative non-merge rule** below, unchanged: genuinely
+       unconfirmed, roll into a later wave.
+
+     Judging "coherent" is the orchestrator's own read of the reply content
+     — a plausible mid-pipeline state versus gibberish or an empty body —
+     not a new automated check. This ping only adds a disambiguation gate
+     in front of disqualification; it never relaxes any of the git-state
+     criteria above or the Conservative non-merge rule below, which remain
+     the last-resort gate for a genuinely dropped or dead spawn.
 
    **Conservative non-merge rule.** A member whose ending state cannot be
    confirmed this way is **not merged**: HEAD not ahead of the branch point
@@ -613,9 +656,14 @@ for manual cleanup — never silently fail to retry a dropped member.
   unreadable marker, marker `ticket` not matching this member's actual ticket
   number, marker `verdict` not `APPROVE`, or marker `test` not `PASS`) is not
   merged; it rolls into a later wave. See Phase C step 2 for the full
-  protocol. Once a member is confirmed-done (report received or B6-confirmed),
-  later idle pings from it are a no-op set lookup, never a re-triggered B6
-  check.
+  protocol. Before that disqualification lands, a single status-check
+  `SendMessage` ping disambiguates a busy-but-alive member (coherent reply
+  → keep waiting, not merged, not disqualified) from a genuinely dropped one
+  (empty/error/incoherent reply or another idle-without-report → falls
+  through to disqualification unchanged) — one ping, no timer, no retry
+  count, and it never relaxes the git-state criteria above. Once a member is
+  confirmed-done (report received or B6-confirmed), later idle pings from it
+  are a no-op set lookup, never a re-triggered B6 check.
 - **Exactly one combined PR, at the very end of the run.** Individual wave
   members never open their own PR or push their own branch — `process-ticket`
   runs in `mode=integration` for every wave member specifically so this skill
