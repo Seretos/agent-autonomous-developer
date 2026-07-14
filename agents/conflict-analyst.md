@@ -233,7 +233,9 @@ in the `deferred` array, not only in prose.
 
 - **Fit assessment is always computed in MULTI mode and always appears in the JSON
   output.** It is informational — the analyst never suppresses or modifies the
-  `waves` selection based on fit. The human at Phase B decides whether to proceed.
+  `waves` selection based on fit. The human decides at Phase B only when the
+  gate is presented — a poor fit or a non-empty deferred set; a clean run
+  (good fit, nothing deferred) proceeds without that decision point.
 - **Read-only.** No `Edit`, `Write`, `Bash`. No project-issues write calls. Never
   create a worktree, branch, comment, or PR — that is the orchestrator's job.
 - **Footprints come from the code, not the title.** Always confirm the implicated

@@ -254,16 +254,39 @@ e.g. a doc/integration ticket). Keep that `type` through to the confirm step
 
 ## Phase B — confirm the fleet
 
-1. **Confirm before launching.** Present the planned fleet to the user via
-   **AskUserQuestion**: the waves in order (each wave's tickets, with branch +
-   footprint), and the deferred ones **grouped by `type`** — `file-collision`
-   (would conflict in a shared file) vs `logical-dependency` (clean footprint but
-   must wait on an unmet predecessor, with which tickets in its `depends_on`).
-   Surfacing the `logical-dependency` group explicitly is the point: each wave
-   is conflict-free **and** dependency-respecting, so the human sees that
-   ordering was checked, not silently skipped. If the analyst returned **no**
-   deferrals at all, state plainly that logical-ordering dependencies were
-   checked and none applied — so the blind spot never stays silent.
+Define a **clean run**: SINGLE mode, OR MULTI mode with `fit.verdict == "good"`
+AND `deferred` empty. This is the one precise condition this phase branches
+on — there is no flag, no persisted preference, and no opt-back-in escape
+hatch; the branch below is the entire logic.
+
+1. **Clean run — skip the interactive gate by default.** A clean run
+   proceeds without the interactive AskUserQuestion gate by default: do
+   **not** call **AskUserQuestion**, and do not block on any response. Proceed
+   straight to Phase C — but still emit a plain, non-interactive status
+   message so an attended user sees what it did: the waves in order (each
+   wave's tickets, with branch + footprint), and — for the clean MULTI case —
+   the one-line statement that logical-ordering dependencies were checked and
+   none applied (consistent with `deferred` being empty). This status message
+   is the same information item 2 below would otherwise ask the human to
+   confirm; the only difference is it is printed, not gated on a response.
+
+2. **Otherwise — mandatory go-ahead gate, unchanged and never skipped.**
+   Whenever `fit.verdict == "poor"` (the Fit Warning path) OR a non-empty
+   `deferred` list is present, the interactive gate stays **mandatory** —
+   these two cases are **never skipped**, regardless of how trivial the rest
+   of the run looks.
+   Present the planned fleet to the user via **AskUserQuestion**: the waves in
+   order (each wave's tickets, with branch + footprint), and the deferred ones
+   **grouped by `type`** — `file-collision` (would conflict in a shared file)
+   vs `logical-dependency` (clean footprint but must wait on an unmet
+   predecessor, with which tickets in its `depends_on`). Surfacing the
+   `logical-dependency` group explicitly is the point: each wave is
+   conflict-free **and** dependency-respecting, so the human sees that
+   ordering was checked, not silently skipped. This branch also fires for a
+   poor-fit run whose `deferred` list is empty — in that case there is no
+   `logical-dependency` group to surface, so state plainly that logical-
+   ordering dependencies were checked and none applied, the same statement
+   item 1's clean-run path makes, so the blind spot never stays silent.
 
    **Fit Warning (MULTI mode only, when `fit.verdict == "poor"`):** After
    presenting the waves and deferred groups — and before the go-ahead question
@@ -278,12 +301,9 @@ e.g. a doc/integration ticket). Keep that `type` through to the confirm step
    - A plain statement that the orchestrator recommends re-slicing but the human
      decides — the go-ahead prompt is unchanged; the human can proceed as-is.
 
-   When `fit.verdict == "good"`, or in SINGLE mode (no `fit` field), show no
-   fit block — proceed directly to the go-ahead question.
-
    Launching N worktrees across M waves is hard to undo, so get a go-ahead (or
-   let the user drop/keep tickets) first. For SINGLE mode keep it light, but
-   still confirm the one launch.
+   let the user drop/keep tickets) first in either of these two mandatory
+   cases.
 
 ## Phase C — the wave loop
 
@@ -673,6 +693,15 @@ for manual cleanup — never silently fail to retry a dropped member.
   confirmed-done — its report carried the explicit `final: true` terminal
   marker, or it was B6-confirmed via the fallback — later idle pings from it
   are idempotent no-op set lookups, never a re-triggered B6 check.
+- **Phase B confirmation defaults to skipped on a clean run.** A clean run
+  (SINGLE mode, or MULTI with `fit.verdict == "good"` AND `deferred` empty)
+  proceeds without the interactive AskUserQuestion gate by default — no flag,
+  no persisted preference, no opt-back-in. The two mandatory cases
+  (`fit.verdict == "poor"`, or a non-empty `deferred` list) are never skipped
+  — the interactive gate always runs for those. Even when the gate is
+  skipped, a plain, non-interactive status message listing the waves (in
+  order, with branches) is still printed, so an attended user always sees
+  the plan.
 - **Exactly one combined PR, at the very end of the run.** Individual wave
   members never open their own PR or push their own branch — `process-ticket`
   runs in `mode=integration` for every wave member specifically so this skill
