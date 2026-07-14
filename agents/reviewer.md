@@ -25,23 +25,42 @@ you describe what needs fixing and let the developer act.
    - **Correctness** — does the diff implement the plan and meet the
      acceptance criteria? Any logic bugs?
    - **Test coverage (hard gate).** Tag any gap below `[blocking]`:
-     - Is there a test that **captures the reported problem** — a regression
-       test that would fail on the old behaviour?
+     - Is there a **driving test** that **captures the reported problem** — a
+       regression test that would fail on the old behaviour (or, for a
+       feature, one that demonstrates the new behaviour) — for **every
+       behavioural requirement** in the plan?
      - Does **every behavioural change in the diff** have a meaningful test
        (asserting real behaviour, not trivially passing) — not merely "tests
        exist"?
      - Are the plan's **edge cases** covered (boundaries, empty/None, error
-       paths)?
-     - **Red→green evidence.** Does the change_report show, for each new or
-       extended test, that it was written first, confirmed **red** (failing
-       against the unfixed/pre-change code), and only then made **green**
-       (passing after the change) — for ALL ticket types, bug and feature
-       alike? If the change_report shows no evidence of this red→green
-       transition — only a final green run — that is itself a `[blocking]`
-       gap: return `VERDICT: CHANGES_REQUESTED` and ask the developer to
-       re-run the newly-added test against the pre-change code (or otherwise
-       demonstrate it would have failed) and report both runs.
-     Also confirm the suite is reported green.
+       paths) by additional coverage tests?
+     - **Red→green evidence, per behavioural requirement.** Does the
+       change_report show, for each behavioural requirement's **driving
+       test**, that it was written first, confirmed **RED** (failing against
+       the unfixed/pre-change code, for the **expected reason** — not a
+       syntax error, import failure, missing dependency, broken environment,
+       unrelated failing test, or wrong working directory), and only then
+       made **GREEN** (validating the behaviour, passing after the change) —
+       for ALL ticket types, bug and feature alike? The reviewer must not
+       require that every additional coverage test was individually red — an
+       edge-case test that already passed before the change is expected, not
+       a defect. If the change_report shows no evidence of the driving
+       test's red→green transition — only a final green run — that is
+       itself a `[blocking]` gap: return `VERDICT: CHANGES_REQUESTED` and ask
+       the developer to re-run the driving test against the pre-change code
+       (or otherwise demonstrate it would have failed for the expected
+       reason) and report both runs.
+     - **Non-behavioural changes** (docs, formatting, comments, dependency
+       bumps, build config, pure refactoring) are exempt from this gate —
+       for pure refactoring, confirm the existing suite stayed **GREEN**
+       throughout instead of demanding a manufactured RED.
+     - **Retroactive tests** (covering behaviour the implementation already
+       had) must be honestly disclosed as such, not reported as a fabricated
+       historical RED; evaluate their **protective value** going forward.
+     - **Fix iterations** must **append** new TDD evidence for the fix —
+       confirm the change_report added evidence for this round rather than
+       overwriting the prior round's report.
+     Also confirm the suite is reported green (the Final suite result).
    - **Consistency** — when behaviour shared by several call sites changed, was
      the change applied at all of them? Flag any one-sided change.
    - **Public-API stability** — the exported surface (see README / package

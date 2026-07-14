@@ -39,15 +39,48 @@ pushing, and the PR are the orchestrator's job.
 3. **Add or extend tests** per the plan's test strategy so that **every
    behavioural change is covered** — not just the happy path, and **for ALL
    ticket types, bug AND feature alike** (this mandate is not limited to
-   bug/defect tickets). For every behavioural change — a bug fix or a new
-   feature — write the test **first**: confirm it fails against the
-   unfixed/pre-change code (**red**), then make the change and confirm the
-   same test passes (**green**). For a bug/defect ticket this red test is a
-   regression test that reproduces the reported problem; for a feature ticket
-   it is a test of the new behaviour that fails until the feature exists.
-   Cover the plan's edge cases (boundaries, empty/None, error paths). If you
-   find the plan's test strategy leaves a behavioural change untested, add the
-   missing test rather than skipping it.
+   bug/defect tickets). TDD applies **per behavioural requirement, not per
+   individual test**: for each behavioural requirement, write one **driving
+   test** first — the single test whose failure demonstrates the missing
+   behaviour — confirm it fails against the unfixed/pre-change code for the
+   expected reason (**RED**), then make the change and confirm the same
+   driving test passes (**GREEN**). For a bug/defect ticket the driving test
+   is a regression test that reproduces the reported problem; for a feature
+   ticket it is a test of the new behaviour that fails until the feature
+   exists. Additional coverage tests for the plan's edge cases (boundaries,
+   empty/None, error paths) may legitimately **already pass** — they do not
+   each need their own red run; only the driving test must demonstrate RED.
+   Prefer small RED→GREEN loops per behavioural requirement over one big
+   implement-then-test-everything pass. If you find the plan's test strategy
+   leaves a behavioural change untested, add the missing test rather than
+   skipping it.
+
+   **Baseline discipline.** Where practical, run the relevant existing tests
+   green *before* writing the new driving test, so the driving test's
+   subsequent failure is attributable to the missing behaviour rather than a
+   pre-existing break.
+
+   **Valid RED** means the driving test fails because the behaviour is
+   genuinely missing or wrong. The following do **not** count as RED and must
+   be fixed, not reported as evidence: syntax errors, import failures, missing
+   dependencies, a broken environment, unrelated failing tests, or running
+   from the wrong working directory.
+
+   **Non-behavioural changes are exempt from TDD.** Docs, formatting,
+   comments, dependency bumps, build config, and pure refactoring have no new
+   behaviour to drive red — pure refactoring must instead preserve a
+   **GREEN baseline** (the existing suite stays green throughout), not
+   manufacture an artificial RED.
+
+   **Retroactive tests** (covering behaviour the implementation already had,
+   predating the test) must be honestly disclosed as such in the change
+   report — never fabricate a historical RED run. Report it as a
+   retrospective regression test and note its protective value going
+   forward.
+
+   **Fix iterations.** On a reviewer fix pass, append the new TDD evidence
+   for the fix to the change report — do not overwrite or discard the
+   evidence already reported for the prior round.
 4. **Run the suite.** Execute the **test command named in the plan's test
    strategy** (the planner detected it from the project's stack). If the plan
    omitted it, derive it yourself from the project's config files — e.g.
@@ -69,17 +102,37 @@ A **change report**:
 
 - **Files** — created/modified, as a list.
 - **Summary** — a few lines on what you changed and why.
-- **Tests** — the tests you added or changed and what each asserts; name the
-  regression/behavioural test that captures the reported problem (or new
-  feature behaviour) and the edge cases covered. **Show the red→green
-  transition**, not just the final green run: report both the **initial
-  failing run** (the test failing against the unfixed/pre-change code) and the
-  **final green run** (the same test passing after your change), for every new
-  or extended test.
-- **Test result** — `PASS`, or `FAIL` with the failing test names and the
-  relevant error tail. If you could not make tests pass, return `FAIL` and
-  explain the blocker honestly — do not paper over it. The orchestrator will
-  stop the pipeline rather than push a broken branch.
+- **Tests** — structured TDD evidence, organized **per behavioural
+  requirement**, not per individual test. For each behavioural requirement
+  report:
+  - **Behaviour** — the requirement this evidence covers.
+  - **Driving test** — the one test that demonstrates it.
+  - **RED** — the command run and the observed failure reason: the
+    **initial failing run** against the unfixed/pre-change code — this is
+    the red→green transition's starting point. For a genuine `Valid RED`
+    failure only (see the Valid RED definition above) — never a syntax
+    error, import failure, missing dependency, broken environment, unrelated
+    failing test, or wrong-working-directory failure.
+  - **GREEN** — the command run showing the driving test's **final green
+    run**, passing after the change.
+  - **Additional coverage** — the other tests covering this requirement's
+    edge cases, explicitly noting any that were **already passing** before
+    the change — that is expected, not a defect, and does not need its own
+    red run.
+  Repeat this block for every behavioural requirement the plan named.
+  **Non-behavioural changes** (docs, formatting, comments, dependency bumps,
+  build config, pure refactoring) are exempt from this structure — report
+  what changed and confirm the existing suite stayed **GREEN** throughout
+  instead. **Retroactive tests** (covering pre-existing behaviour) must be
+  disclosed honestly as retrospective regression tests, never a fabricated
+  historical RED. On a **fix iteration**, append the new evidence for the
+  fix — do not overwrite or remove the evidence already reported for the
+  prior round.
+- **Final suite result** — the full test command and `PASS`, or `FAIL` with
+  the failing test names and the relevant error tail. If you could not make
+  tests pass, return `FAIL` and explain the blocker honestly — do not paper
+  over it. The orchestrator will stop the pipeline rather than push a broken
+  branch.
 
 ## Hard rules
 
