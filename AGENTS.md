@@ -403,6 +403,31 @@ recommendation and model co-located makes both easier to keep correct.
 There is deliberately **no standalone `slice-tickets` skill** in this plugin. Do not create
 one.
 
+## Phase B confirmation default-skips on clean runs (ticket #73)
+
+`orchestrate-tickets` Phase B no longer presents its interactive
+`AskUserQuestion` go-ahead gate unconditionally. It now default-skips that
+gate on a **clean run** — SINGLE mode, or MULTI mode with `fit.verdict ==
+"good"` AND `deferred` empty — so an unattended run doesn't stall on a
+rubber-stamp confirmation with no real decision to make. There is no flag and
+no persisted preference; the clean case simply proceeds.
+
+The confirmation stays **mandatory** whenever a real decision exists:
+`fit.verdict == "poor"` (the Fit Warning path) OR a non-empty `deferred`
+list. Those two cases are never skipped, regardless of how the rest of the
+run looks.
+
+Even when the gate is skipped, Phase B still prints a plain, non-interactive
+status message — the waves in order, each with its branch — so an attended
+user always sees what the run did.
+
+**Invariant for contributors:** if you change Phase B's confirm logic, keep
+the clean-run condition exactly as above (SINGLE, or good-fit + empty
+deferred) and keep both mandatory cases intact — widening the skip condition
+to cover a poor-fit or non-empty-deferred run would silently remove the only
+point at which a human can catch a bad slice or an unresolved dependency
+before N worktrees are launched.
+
 ## Provider-portability gotchas
 
 The draft-PR flow assumes GitHub/GitLab conventions that are **not** portable to Azure DevOps
