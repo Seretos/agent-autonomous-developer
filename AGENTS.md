@@ -291,11 +291,13 @@ skills stack-neutral — the scope stays in these two worker agents, in one plac
 Tests aren't merely "written" — adequacy is enforced across three agents, and weakening any
 one link drops the guarantee:
 
-- **planner** mandates the strategy: a regression test that reproduces the reported problem,
-  the edge cases, and a test for every behavioural change.
-- **developer** writes them (the regression test red→green first) and reports what each asserts.
-- **reviewer** makes coverage a **`[blocking]` gate** — a missing regression test, an untested
-  behavioural change, or an uncovered edge case is `CHANGES_REQUESTED`.
+- **planner** mandates the strategy: a driving test per behavioural requirement (declaring its
+  expected RED state), the edge cases as additional coverage, and a test for every behavioural
+  change.
+- **developer** performs TDD per behavioural requirement (the driving test red→green first,
+  additional coverage may already pass) and reports structured evidence for what each asserts.
+- **reviewer** makes coverage a **`[blocking]` gate** — a missing driving/regression test, an
+  untested behavioural change, or an uncovered edge case is `CHANGES_REQUESTED`.
 
 Enforcement rides the existing one-round fix loop in `process-ticket`: a blocking coverage
 finding sends the developer back to add the test, then the reviewer re-checks. There is
@@ -311,6 +313,46 @@ feature), then confirm it passes after the change (green). The developer's chang
 show **both** runs, not just the final green one; the reviewer's test-coverage hard gate now
 also checks for that red→green evidence and returns `CHANGES_REQUESTED` with a `[blocking]`
 finding when it's missing — a final-green-only report no longer passes review.
+
+**TDD granularity: per behavioural requirement, not per individual test (ticket #74 — a
+granularity relaxation, distinct from the scope invariant above).** The tightening above is
+about **scope** — which ticket types red→green applies to (bug AND feature, both) — and that
+scope invariant is unchanged and must not be conflated with this note. This note is a separate
+**granularity** axis: red→green is anchored to each **behavioural requirement**, not to every
+individual new/extended test, because the per-test mandate pushed agents toward fabricating
+artificial per-test failures instead of demonstrating the missing behaviour once. Concretely,
+per behavioural requirement there is one **driving test** that must go red→green; **additional
+coverage tests** for that requirement's edge cases may legitimately **already pass** — they
+need not each manufacture their own failure. One shared vocabulary runs through all three
+agents and this file: **Behaviour** / **Driving test** / **RED** / **GREEN** / **Additional
+coverage**. The **planner** declares the *expected* RED state per behavioural requirement
+(Behaviour / Driving test / Expected RED reason / Expected GREEN outcome / Additional
+edge-case coverage); the **developer** *produces* the structured evidence (the same fields,
+plus the RED/GREEN commands run and the Final suite result); the **reviewer** *validates* it
+(driving test exists, RED failed for the expected reason, GREEN validates the behaviour, edge
+cases covered) and must explicitly **not** require every additional coverage test to have been
+red.
+
+**Valid RED, defined once, shared verbatim.** A driving test's failure only counts as RED if
+it fails because the behaviour is genuinely missing or wrong. Syntax errors, import failures,
+missing dependencies, a broken environment, unrelated failing tests, and running from the
+wrong working directory do **not** count as RED — they are bugs in the check itself, not
+evidence of a missing behaviour, and must be fixed before RED is claimed.
+
+**Non-behavioural changes are exempt.** Docs, formatting, comments, dependency bumps, build
+config, and pure refactoring have no behaviour to drive red; pure refactoring instead must
+preserve a **GREEN baseline** (the existing suite stays green throughout) rather than
+manufacture an artificial RED.
+
+**Retroactive tests and fix iterations.** A test written for behaviour the implementation
+already had (predating the test) must be honestly disclosed as a retrospective regression
+test — never a fabricated historical RED — and its protective value assessed going forward.
+On a reviewer fix pass, the developer appends new TDD evidence for the fix; it does not
+overwrite the evidence already reported for the prior round.
+
+Baseline discipline carries over unchanged: run the relevant existing tests green before
+writing the new driving test where practical, and prefer small RED→GREEN loops per
+behavioural requirement over one big implement-then-test-everything pass.
 
 ## Optional Codex review augmentation lives in the reviewer
 
@@ -402,6 +444,31 @@ recommendation and model co-located makes both easier to keep correct.
 
 There is deliberately **no standalone `slice-tickets` skill** in this plugin. Do not create
 one.
+
+## Phase B confirmation default-skips on clean runs (ticket #73)
+
+`orchestrate-tickets` Phase B no longer presents its interactive
+`AskUserQuestion` go-ahead gate unconditionally. It now default-skips that
+gate on a **clean run** — SINGLE mode, or MULTI mode with `fit.verdict ==
+"good"` AND `deferred` empty — so an unattended run doesn't stall on a
+rubber-stamp confirmation with no real decision to make. There is no flag and
+no persisted preference; the clean case simply proceeds.
+
+The confirmation stays **mandatory** whenever a real decision exists:
+`fit.verdict == "poor"` (the Fit Warning path) OR a non-empty `deferred`
+list. Those two cases are never skipped, regardless of how the rest of the
+run looks.
+
+Even when the gate is skipped, Phase B still prints a plain, non-interactive
+status message — the waves in order, each with its branch — so an attended
+user always sees what the run did.
+
+**Invariant for contributors:** if you change Phase B's confirm logic, keep
+the clean-run condition exactly as above (SINGLE, or good-fit + empty
+deferred) and keep both mandatory cases intact — widening the skip condition
+to cover a poor-fit or non-empty-deferred run would silently remove the only
+point at which a human can catch a bad slice or an unresolved dependency
+before N worktrees are launched.
 
 ## Provider-portability gotchas
 

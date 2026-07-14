@@ -45,12 +45,26 @@ round is a brand-new process with no memory of the last one.
    - **Test / verification strategy** — name the tests to add or extend so that
      **every behavioural change has a test**, and name the **detected test
      command** (plus any install/build step) it must pass — spell out the concrete
-     command the developer will run, not a hardcoded `pytest`. Then, concretely:
+     command the developer will run, not a hardcoded `pytest`. TDD is scoped to
+     the **behavioural requirement**, not to each individual test: for every
+     behavioural requirement, name the one **driving test** whose failure
+     demonstrates it — additional coverage tests for that requirement's edge
+     cases may legitimately **already pass**; only the driving test itself
+     needs to fail first. Then, concretely:
      - a **regression test that reproduces the reported problem** (fails on the
        current code, passes once fixed) — required for any bug/defect ticket;
-     - the **edge cases** worth covering (boundaries, empty/None, error paths);
+     - for a **feature ticket**, the parallel requirement is the **driving
+       test**: it demonstrates the new behaviour and fails until it exists —
+       this requirement applies for **ALL ticket types, bug AND feature
+       alike**, so the checklist above is not bug/defect-only;
+     - the **edge cases** worth covering (boundaries, empty/None, error paths)
+       as additional coverage;
      - if the change touches behaviour shared by several call sites, that the
-       change — and its tests — must cover all of them.
+       change — and its tests — must cover all of them;
+     - for **each behavioural requirement**, document its expected RED state
+       using these canonical fields: **Behaviour** / **Driving test** /
+       **Expected RED reason** / **Expected GREEN outcome** /
+       **Additional edge-case coverage** (noting it may already pass).
    - **Dependencies / sequencing** — blockers or ordering, if any.
 3. **Decide what needs the user.** Only real design decisions (taste,
    trade-offs the context doesn't already settle) become questions. Never ask
