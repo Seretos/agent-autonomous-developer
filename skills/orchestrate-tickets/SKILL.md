@@ -168,7 +168,8 @@ invoke the conflict-analyst and produces no fit evaluation.
     This check occurs on the value returned by `find_projects`.
 - An optional ticket number, or several, or nothing.
   - **exactly one** ticket → SINGLE mode (skip analysis).
-  - **none** → MULTI mode over **all open** tickets.
+  - **none** → MULTI mode over **all open** tickets. This is the **only**
+    path subject to the board-driven backlog release gate — see Phase A.
   - **several** → MULTI mode over **that subset**.
 
 ## Preconditions
@@ -240,11 +241,65 @@ wave 0 — so it flows through the exact same wave-based pipeline as MULTI mode
 (one iteration of Phase C, one integration-gate run, one final PR), just with
 nothing to parallelize.
 
-**MULTI mode** (none, or several): spawn the analyst —
-`Agent(subagent_type="conflict-analyst", prompt=…)` — passing `project_id` and
-either "all open" or the explicit subset. It returns a readable summary and a
-trailing fenced ```json block with `waves` and `deferred` arrays. Parse the
-**json block only**; the target set is the ordered `waves` array — a list of
+**MULTI mode** (none, or several): before spawning the analyst on the
+**implicit "none"/"all open" path only**, run the backlog release gate below.
+SINGLE mode bypasses it entirely — no board lookup, no analyst call at all —
+and an explicit MULTI ticket subset ("several") bypasses it too, exclusively:
+the human already named those tickets by number, so a board column must never
+override an explicit selection.
+
+**Backlog release gate (`none`/"all open" path only).** Call
+`list_board_columns(project_id)` to detect a release gate before deciding the
+candidate set:
+
+- **No board configured** → zero behavior change: skip the filter entirely
+  and proceed exactly as before, over all open tickets. `list_board_columns`
+  signals "no board configured" one of two ways, and **only** these two count
+  as that signal: a stable non-error empty result, `columns: []`; or an error
+  whose message specifically and distinguishably identifies a missing/
+  misconfigured `board` block — i.e. the board is absent or not set up, not
+  that the call itself malfunctioned. Catch **only** that specific "board not
+  configured" error signal and treat it the same as the empty-result case:
+  skip the filter. Do **not** widen the catch beyond that one signal: any
+  other error from `list_board_columns` — an auth failure, a network/
+  provider outage, a rate limit, a permission error, or any error whose
+  message does not clearly and distinguishably identify a missing/
+  misconfigured board — must **surface and STOP** Phase A rather than being
+  silently treated as "no board configured." Degrading a transient or
+  ambiguous failure to "no board" would silently let Backlog-parked tickets
+  back into the candidate set, which this gate exists to prevent.
+- **Board present but no column literally named `Backlog`** → skip the filter
+  entirely, same as above. The match is **exact/full-token**, not substring
+  (mirrors this file's existing `_auto`/`automate-api` full-token-equality
+  convention in Inputs above) — a column named `Backlog Items` or
+  `old-backlog` does **not** match.
+- **Otherwise** (a column literally named `Backlog` exists): enumerate open
+  tickets and drop any ticket whose current board column is `Backlog` before
+  the analyst ever sees it. Pass the survivors to the analyst as an explicit
+  subset in place of "all open".
+  - **Zero-survivors guard.** If the filter empties the candidate set, state
+    so plainly and **STOP** — never spawn the conflict-analyst over an empty
+    fleet.
+- This gate is **provider-agnostic**: it relies solely on
+  `list_board_columns`, which already normalizes the underlying board/column
+  model for the connected provider — never hardcode provider-specific column
+  semantics here.
+- **Read/filter-only.** This gate only reads board state to decide the
+  candidate set; it never moves a ticket, writes a comment, or otherwise
+  mutates anything. Sibling ticket #77 owns the write side.
+
+Then spawn the analyst —
+`Agent(subagent_type="conflict-analyst", prompt=…)` — passing `project_id`
+and the candidate set, which is always one of two things: **"all open"**
+— the unfiltered open set, used only when the gate was skipped above
+(no board, or no `Backlog` column) — or **the explicit subset**, used in
+every other case: on the "none" path once the gate actually fires, the
+survivors are passed as the explicit subset, the same mechanism as the
+"several" bypass case, and are never re-described as "all open" once
+filtered; on the "several" path it is always the explicit subset the human
+named by number, which bypasses the gate entirely. It returns a readable summary
+and a trailing fenced ```json block with `waves` and `deferred` arrays. Parse
+the **json block only**; the target set is the ordered `waves` array — a list of
 parallel-safe sets (`waves[0]`, `waves[1]`, …), each element keeping the
 `ticket`/`branch`/`title`/`files`/`scope` shape. Each `deferred` entry carries
 a **`type`**: `"file-collision"` (footprint overlap) or `"logical-dependency"`
@@ -259,6 +314,20 @@ AND `deferred` empty. This is the one precise condition this phase branches
 on — there is no flag, no persisted preference, and no opt-back-in escape
 hatch; the branch below is the entire logic.
 
+**Backlog-skip group — distinct from `deferred`, display-only.** If Phase A's
+backlog release gate dropped any tickets, surface them as their own group —
+**"N tickets skipped — still in Backlog"** — separate from and never merged
+into `deferred`: a `deferred` entry means the analyst considered the ticket
+and set it aside for a file-collision or logical-dependency reason; a
+backlog-skip entry never reached the analyst at all. This group is
+**display-only**: it does not force the interactive AskUserQuestion gate and
+adds no clause to the clean-run predicate above — a run with a non-empty
+backlog-skip group but an empty `deferred` list and `fit.verdict == "good"`
+is still a clean run. It is shown in whichever Phase B message actually
+prints for the run: the non-interactive clean-run status message (item 1) or
+the interactive gate body (item 2), never both, matching whichever path this
+run takes.
+
 1. **Clean run — skip the interactive gate by default.** A clean run
    proceeds without the interactive AskUserQuestion gate by default: do
    **not** call **AskUserQuestion**, and do not block on any response. Proceed
@@ -266,9 +335,13 @@ hatch; the branch below is the entire logic.
    message so an attended user sees what it did: the waves in order (each
    wave's tickets, with branch + footprint), and — for the clean MULTI case —
    the one-line statement that logical-ordering dependencies were checked and
-   none applied (consistent with `deferred` being empty). This status message
-   is the same information item 2 below would otherwise ask the human to
-   confirm; the only difference is it is printed, not gated on a response.
+   none applied (consistent with `deferred` being empty). If Phase A's
+   backlog release gate skipped any tickets, this status message also carries
+   the distinct **"N tickets skipped — still in Backlog"** group (see below)
+   — display-only, it never blocks or alters this skip-the-gate branch. This
+   status message is the same information item 2 below would otherwise ask
+   the human to confirm; the only difference is it is printed, not gated on a
+   response.
 
 2. **Otherwise — mandatory go-ahead gate, unchanged and never skipped.**
    Whenever `fit.verdict == "poor"` (the Fit Warning path) OR a non-empty
@@ -286,7 +359,11 @@ hatch; the branch below is the entire logic.
    poor-fit run whose `deferred` list is empty — in that case there is no
    `logical-dependency` group to surface, so state plainly that logical-
    ordering dependencies were checked and none applied, the same statement
-   item 1's clean-run path makes, so the blind spot never stays silent.
+   item 1's clean-run path makes, so the blind spot never stays silent. If
+   Phase A's backlog release gate skipped any tickets, this gate body also
+   presents the distinct **"N tickets skipped — still in Backlog"** group
+   (see above) alongside the deferred groups — still display-only, it adds no
+   new question and does not change what the go-ahead prompt below asks.
 
    **Fit Warning (MULTI mode only, when `fit.verdict == "poor"`):** After
    presenting the waves and deferred groups — and before the go-ahead question
@@ -536,6 +613,14 @@ per the RED path above and the user has resolved it), close out the run:
    `git -C <repo_root> switch <base>`) so Precondition 0 holds again for the
    next invocation of this skill.
 
+**No completion column written (ticket #77).** Phase D writes NO completion
+column here — no `Done` write is introduced anywhere in this phase. Each
+merged ticket's board card stays wherever `process-ticket` last left it
+(`Review`, if a board is configured — see AGENTS.md's Board card movement
+section) until a human, or the real PR-merge event, later transitions it to
+`Done`. Everything else in this phase (one combined draft PR + one
+link-comment per ticket) is otherwise unchanged by this note.
+
 ## Teardown — remove a worktree
 
 When a worktree is no longer needed (its wave's integration gate went green
@@ -693,6 +778,12 @@ for manual cleanup — never silently fail to retry a dropped member.
   confirmed-done — its report carried the explicit `final: true` terminal
   marker, or it was B6-confirmed via the fallback — later idle pings from it
   are idempotent no-op set lookups, never a re-triggered B6 check.
+- **Backlog release gate (implicit "none"/"all open" MULTI path only).**
+  Before spawning the analyst on that path, `list_board_columns` detects a
+  literal `Backlog` column and filters open tickets sitting in it out of the
+  candidate set (zero-survivors STOPs before the spawn); SINGLE mode and an
+  explicit MULTI subset ("several") bypass it entirely, and skipped tickets
+  surface only as a display-only Phase B group, never merged into `deferred`.
 - **Phase B confirmation defaults to skipped on a clean run.** A clean run
   (SINGLE mode, or MULTI with `fit.verdict == "good"` AND `deferred` empty)
   proceeds without the interactive AskUserQuestion gate by default — no flag,
