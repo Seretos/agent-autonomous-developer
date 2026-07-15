@@ -470,6 +470,48 @@ to cover a poor-fit or non-empty-deferred run would silently remove the only
 point at which a human can catch a bad slice or an unresolved dependency
 before N worktrees are launched.
 
+## Backlog board release gate (ticket #76)
+
+`orchestrate-tickets` Phase A no longer hands the conflict-analyst *every*
+open ticket unconditionally on the implicit "none"/"all open" MULTI path
+(no ticket numbers given). Before spawning the analyst on that path only —
+SINGLE mode and an explicit MULTI subset ("several") bypass this gate
+entirely, since the human already picked those tickets by number — it calls
+`list_board_columns(project_id)` to detect the project's board. No board
+configured, or a board with no column literally named `Backlog` (exact/
+full-token match, not substring), means zero behavior change: the filter is
+skipped and every open ticket is still a candidate. Otherwise, open tickets
+currently sitting in the `Backlog` column are dropped from the candidate set
+**before the conflict-analyst runs** — filter-before-analyst ordering, so a
+parked ticket is never even considered for a wave. If the filter would empty
+the candidate set entirely, the run states so plainly and STOPs before the
+analyst spawn — never an empty fleet.
+
+Phase B surfaces any skipped tickets as their own distinct group — "N
+tickets skipped — still in Backlog" — never merged into `deferred` (a
+`deferred` entry was considered and set aside by the analyst; a backlog-skip
+entry never reached the analyst at all). This is **surface-only**: it does
+not force the interactive AskUserQuestion gate, and it adds no clause to the
+existing clean-run predicate (SINGLE mode, or MULTI with `fit.verdict ==
+"good"` AND `deferred` empty — unchanged). It is shown in whichever Phase B
+message actually prints for the run — the non-interactive clean-run status
+message, or the interactive mandatory-gate body — never both.
+
+**Read-only / #77 boundary.** This gate only reads board state
+(`list_board_columns`) to decide which tickets become candidates; it never
+moves a ticket between columns, comments, or otherwise mutates anything.
+Sibling ticket #77 (a separate wave) owns the write side — do not fold that
+scope in here.
+
+**Invariant for contributors:** if you change this gate, keep the ordering
+(board detection and filtering happen strictly before the conflict-analyst
+spawn), keep the scope restriction (implicit "none"/"all open" path only —
+SINGLE and explicit-subset MULTI must keep bypassing it), and keep Phase B's
+backlog-skip group display-only and distinct from `deferred` — folding it
+into the clean-run predicate or into `deferred` would silently change what a
+"clean run" means or blur two structurally different reasons a ticket didn't
+make the fleet.
+
 ## Provider-portability gotchas
 
 The draft-PR flow assumes GitHub/GitLab conventions that are **not** portable to Azure DevOps
