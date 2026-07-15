@@ -512,6 +512,47 @@ into the clean-run predicate or into `deferred` would silently change what a
 "clean run" means or blur two structurally different reasons a ticket didn't
 make the fleet.
 
+## Board card movement (ticket #77)
+
+This closes out the #76 section's dangling write-side boundary reference
+above ("Sibling ticket #77 ... owns the write side"). `process-ticket`
+best-effort moves the ticket's board card as it executes, gated on the same
+`list_board_columns(project_id)` detection #76 introduced for its read/
+filter side — exact/full-token column-name match; no board configured, or no
+column literally matching the target phase's name, means that specific write
+is skipped silently, same backward-compat semantics as #76. Writes use
+`update_ticket(project_id, ticket_id, custom_fields={"Status": <column>})`.
+
+**Phase → column mapping.** Phase 1 (context-extractor + planner begin)
+moves the card to `Doing`; Phase 4 (reviewer invoked) moves it to `Review`;
+a `CHANGES_REQUESTED` fix-loop re-dispatch moves it back to `Doing`, then to
+`Review` again once the re-review runs.
+
+**Review is terminal automated state.** Per the user's decision, `Review` is
+the terminal automated state — there is no automated `Done` write anywhere.
+`process-ticket`'s Phase 4 `Review` write is the last board write the skill
+ever makes for a ticket (both `solo` and `integration` mode; the Final step
+adds none), and `orchestrate-tickets`' Phase D likewise writes no completion
+column. This supersedes any "Done" wording in the originating ticket body.
+
+**Best-effort, never blocking — looser than #76.** Unlike #76's read-side
+gate, which STOPs on an ambiguous `list_board_columns` error, ANY failure on
+this write side — detection error, no matching target column, or a failed
+`update_ticket` call — degrades to a logged warning and the pipeline
+continues. A board-write failure must never STOP or block the ticket's real
+work.
+
+**Provider-agnostic.** This mapping relies solely on `list_board_columns` and
+`update_ticket`, which already normalize the underlying board/column model
+for the connected provider — never hardcode provider-specific column
+semantics here.
+
+**Invariant for contributors:** if you change this mapping, keep Review as
+the terminal automated state (no automated `Done` write, in either
+`process-ticket` or `orchestrate-tickets`) and keep the write side
+best-effort/never-blocking — widening it to STOP-on-failure like #76's
+read-side gate would risk a board hiccup blocking real ticket work.
+
 ## Provider-portability gotchas
 
 The draft-PR flow assumes GitHub/GitLab conventions that are **not** portable to Azure DevOps

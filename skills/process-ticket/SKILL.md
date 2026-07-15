@@ -105,11 +105,56 @@ checkout to *verify* behaviour (without editing) is not a bypass; *editing* is.
 Each subagent is a leaf (no further delegation) and cannot refetch context
 it wasn't given. Thread each phase's output into the next phase's prompt.
 
+### Board card movement (ticket #77)
+
+As this skill drives each phase, it best-effort moves the ticket's board card
+to reflect pipeline state — the write side of sibling ticket #76's read/
+filter-only "Backlog release gate." Gated on the same board-detection
+mechanism #76 introduced: `list_board_columns(project_id)` (exact/full-token
+column-name match, not substring — mirrors #76's own matching convention). No
+board configured, or no board column literally matching the target phase's
+name, means the specific write is skipped silently — same backward-compat
+semantics as #76's read-side gate.
+
+**Phase → column mapping:**
+- **Phase 1** (context-extractor + planner begin) → move the card to
+  `Doing`: `update_ticket(project_id=<project>, ticket_id=<#>,
+  custom_fields={"Status": "Doing"})`.
+- **Phase 4** (reviewer invoked) → move the card to `Review`:
+  `update_ticket(project_id=<project>, ticket_id=<#>,
+  custom_fields={"Status": "Review"})`.
+- **Fix loop** (`CHANGES_REQUESTED` re-dispatch) → move the card back to
+  `Doing` before the developer re-dispatch, then to `Review` again once the
+  re-review runs.
+
+**Best-effort, never blocking.** This is intentionally looser than #76's
+read-side STOP-on-ambiguous-error behavior — state the contrast explicitly so
+it is not "hardened" into a blocker later. ANY failure here — a
+`list_board_columns` detection error, no target column matching, or a failed
+`update_ticket` call — degrades to a logged warning and the pipeline
+continues; a board-write failure must never STOP or block the ticket's real
+work.
+
+**Provider-agnostic.** This mapping relies solely on `list_board_columns` and
+`update_ticket`, which already normalize the underlying board/column model
+for the connected provider — never hardcode provider-specific column
+semantics here.
+
+**Review is terminal automated state — no automated `Done` write anywhere.**
+Phase 4's move to `Review` is the LAST board write this skill ever makes for
+a ticket, in both `solo` and `integration` mode. The Final step below adds no
+completion/terminal board write in either mode — deliberate: only a human (or
+the real PR-merge event) later transitions the card to `Done`.
+
 ### Phase 1 — context-extractor (read-only)
 Spawn `context-extractor`. Pass: the `project_id` and the ticket number. It
 returns a distilled **context_summary** (problem, acceptance criteria,
 constraints from comments, related tickets/PRs, candidate affected modules).
 Capture it verbatim — downstream agents never see the raw ticket.
+
+**Board card movement.** At the start of this phase (context-extractor +
+planner begin), gated on `list_board_columns` per the Board card movement
+subsection above, move the ticket's board card to `Doing` via `update_ticket`.
 
 If the context-extractor is blocked by the MCP-availability hook (i.e. the
 `agent-project-issues` MCP was not loaded), `process-ticket` will receive no
@@ -210,6 +255,10 @@ naming it switches delivery to background/mailbox regardless of
 `run_in_background`, and the reviewer has no `SendMessage` tool to push a
 reply back once it's in that mode.
 
+**Board card movement.** When the reviewer is invoked for this phase, gated
+on `list_board_columns` per the Board card movement subsection above, move
+the ticket's board card to `Review` via `update_ticket`.
+
 - `CHANGES_REQUESTED` with blocking findings → re-dispatch the developer and
   reviewer, **each as a brand-new, fresh, synchronous, unnamed `Agent(...)`
   call** — `Agent(subagent_type="developer", prompt=…, run_in_background:
@@ -228,6 +277,9 @@ reply back once it's in that mode.
   every fix-cycle iteration. Always issue a fresh foreground `Agent()` call
   instead. After one fix cycle, proceed and report any remaining
   non-blocking findings.
+  **Board card movement:** before the developer re-dispatch, gated the same
+  way, move the card back to `Doing`; then, once this re-review runs, move it
+  to `Review` again.
 - `APPROVE` → proceed to the final step.
 
 ## Final step — commit, push, open draft PR, comment (orchestrator does this)
@@ -246,6 +298,12 @@ the push, the merge into the shared integration branch, and the single
 end-of-run combined PR + comments, so this skill skips them here. Step 6
 (write the result-marker file) runs **unconditionally in both modes**. Step 7
 (report) also runs in both modes, with adjusted wording for integration mode.
+
+**No completion/terminal board write (either mode).** None of the steps below
+write a completion/terminal board column in **`solo`** or **`integration`**
+mode. Phase 4's move to `Review` (see the Board card movement subsection
+above) is the last board write this skill ever makes for a ticket — this
+Final step never moves the card to `Done` or any other terminal column.
 
 1. **Target-repo `.gitignore` guarantee** (both modes — runs **before** the
    commit below, so any append lands inside this ticket's own commit rather
@@ -380,7 +438,9 @@ end-of-run combined PR + comments, so this skill skips them here. Step 6
 - **Delegate everything.** Never call `get_ticket`, `Edit`/`Write`, or review
   a diff yourself. Your tools: `Agent`/`SendMessage`, `AskUserQuestion`, the
   branch-guard git reads, the final commit/push git calls, and the
-  project-issues write calls (`add_comment`, `create_pr`).
+  project-issues write calls (`add_comment`, `create_pr`, `update_ticket`,
+  `list_board_columns` — the last two for the best-effort board card
+  movement writes, see the Board card movement subsection above).
 - **Project id is a parameter.** Thread the supplied `project_id` into every
   subagent prompt and MCP call — never hardcode a project.
 - **Subagents can't refetch.** Inline the summary/plan into each prompt.
