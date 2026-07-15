@@ -268,15 +268,22 @@ candidate set:
   silently treated as "no board configured." Degrading a transient or
   ambiguous failure to "no board" would silently let Backlog-parked tickets
   back into the candidate set, which this gate exists to prevent.
-- **Board present but no column literally named `Backlog`** → skip the filter
-  entirely, same as above. The match is **exact/full-token**, not substring
-  (mirrors this file's existing `_auto`/`automate-api` full-token-equality
-  convention in Inputs above) — a column named `Backlog Items` or
-  `old-backlog` does **not** match.
+- **Board present but no column literally named `Backlog`** → the
+  `Backlog`-column drop does not apply. The match is **exact/full-token**,
+  not substring (mirrors this file's existing `_auto`/`automate-api`
+  full-token-equality convention in Inputs above) — a column named
+  `Backlog Items` or `old-backlog` does **not** match. This does **not**
+  mean the filter is skipped entirely, though: since a board is configured
+  (just without a `Backlog` column), the untriaged drop below still fires —
+  enumerate open tickets and drop any that were never triaged onto the
+  board at all (no board Status/column value set — e.g. filed via
+  `create_ticket` and never added to the board) before the analyst ever
+  sees them.
 - **Otherwise** (a column literally named `Backlog` exists): enumerate open
-  tickets and drop any ticket whose current board column is `Backlog` before
-  the analyst ever sees it. Pass the survivors to the analyst as an explicit
-  subset in place of "all open".
+  tickets and drop any ticket whose current board column is `Backlog`, **and**
+  any ticket that was never triaged onto the board at all (no board Status/
+  column value set), before the analyst ever sees either kind. Pass the
+  survivors to the analyst as an explicit subset in place of "all open".
   - **Zero-survivors guard.** If the filter empties the candidate set, state
     so plainly and **STOP** — never spawn the conflict-analyst over an empty
     fleet.
@@ -292,8 +299,9 @@ Then spawn the analyst —
 `Agent(subagent_type="conflict-analyst", prompt=…)` — passing `project_id`
 and the candidate set, which is always one of two things: **"all open"**
 — the unfiltered open set, used only when the gate was skipped above
-(no board, or no `Backlog` column) — or **the explicit subset**, used in
-every other case: on the "none" path once the gate actually fires, the
+entirely (no board configured) — or **the explicit subset**, used in every
+other case, including a board present but with no `Backlog` column (the
+untriaged drop can still fire there): on the "none" path once the gate actually fires, the
 survivors are passed as the explicit subset, the same mechanism as the
 "several" bypass case, and are never re-described as "all open" once
 filtered; on the "several" path it is always the explicit subset the human
@@ -315,12 +323,15 @@ on — there is no flag, no persisted preference, and no opt-back-in escape
 hatch; the branch below is the entire logic.
 
 **Backlog-skip group — distinct from `deferred`, display-only.** If Phase A's
-backlog release gate dropped any tickets, surface them as their own group —
+backlog release gate dropped any tickets — whether parked in a `Backlog`
+board column or never triaged onto the board at all (no board Status/column
+value set) — surface them together as their own group —
 **"N tickets skipped — still in Backlog"** — separate from and never merged
 into `deferred`: a `deferred` entry means the analyst considered the ticket
 and set it aside for a file-collision or logical-dependency reason; a
-backlog-skip entry never reached the analyst at all. This group is
-**display-only**: it does not force the interactive AskUserQuestion gate and
+backlog-skip entry (Backlog-column or untriaged) never reached the analyst
+at all. This group is **display-only**: it does not force the interactive
+AskUserQuestion gate and
 adds no clause to the clean-run predicate above — a run with a non-empty
 backlog-skip group but an empty `deferred` list and `fit.verdict == "good"`
 is still a clean run. It is shown in whichever Phase B message actually
@@ -780,10 +791,13 @@ for manual cleanup — never silently fail to retry a dropped member.
   are idempotent no-op set lookups, never a re-triggered B6 check.
 - **Backlog release gate (implicit "none"/"all open" MULTI path only).**
   Before spawning the analyst on that path, `list_board_columns` detects a
-  literal `Backlog` column and filters open tickets sitting in it out of the
-  candidate set (zero-survivors STOPs before the spawn); SINGLE mode and an
-  explicit MULTI subset ("several") bypass it entirely, and skipped tickets
-  surface only as a display-only Phase B group, never merged into `deferred`.
+  literal `Backlog` column and, whenever a board is configured, also detects
+  tickets never triaged onto the board (no board Status/column value set);
+  it filters open tickets sitting in `Backlog` and untriaged tickets alike
+  out of the candidate set (zero-survivors STOPs before the spawn); SINGLE
+  mode and an explicit MULTI subset ("several") bypass it entirely, and
+  skipped tickets (Backlog-column or untriaged) surface only as a
+  display-only Phase B group, never merged into `deferred`.
 - **Phase B confirmation defaults to skipped on a clean run.** A clean run
   (SINGLE mode, or MULTI with `fit.verdict == "good"` AND `deferred` empty)
   proceeds without the interactive AskUserQuestion gate by default — no flag,
