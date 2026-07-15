@@ -613,6 +613,14 @@ per the RED path above and the user has resolved it), close out the run:
    `git -C <repo_root> switch <base>`) so Precondition 0 holds again for the
    next invocation of this skill.
 
+**No completion column written (ticket #77).** Phase D writes NO completion
+column here — no `Done` write is introduced anywhere in this phase. Each
+merged ticket's board card stays wherever `process-ticket` last left it
+(`Review`, if a board is configured — see AGENTS.md's Board card movement
+section) until a human, or the real PR-merge event, later transitions it to
+`Done`. Everything else in this phase (one combined draft PR + one
+link-comment per ticket) is otherwise unchanged by this note.
+
 ## Teardown — remove a worktree
 
 When a worktree is no longer needed (its wave's integration gate went green
