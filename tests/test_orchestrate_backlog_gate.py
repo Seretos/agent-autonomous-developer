@@ -629,3 +629,119 @@ def test_agents_md_documents_backlog_gate():
         "AGENTS.md's ticket #76 section must state this gate is "
         "read/filter-only, deferring writes to #77"
     )
+    assert re.search(
+        r"untriaged|never triaged|no board Status|never added to the board",
+        section,
+        re.IGNORECASE,
+    ), (
+        "AGENTS.md's ticket #76 section must document dropping untriaged "
+        "tickets (no board Status at all, ticket #79), not only tickets "
+        "explicitly parked in a 'Backlog' column"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ticket #79: untriaged tickets (no board Status at all) are also dropped
+# ---------------------------------------------------------------------------
+
+
+def test_backlog_gate_drops_untriaged_tickets():
+    """The gate must also drop open tickets that were never triaged onto the
+    board at all (no board Status/column value set -- e.g. filed via
+    create_ticket and never added to the board), not only tickets explicitly
+    parked in a column literally named 'Backlog'."""
+    body = _extract_body(_read(ORCHESTRATE_MD))
+    phase_a = _phase_a(body)
+    multi = _phase_a_multi(phase_a)
+    gate_section = _backlog_gate_section(multi)
+
+    untriaged_synonym = (
+        r"untriaged|never triaged|no board Status|never added to the board|"
+        r"no Status/column value|no board Status/column value"
+    )
+    drop_verb = r"drop|filter|exclude"
+
+    assert re.search(
+        rf"(?:{untriaged_synonym}).{{0,200}}(?:{drop_verb})|"
+        rf"(?:{drop_verb}).{{0,200}}(?:{untriaged_synonym})",
+        gate_section,
+        re.IGNORECASE | re.DOTALL,
+    ), (
+        "The backlog release gate section must document dropping/filtering "
+        "untriaged tickets (no board Status at all), not only tickets "
+        "explicitly parked in a 'Backlog' column"
+    )
+
+    # The existing full-token Backlog-column drop wording must still stand.
+    assert re.search(
+        r"literally named.{0,80}Backlog", gate_section, re.IGNORECASE
+    ), (
+        "The full-token 'literally named Backlog' wording must still be "
+        "present alongside the new untriaged-drop prose"
+    )
+
+
+def test_untriaged_dropped_even_without_backlog_column():
+    """Q2 Option A: the untriaged drop fires whenever a board is configured,
+    independent of whether a literal 'Backlog' column exists."""
+    body = _extract_body(_read(ORCHESTRATE_MD))
+    phase_a = _phase_a(body)
+    multi = _phase_a_multi(phase_a)
+    gate_section = _backlog_gate_section(multi)
+
+    bullet_match = re.search(
+        r"no column literally named.{0,80}Backlog.*?(?=\n- \*\*Otherwise)",
+        gate_section,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert bullet_match is not None, (
+        "Could not find the 'no column literally named Backlog' bullet in "
+        "the backlog release gate section"
+    )
+    bullet = bullet_match.group(0)
+
+    assert not re.search(
+        r"skip the filter entirely", bullet, re.IGNORECASE
+    ), (
+        "The 'no Backlog column' bullet must no longer say the filter is "
+        "skipped entirely -- the untriaged drop still applies"
+    )
+    assert re.search(
+        r"board.{0,40}(is )?configured|board.{0,20}present",
+        bullet,
+        re.IGNORECASE,
+    ), (
+        "The 'no Backlog column' bullet must tie the untriaged drop to a "
+        "board being configured, independent of the literal Backlog column"
+    )
+    assert re.search(
+        r"untriaged|never triaged|no board Status|never added to the board",
+        bullet,
+        re.IGNORECASE,
+    ), (
+        "The 'no Backlog column' bullet must still drop untriaged tickets "
+        "even though the Backlog-column drop does not apply"
+    )
+
+
+def test_backlog_skip_group_covers_untriaged():
+    """Q1 Option 1: Phase B's display-only skipped group must be generalized
+    to also cover untriaged tickets, while keeping the literal 'skipped ...
+    still in Backlog' phrase pinned by other tests."""
+    body = _extract_body(_read(ORCHESTRATE_MD))
+    phase_b = _phase_b(body)
+
+    assert re.search(
+        r"skipped.{0,40}still in Backlog", phase_b, re.IGNORECASE
+    ), (
+        "Phase B must still surface the literal 'skipped ... still in "
+        "Backlog' phrase"
+    )
+    assert re.search(
+        r"untriaged|never triaged|no board Status|never added to the board",
+        phase_b,
+        re.IGNORECASE,
+    ), (
+        "Phase B must generalize the backlog-skip group to also cover "
+        "tickets that were never triaged onto the board (no board Status)"
+    )

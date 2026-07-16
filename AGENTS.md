@@ -497,6 +497,25 @@ existing clean-run predicate (SINGLE mode, or MULTI with `fit.verdict ==
 message actually prints for the run — the non-interactive clean-run status
 message, or the interactive mandatory-gate body — never both.
 
+**Untriaged tickets (ticket #79 — no board Status at all).** The original
+#76 gate only caught tickets explicitly parked in a column literally named
+`Backlog`; it did not catch a ticket that has **no board Status/column value
+at all** — created via `create_ticket` and never added to the board —
+because `list_board_columns`-driven filtering by column name can't match a
+value that was never set (`list_tickets(column="Backlog")` legitimately
+returns `[]` for "no Status", since unset is not the same as "Backlog"; this
+was root-caused as expected `agent-project-issues` MCP behavior, not a bug
+there). Whenever a board is configured — with or without a column literally
+named `Backlog` — the gate now also drops open tickets that were never
+triaged onto the board (no board Status set) from the candidate set, the
+same filter-before-analyst ordering as the `Backlog`-column drop. Only the
+"no board configured" case is exempt: with no board there is no board Status
+to key off, so the untriaged drop does not apply either — zero behavior
+change, same as before. Phase B surfaces untriaged-dropped tickets in the
+same display-only "N tickets skipped — still in Backlog" group as
+`Backlog`-column tickets — the group label now covers both reasons, still
+distinct from `deferred` and still surface-only.
+
 **Read-only / #77 boundary.** This gate only reads board state
 (`list_board_columns`) to decide which tickets become candidates; it never
 moves a ticket between columns, comments, or otherwise mutates anything.
@@ -510,7 +529,9 @@ SINGLE and explicit-subset MULTI must keep bypassing it), and keep Phase B's
 backlog-skip group display-only and distinct from `deferred` — folding it
 into the clean-run predicate or into `deferred` would silently change what a
 "clean run" means or blur two structurally different reasons a ticket didn't
-make the fleet.
+make the fleet. Keep the untriaged drop tied to "a board is configured",
+independent of whether a literal `Backlog` column exists — narrowing it back
+to only fire alongside a `Backlog` column would reopen the #79 gap.
 
 ## Board card movement (ticket #77)
 
