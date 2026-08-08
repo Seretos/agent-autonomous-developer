@@ -121,7 +121,8 @@ process ticket #7 in <project>
 
 - `main` — source of truth.
 - `release` — orphan branch, force-pushed by `release.yml`; install-ready files only
-  (`.claude-plugin/plugin.json`, `skills/`, `agents/`, `README.md`).
+  (`.claude-plugin/plugin.json`, `skills/`, `agents/`, `assets/`, `scripts/`, `hooks/`,
+  `README.md`, `description.md`, `LICENSE`).
 
 ## Release
 

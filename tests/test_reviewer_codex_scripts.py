@@ -428,3 +428,116 @@ def test_script_node_check():
         f"stdout: {result.stdout}\n"
         f"stderr: {result.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — ticket #81 AC#2: Codex CHANGES_REQUESTED overrides own APPROVE
+#
+# RETROSPECTIVE REGRESSION COVERAGE, disclosed honestly per AGENTS.md: the
+# override rule below was already implemented in agents/reviewer.md step 4
+# (the "even if your own review alone would have been `APPROVE`" wording)
+# and in emitFindingsAndVerdict()'s "findings.length > 0 -> CHANGES_REQUESTED"
+# logic before ticket #81. No historical RED is claimed for these three
+# tests — they are expected to (and did) pass on first run. Their protective
+# value is pinning the folding rule and the script's verdict computation
+# against future edits to reviewer.md step 4 / emitFindingsAndVerdict().
+# ---------------------------------------------------------------------------
+
+def test_reviewer_codex_changes_requested_overrides_own_approve():
+    """
+    RETROSPECTIVE (#81 AC#2): agents/reviewer.md's Codex section must state
+    that Codex findings under VERDICT: CHANGES_REQUESTED are [blocking] and
+    that the reviewer's final verdict is CHANGES_REQUESTED even if the
+    reviewer's own review alone would have been APPROVE.
+    """
+    text = _read(REVIEWER_MD)
+    section = _extract_codex_section(text)
+    assert "[blocking]" in section, (
+        "agents/reviewer.md Codex section must treat Codex findings under "
+        "CHANGES_REQUESTED as [blocking]."
+    )
+    assert "even if your own review alone would have been" in section.lower(), (
+        "agents/reviewer.md Codex section must explicitly state the override "
+        "even if the reviewer's own review alone would have been APPROVE."
+    )
+
+
+def test_script_emits_changes_requested_when_findings_present(tmp_path):
+    """
+    RETROSPECTIVE (#81 AC#2, executable): codex-review.mjs working-tree mode,
+    fed a stub companion that prints a finding line, must emit
+    VERDICT: CHANGES_REQUESTED as the last non-empty stdout line — this is
+    the mechanism agents/reviewer.md step 4 relies on to force the override.
+    Skips gracefully if node/git are not on PATH (same pattern as
+    test_script_node_check above).
+    """
+    import pytest
+    node = shutil.which("node")
+    git = shutil.which("git")
+    if node is None or git is None:
+        pytest.skip("node and/or git not found on PATH — skipping executable Codex script test")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "foo.js").write_text("function foo() { return 1; }\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    (repo / "foo.js").write_text("function foo() { return 2; }\n", encoding="utf-8")
+
+    stub = tmp_path / "stub-companion.mjs"
+    stub.write_text(
+        "process.stdout.write('src/foo.js:12 \\u2014 possible bug\\n');\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [node, str(SCRIPT_PATH), "working-tree", str(stub), "main"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines, f"expected non-empty stdout, got: {result.stdout!r} stderr: {result.stderr!r}"
+    assert lines[-1] == "VERDICT: CHANGES_REQUESTED"
+
+
+def test_script_emits_approve_when_no_findings(tmp_path):
+    """
+    RETROSPECTIVE (#81 AC#2, executable): the mirrored case — a stub
+    companion that prints no finding lines must yield VERDICT: APPROVE, so
+    the override in reviewer.md step 4 only fires on genuine findings.
+    """
+    import pytest
+    node = shutil.which("node")
+    git = shutil.which("git")
+    if node is None or git is None:
+        pytest.skip("node and/or git not found on PATH — skipping executable Codex script test")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "foo.js").write_text("function foo() { return 1; }\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    (repo / "foo.js").write_text("function foo() { return 2; }\n", encoding="utf-8")
+
+    stub = tmp_path / "stub-companion.mjs"
+    stub.write_text(
+        "process.stdout.write('Looks fine, no issues found.\\n');\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [node, str(SCRIPT_PATH), "working-tree", str(stub), "main"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines, f"expected non-empty stdout, got: {result.stdout!r} stderr: {result.stderr!r}"
+    assert lines[-1] == "VERDICT: APPROVE"

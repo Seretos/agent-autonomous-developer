@@ -584,3 +584,31 @@ or Jira:
   project, never hardcode.
 
 Make both provider-aware before targeting another backend.
+
+## Release payload must ship every `${CLAUDE_PLUGIN_ROOT}`-referenced file (ticket #81)
+
+Root cause of ticket #81: `.github/workflows/release.yml`'s staging step copied `skills/`,
+`agents/`, and `assets/` into the install tree, but not `scripts/` or `hooks/` — so
+`agents/reviewer.md`'s Codex second-opinion pass, which invokes
+`${CLAUDE_PLUGIN_ROOT}/scripts/codex-review.mjs`, silently hit its "script missing" fallback
+on every marketplace install, and `hooks/hooks.json`'s MCP-availability failsafe was dead the
+same way. This was a **packaging gap**, not a missing implementation — both files already
+worked correctly once actually present.
+
+**Invariant for contributors:** any runtime file referenced via `${CLAUDE_PLUGIN_ROOT}/...`
+from an agent (`agents/*.md`), a skill (`skills/**/SKILL.md`), or a hook manifest
+(`hooks/hooks.json`) **must** be staged by `release.yml`'s "Stage install tree and build
+release zip" step. Don't rely on remembering this by hand — `tools/check_plugin_payload.py`
+is a generic, fail-closed release-time gate: it scans those file kinds for
+`${CLAUDE_PLUGIN_ROOT}/<path>` references, and a workflow step ("Verify referenced plugin
+files are staged", positioned strictly after staging and strictly before the orphan-branch
+push) runs it against the actual staged tree, aborting the release if any reference resolves
+to a repo path but not a staged one. `ALLOWED_UNSHIPPED` in that module is the single
+documented escape hatch for a reference that is legitimately not meant to ship — it lands
+**empty**, and any future entry needs an inline justification comment; the gate has no other
+opt-out.
+
+**If you add a new directory of runtime files** (beyond `skills/`, `agents/`, `assets/`,
+`scripts/`, `hooks/`) that an agent/skill/hook references via `${CLAUDE_PLUGIN_ROOT}`, add its
+`mkdir -p`/`cp -a` lines to the staging step in the same change that introduces the reference —
+the gate will catch a forgotten one, but landing both together avoids a red release run.
