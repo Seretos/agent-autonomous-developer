@@ -33,12 +33,22 @@ Behavioural requirements (see the approved plan for ticket #81):
   BR7 - ticket #81 fix-loop, reviewer finding 1: AGENTS.md's documented
         skill-scanning surface matches what the checker actually scans
         (skills/**/*.md, not skills/**/SKILL.md).
+  BR9 - ticket #81 fix-loop round 3, reviewer finding 1: the directory-
+        reference walk uses git's tracked-file list (with a filesystem
+        fallback), so untracked cruft can't produce a false NOT_STAGED.
+  BR10 - ticket #81 fix-loop round 3, reviewer finding 2: ALLOWED_UNSHIPPED
+        entries are honoured for files nested under a directory reference,
+        not just top-level reference paths.
 """
 
 from __future__ import annotations
 
 import pathlib
 import re
+import shutil
+import subprocess
+
+import pytest
 
 import tools.check_plugin_payload as cpp
 
@@ -913,3 +923,138 @@ def test_single_file_reference_behaviour_unchanged(tmp_path):
 # coverage from ticket #49 — so the executable copies now live there only:
 # test_script_emits_changes_requested_when_findings_present and
 # test_script_emits_approve_when_no_findings.
+
+
+# ---------------------------------------------------------------------------
+# BR9 - the directory-reference walk uses git's tracked-file list (with a
+# filesystem fallback), so untracked cruft under a referenced directory
+# can't produce a false NOT_STAGED (ticket #81 fix-loop round 3, reviewer
+# finding 1).
+# ---------------------------------------------------------------------------
+
+
+def test_directory_reference_walk_ignores_untracked_files(tmp_path):
+    """
+    Driving test for BR9: a directory reference whose repo copy contains an
+    UNTRACKED file (e.g. __pycache__ cruft) must not report that untracked
+    file as NOT_STAGED -- only git-tracked files are required to be present
+    in the stage.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "scripts").mkdir()
+
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "add", "agents/x.md", "scripts/foo.mjs"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    # Created AFTER the git add, so it is genuinely untracked.
+    (repo / "scripts" / "__pycache__").mkdir()
+    (repo / "scripts" / "__pycache__" / "junk.pyc").write_text(
+        "not source\n", encoding="utf-8"
+    )
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (stage / "scripts").mkdir(parents=True)
+    (stage / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    # Deliberately do NOT stage scripts/__pycache__/junk.pyc -- it is
+    # untracked cruft and must not be required.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert problems == []
+
+
+def test_directory_reference_walk_falls_back_to_filesystem_without_git(tmp_path):
+    """Additional coverage (may already pass): a plain non-git repo tree
+    still falls back to the filesystem walk, so a genuinely missing staged
+    file is still reported."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    (repo / "scripts" / "bar.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (stage / "scripts").mkdir(parents=True)
+    (stage / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    # Deliberately do NOT stage scripts/bar.mjs.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/bar.mjs" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/bar.mjs, got: {problems!r}"
+
+
+# ---------------------------------------------------------------------------
+# BR10 - ALLOWED_UNSHIPPED entries are honoured for files nested under a
+# directory reference, not just top-level reference paths (ticket #81
+# fix-loop round 3, reviewer finding 2).
+# ---------------------------------------------------------------------------
+
+
+def test_allowed_unshipped_entry_suppresses_nested_directory_finding(tmp_path):
+    """
+    Driving test for BR10: an ALLOWED_UNSHIPPED entry naming a file nested
+    under a directory reference (e.g. "scripts/dev-only.mjs") must suppress
+    the NOT_STAGED finding for that nested file specifically, while other
+    unstaged files under the same directory are still reported.
+    """
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    (repo / "scripts" / "dev-only.mjs").write_text("// dev-only\n", encoding="utf-8")
+    (repo / "scripts" / "bar.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (stage / "scripts").mkdir(parents=True)
+    (stage / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    # Deliberately do NOT stage scripts/dev-only.mjs or scripts/bar.mjs.
+
+    problems = cpp.verify_stage(
+        repo, stage, allowed_unshipped=frozenset({"scripts/dev-only.mjs"})
+    )
+
+    assert not any(p.path == "scripts/dev-only.mjs" for p in problems), (
+        f"scripts/dev-only.mjs should have been suppressed by "
+        f"allowed_unshipped, got: {problems!r}"
+    )
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/bar.mjs" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/bar.mjs, got: {problems!r}"

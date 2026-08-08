@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -179,6 +180,34 @@ class Problem:
         return base
 
 
+def _repo_files_under(repo_root: Path, rel_dir: str) -> list[str]:
+    """Files under ``rel_dir``, as paths relative to ``rel_dir`` (posix).
+
+    Prefers git's tracked-file list so untracked cruft (``__pycache__``,
+    editor temp files) under a referenced directory can't trigger a false
+    NOT_STAGED — untracked files are not part of the release payload. When
+    git is unavailable, errors, or reports nothing tracked here (e.g. the
+    synthetic non-git trees the tests build), this falls back to a plain
+    filesystem walk: a superset of the tracked list, so the fallback can
+    only over-report, never silently skip a file that should be staged.
+    """
+    target = repo_root / rel_dir
+    prefix = rel_dir.rstrip("/") + "/"
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "-z", "--", rel_dir],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        tracked = [p for p in completed.stdout.split("\0") if p.startswith(prefix)]
+    except (OSError, subprocess.SubprocessError):
+        tracked = []
+    if tracked:
+        return sorted(p[len(prefix):] for p in tracked)
+    return sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+
+
 def verify_stage(
     repo_root: Path,
     stage_root: Path,
@@ -195,15 +224,20 @@ def verify_stage(
          ``stage_root`` (NOT_STAGED otherwise — the ticket #81 defect class).
          When the reference resolves to a *directory* in the repo, existence
          alone is not enough (ticket #81 fix-loop round 2, Codex
-         second-opinion finding): the directory's contents are walked and
-         compared file-by-file against the staged copy, and every repo file
-         beneath it that is absent from the stage is reported as its own
-         NOT_STAGED problem, keyed by that file's own path (e.g.
-         "scripts/bar.mjs", not just "scripts") — consistent with how a
-         missing single file is reported. An empty repo subdirectory (git
-         does not track those, so one should never really appear in a real
-         checkout) contributes no files to compare and therefore can never
-         cause a spurious failure.
+         second-opinion finding): the directory's contents are enumerated via
+         git's tracked-file list (falling back to a filesystem walk when git
+         is unavailable — see ``_repo_files_under``) and compared file-by-
+         file against the staged copy, and every repo file beneath it that is
+         absent from the stage is reported as its own NOT_STAGED problem,
+         keyed by that file's own path (e.g. "scripts/bar.mjs", not just
+         "scripts") — consistent with how a missing single file is reported.
+         ``allowed_unshipped`` is honoured per nested file too: an entry
+         naming the full nested path (e.g. "scripts/dev-only.mjs") suppresses
+         the finding for that file specifically, the same as it does for a
+         single-file reference. An empty repo subdirectory (git does not
+         track those, so one should never really appear in a real checkout)
+         contributes no files to compare and therefore can never cause a
+         spurious failure.
       2. Every *scanned* source file itself must be present in the stage
          (SOURCE_NOT_STAGED otherwise) — this guards against the scan going
          vacuously green because an entire directory (e.g. agents/) was
@@ -241,14 +275,15 @@ def verify_stage(
             continue
         staged_target = stage_root / reference.path
         if repo_target.is_dir():
-            for repo_file in sorted(p for p in repo_target.rglob("*") if p.is_file()):
-                rel = repo_file.relative_to(repo_target).as_posix()
-                staged_file = staged_target / rel
-                if not staged_file.is_file():
+            for rel in _repo_files_under(repo_root, reference.path):
+                nested_path = f"{reference.path}/{rel}"
+                if nested_path in allowed_unshipped:
+                    continue
+                if not (staged_target / rel).is_file():
                     problems.append(
                         Problem(
                             kind="NOT_STAGED",
-                            path=f"{reference.path}/{rel}",
+                            path=nested_path,
                             detail=f"referenced by {reference.source_file}",
                         )
                     )
