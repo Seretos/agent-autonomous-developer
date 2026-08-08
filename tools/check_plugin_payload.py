@@ -53,13 +53,6 @@ ALLOWED_UNSHIPPED: frozenset[str] = frozenset()
 # quote delimited) source text.
 _REF_PATTERN = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")
 
-# A relative path counts as a "referenced file" only if it has a directory
-# component (contains "/") and a file extension — this is what excludes the
-# bare "${CLAUDE_PLUGIN_ROOT}" prose mention (no trailing "/" at all, so it
-# never enters _REF_PATTERN's capture group in the first place) as well as
-# any hypothetical directory-only reference.
-_EXTENSION_PATTERN = re.compile(r"\.[A-Za-z0-9]+$")
-
 
 @dataclass(frozen=True)
 class Reference:
@@ -95,11 +88,34 @@ def _scanned_files(repo_root: Path) -> list[Path]:
 def discover_references(repo_root: Path) -> list[Reference]:
     """Scan agent/skill/hook source files for ${CLAUDE_PLUGIN_ROOT}/<path> refs.
 
-    Only candidates with a "/" (a directory component beyond the plugin
-    root) and a file extension are treated as file references — this is a
-    deliberate filter, not an oversight: it is what makes the bare
+    Every captured path is checked — there is no extension or path-shape
+    filter (ticket #81 fix-loop, reviewer finding 2: those filters used to
+    silently drop extensionless references like
+    "${CLAUDE_PLUGIN_ROOT}/scripts/helper" or "${CLAUDE_PLUGIN_ROOT}/LICENSE",
+    which is the same "silently narrow the discovery surface" defect class
+    the rest of this gate exists to prevent). The bare
     "`${CLAUDE_PLUGIN_ROOT}` points at *this*" prose mention in
-    agents/reviewer.md yield zero matches by construction.
+    agents/reviewer.md is excluded structurally, not by a post-filter:
+    _REF_PATTERN requires a literal "/" immediately after "}", and that
+    prose mention has no trailing "/" at all, so it never enters the capture
+    group in the first place.
+
+    The one normalization applied to a captured candidate is stripping
+    trailing "." and "/" characters one at a time — this handles a prose
+    sentence ending ("...scripts/foo.mjs." -> "scripts/foo.mjs") and a
+    trailing-slash directory mention ("...scripts/" -> "scripts") without
+    needing a filter. This deliberately stops (does not strip further) the
+    moment the remaining candidate ends in ".." — a plain ``rstrip("./")``
+    would strip a trailing ".." character-by-character too, silently turning
+    a contrived "${CLAUDE_PLUGIN_ROOT}/foo/.." (parent-directory reference,
+    a different path than "foo") into "foo". No such reference exists in
+    this codebase today, but the normalization must not be able to change a
+    path's meaning. A candidate that normalizes to the empty string (the
+    bare "${CLAUDE_PLUGIN_ROOT}/" root itself) is skipped — not as an
+    exemption, but as an equivalence: it resolves to the plugin root, which
+    trivially exists in both the repo and the stage, so emitting a
+    Reference(path="") would only corrupt reference counts without catching
+    anything real.
     """
     repo_root = Path(repo_root)
     references: list[Reference] = []
@@ -108,9 +124,9 @@ def discover_references(repo_root: Path) -> list[Reference]:
         rel_source = source_path.relative_to(repo_root).as_posix()
         for match in _REF_PATTERN.finditer(text):
             candidate = match.group(1)
-            if "/" not in candidate:
-                continue
-            if not _EXTENSION_PATTERN.search(candidate):
+            while candidate.endswith(("/", ".")) and not candidate.endswith(".."):
+                candidate = candidate[:-1]
+            if not candidate:
                 continue
             references.append(Reference(path=candidate, source_file=rel_source))
     return references
@@ -177,6 +193,17 @@ def verify_stage(
          otherwise — catches a typo'd or stale reference) and, unless its
          path is in ``allowed_unshipped``, must also exist under
          ``stage_root`` (NOT_STAGED otherwise — the ticket #81 defect class).
+         When the reference resolves to a *directory* in the repo, existence
+         alone is not enough (ticket #81 fix-loop round 2, Codex
+         second-opinion finding): the directory's contents are walked and
+         compared file-by-file against the staged copy, and every repo file
+         beneath it that is absent from the stage is reported as its own
+         NOT_STAGED problem, keyed by that file's own path (e.g.
+         "scripts/bar.mjs", not just "scripts") — consistent with how a
+         missing single file is reported. An empty repo subdirectory (git
+         does not track those, so one should never really appear in a real
+         checkout) contributes no files to compare and therefore can never
+         cause a spurious failure.
       2. Every *scanned* source file itself must be present in the stage
          (SOURCE_NOT_STAGED otherwise) — this guards against the scan going
          vacuously green because an entire directory (e.g. agents/) was
@@ -213,6 +240,19 @@ def verify_stage(
         if reference.path in allowed_unshipped:
             continue
         staged_target = stage_root / reference.path
+        if repo_target.is_dir():
+            for repo_file in sorted(p for p in repo_target.rglob("*") if p.is_file()):
+                rel = repo_file.relative_to(repo_target).as_posix()
+                staged_file = staged_target / rel
+                if not staged_file.is_file():
+                    problems.append(
+                        Problem(
+                            kind="NOT_STAGED",
+                            path=f"{reference.path}/{rel}",
+                            detail=f"referenced by {reference.source_file}",
+                        )
+                    )
+            continue
         if not staged_target.exists():
             problems.append(
                 Problem(

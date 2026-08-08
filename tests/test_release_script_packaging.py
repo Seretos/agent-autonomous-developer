@@ -25,6 +25,14 @@ Behavioural requirements (see the approved plan for ticket #81):
   BR5 - Codex CHANGES_REQUESTED overrides the reviewer's own APPROVE
         (already implemented; retrospective regression coverage only, see
         the BR5 section below — no historical RED is claimed).
+  BR6 - ticket #81 fix-loop, reviewer finding 2: an extensionless
+        ${CLAUDE_PLUGIN_ROOT}/<path> reference (e.g. a bare "README.md"-less
+        path, or a trailing-slash directory mention) is checked like any
+        other reference, never silently dropped by an extension/path-shape
+        filter.
+  BR7 - ticket #81 fix-loop, reviewer finding 1: AGENTS.md's documented
+        skill-scanning surface matches what the checker actually scans
+        (skills/**/*.md, not skills/**/SKILL.md).
 """
 
 from __future__ import annotations
@@ -498,6 +506,403 @@ def test_reviewer_codex_changes_requested_overrides_own_approve():
         "Codex section must explicitly state the override even when the reviewer's "
         "own review alone would have been APPROVE."
     )
+
+
+# ---------------------------------------------------------------------------
+# BR6 - an extensionless ${CLAUDE_PLUGIN_ROOT}/<path> reference is checked,
+# never silently skipped (ticket #81 fix-loop, reviewer finding 2).
+# ---------------------------------------------------------------------------
+
+
+def test_extensionless_reference_is_checked_not_silently_skipped(tmp_path):
+    """
+    Driving test for BR6: a referenced path with no file extension (e.g.
+    "scripts/helper") must be resolved against the stage exactly like an
+    extensioned one — previously `_EXTENSION_PATTERN` silently dropped it,
+    so a missing-from-stage extensionless reference went unreported.
+    """
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Run `${CLAUDE_PLUGIN_ROOT}/scripts/helper` to do the thing.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "helper").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # Deliberately do NOT create stage/scripts/ — the reference must still be
+    # discovered and reported NOT_STAGED, not silently dropped.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/helper" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/helper, got: {problems!r}"
+
+
+def test_top_level_extensionless_reference_is_checked(tmp_path):
+    """Additional coverage: a top-level extensionless reference (no
+    directory component at all beyond the plugin root), e.g.
+    ${CLAUDE_PLUGIN_ROOT}/LICENSE, must also be checked."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "See `${CLAUDE_PLUGIN_ROOT}/LICENSE` for terms.\n",
+        encoding="utf-8",
+    )
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # LICENSE doesn't exist in the repo at all -> MISSING_IN_REPO, not silently skipped.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "MISSING_IN_REPO" and p.path == "LICENSE" for p in problems
+    ), f"expected a MISSING_IN_REPO problem for LICENSE, got: {problems!r}"
+
+
+def test_trailing_sentence_period_does_not_corrupt_reference_path(tmp_path):
+    """Additional coverage: a reference ending a prose sentence
+    ("...scripts/foo.mjs.") must be normalized to "scripts/foo.mjs", not
+    "scripts/foo.mjs." (which would never resolve)."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "see ${CLAUDE_PLUGIN_ROOT}/scripts/foo.mjs.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+
+    references = cpp.discover_references(repo)
+
+    assert any(r.path == "scripts/foo.mjs" for r in references), (
+        f"expected a reference to 'scripts/foo.mjs' (period stripped), got: {references!r}"
+    )
+    assert not any(r.path.endswith(".") for r in references)
+
+
+def test_trailing_slash_directory_reference_is_normalized_and_checked(tmp_path):
+    """Additional coverage: a trailing-slash directory mention
+    (${CLAUDE_PLUGIN_ROOT}/scripts/) must normalize to "scripts" and still
+    be checked."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+
+    references = cpp.discover_references(repo)
+
+    assert any(r.path == "scripts" for r in references), (
+        f"expected a reference to 'scripts' (trailing slash stripped), got: {references!r}"
+    )
+
+
+def test_trailing_parent_directory_segment_is_not_corrupted(tmp_path):
+    """Additional coverage (#81 fix-loop round 2, optional nit): a
+    contrived reference ending in a parent-directory segment
+    ("${CLAUDE_PLUGIN_ROOT}/foo/..") must not be silently rewritten to
+    "foo" by the trailing "." / "/" normalization -- that would change
+    which path is referenced. No such reference exists in this repo; this
+    only pins the normalization itself."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "See ${CLAUDE_PLUGIN_ROOT}/foo/.. for details.\n",
+        encoding="utf-8",
+    )
+
+    references = cpp.discover_references(repo)
+
+    assert any(r.path == "foo/.." for r in references), (
+        f"expected the parent-directory segment to be preserved as 'foo/..', "
+        f"got: {references!r}"
+    )
+    assert not any(r.path == "foo" for r in references)
+
+
+def test_bare_plugin_root_slash_only_match_yields_no_reference(tmp_path):
+    """Additional coverage: ${CLAUDE_PLUGIN_ROOT}/ alone (nothing after the
+    slash) must normalize to the empty candidate and be skipped — the one
+    remaining, documented skip (an equivalence, not an exemption: it
+    resolves to the plugin root, which trivially exists in both trees)."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "The plugin root is ${CLAUDE_PLUGIN_ROOT}/.\n",
+        encoding="utf-8",
+    )
+
+    references = cpp.discover_references(repo)
+
+    assert references == [], f"expected zero references, got: {references!r}"
+
+
+# ---------------------------------------------------------------------------
+# BR7 - the documented reference-discovery surface matches the implemented
+# one, skills/**/*.md (ticket #81 fix-loop, reviewer finding 1).
+# ---------------------------------------------------------------------------
+
+AGENTS_MD = REPO_ROOT / "AGENTS.md"
+
+
+def _extract_ticket_81_section(text: str) -> str:
+    match = re.search(
+        r"## Release payload must ship every.*?\(ticket #81\).*?(?=\n## |\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert match, "AGENTS.md must contain the ticket #81 release-payload section"
+    return match.group(0)
+
+
+def test_agents_md_documents_the_same_skills_surface_the_checker_scans():
+    """
+    Driving test for BR7: AGENTS.md's ticket-#81 invariant must name the same
+    skill surface the checker actually scans (skills/**/*.md), not the
+    narrower skills/**/SKILL.md.
+    """
+    section = _extract_ticket_81_section(AGENTS_MD.read_text(encoding="utf-8"))
+    assert "skills/**/*.md" in section, (
+        "AGENTS.md's ticket #81 invariant must document the skill surface as "
+        "`skills/**/*.md` (matching _scanned_files()), not `skills/**/SKILL.md`."
+    )
+    assert "skills/**/SKILL.md" not in section, (
+        "AGENTS.md's ticket #81 invariant must not document the narrower "
+        "`skills/**/SKILL.md` surface — the checker scans all Markdown under "
+        "skills/, not just SKILL.md files."
+    )
+
+
+def test_scanned_files_includes_non_skill_markdown_under_skills(tmp_path):
+    """Additional coverage: _scanned_files() must include a non-SKILL.md
+    Markdown file living alongside SKILL.md under skills/ — supporting/
+    progressive-disclosure docs carry the same ${CLAUDE_PLUGIN_ROOT} risk."""
+    repo = tmp_path / "repo"
+    (repo / "skills" / "foo").mkdir(parents=True)
+    (repo / "skills" / "foo" / "SKILL.md").write_text("skill body\n", encoding="utf-8")
+    (repo / "skills" / "foo" / "reference.md").write_text("reference body\n", encoding="utf-8")
+
+    scanned = {
+        p.relative_to(repo).as_posix() for p in cpp._scanned_files(repo)  # noqa: SLF001
+    }
+
+    assert "skills/foo/SKILL.md" in scanned
+    assert "skills/foo/reference.md" in scanned
+
+
+def test_reference_in_non_skill_markdown_under_skills_is_verified(tmp_path):
+    """Additional coverage: a ${CLAUDE_PLUGIN_ROOT} reference living in a
+    non-SKILL.md Markdown file under skills/ must be discovered and checked
+    against the stage."""
+    repo = tmp_path / "repo"
+    (repo / "skills" / "foo").mkdir(parents=True)
+    (repo / "skills" / "foo" / "SKILL.md").write_text("skill body\n", encoding="utf-8")
+    (repo / "skills" / "foo" / "reference.md").write_text(
+        "See `${CLAUDE_PLUGIN_ROOT}/scripts/aux.mjs` for details.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "aux.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "skills" / "foo").mkdir(parents=True)
+    (stage / "skills" / "foo" / "SKILL.md").write_text("skill body\n", encoding="utf-8")
+    (stage / "skills" / "foo" / "reference.md").write_text(
+        (repo / "skills" / "foo" / "reference.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    # Deliberately do NOT stage scripts/ -> expect NOT_STAGED.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/aux.mjs" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/aux.mjs, got: {problems!r}"
+
+
+# ---------------------------------------------------------------------------
+# BR8 - a directory reference (e.g. "scripts/", normalized to "scripts") that
+# exists in the stage but is missing one or more of the repo's files beneath
+# it must be reported as NOT_STAGED, not silently passed on a shallow
+# .exists() check (ticket #81 fix-loop round 2, Codex second-opinion
+# finding: tools/check_plugin_payload.py:119 / verify_stage's NOT_STAGED
+# check around lines 222-230).
+# ---------------------------------------------------------------------------
+
+
+def test_directory_reference_missing_file_in_stage_is_reported_not_staged(tmp_path):
+    """
+    Driving test for BR8: a ${CLAUDE_PLUGIN_ROOT}/scripts/ reference (a
+    directory) whose stage copy of scripts/ exists but is missing one of the
+    repo's files must be reported as NOT_STAGED for the missing file -- a
+    directory that merely *exists* in the stage is not the same as a
+    directory whose *contents* are fully staged.
+    """
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    (repo / "scripts" / "bar.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (stage / "scripts").mkdir(parents=True)
+    (stage / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    # Deliberately do NOT stage scripts/bar.mjs -- the directory "exists" in
+    # the stage, but its contents are incomplete.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/bar.mjs" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/bar.mjs, got: {problems!r}"
+
+
+def test_directory_reference_fully_staged_produces_no_problem(tmp_path):
+    """Additional coverage: a directory reference whose stage copy contains
+    every repo file beneath it produces no problem."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    (repo / "scripts" / "bar.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (stage / "scripts").mkdir(parents=True)
+    (stage / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    (stage / "scripts" / "bar.mjs").write_text("// stub\n", encoding="utf-8")
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert problems == []
+
+
+def test_directory_reference_absent_from_stage_entirely_still_reported(tmp_path):
+    """Additional coverage: a directory reference missing from the stage
+    entirely must still be reported NOT_STAGED for the whole directory --
+    unchanged prior behaviour (the top-level directory path itself), now
+    additionally verified to also flag its individual missing files."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # Deliberately do NOT create stage/scripts/ at all.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/foo.mjs" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/foo.mjs, got: {problems!r}"
+
+
+def test_directory_reference_nested_subdirectory_contents_are_compared(tmp_path):
+    """Additional coverage: a nested subdirectory beneath the referenced
+    directory must also have its contents compared, not just the top
+    level."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts" / "nested").mkdir(parents=True)
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    (repo / "scripts" / "nested" / "deep.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (stage / "scripts" / "nested").mkdir(parents=True)
+    (stage / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    # Deliberately do NOT stage scripts/nested/deep.mjs.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/nested/deep.mjs" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/nested/deep.mjs, got: {problems!r}"
+
+
+def test_directory_reference_with_empty_repo_subdirectory_is_not_a_spurious_failure(tmp_path):
+    """Additional coverage: an empty subdirectory in the repo (which git does
+    not track, so it would never actually exist in a real checkout, but the
+    checker must not crash or falsely flag it either way) must not cause a
+    spurious NOT_STAGED problem when the stage is otherwise complete."""
+    repo = tmp_path / "repo"
+    (repo / "agents").mkdir(parents=True)
+    (repo / "agents" / "x.md").write_text(
+        "Everything under `${CLAUDE_PLUGIN_ROOT}/scripts/` ships.\n",
+        encoding="utf-8",
+    )
+    (repo / "scripts" / "empty-subdir").mkdir(parents=True)
+    (repo / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+
+    stage = tmp_path / "stage"
+    (stage / "agents").mkdir(parents=True)
+    (stage / "agents" / "x.md").write_text(
+        (repo / "agents" / "x.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (stage / "scripts").mkdir(parents=True)
+    (stage / "scripts" / "foo.mjs").write_text("// stub\n", encoding="utf-8")
+    # stage/scripts/empty-subdir/ deliberately does not exist -- an empty
+    # directory carries no files to compare, so this must not be flagged.
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert problems == []
+
+
+def test_single_file_reference_behaviour_unchanged(tmp_path):
+    """Regression guard: a reference resolving to a single file (not a
+    directory) must be checked exactly as before -- byte-identical existing
+    behaviour, unaffected by the new directory-content comparison."""
+    repo, stage = _build_synthetic_repo_and_incomplete_stage(tmp_path)
+
+    problems = cpp.verify_stage(repo, stage)
+
+    assert any(
+        p.kind == "NOT_STAGED" and p.path == "scripts/foo.mjs" for p in problems
+    ), f"expected a NOT_STAGED problem for scripts/foo.mjs, got: {problems!r}"
 
 
 # NOTE (#81 fix pass, de-duplication): the two executable Codex-verdict stub

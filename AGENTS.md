@@ -596,7 +596,10 @@ same way. This was a **packaging gap**, not a missing implementation — both fi
 worked correctly once actually present.
 
 **Invariant for contributors:** any runtime file referenced via `${CLAUDE_PLUGIN_ROOT}/...`
-from an agent (`agents/*.md`), a skill (`skills/**/SKILL.md`), or a hook manifest
+from an agent (`agents/*.md`), a skill (`skills/**/*.md` — not just `SKILL.md`; a skill can
+legitimately carry supporting/progressive-disclosure Markdown alongside `SKILL.md`, and a
+`${CLAUDE_PLUGIN_ROOT}/...` reference there breaks on install identically, so the checker
+scans every Markdown file under `skills/`, not only the entry-point one), or a hook manifest
 (`hooks/hooks.json`) **must** be staged by `release.yml`'s "Stage install tree and build
 release zip" step. Don't rely on remembering this by hand — `tools/check_plugin_payload.py`
 is a generic, fail-closed release-time gate: it scans those file kinds for
