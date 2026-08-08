@@ -66,11 +66,13 @@ jobs:
           PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
           STAGE="build/stage/${PLUGIN_NAME}"
           rm -rf "$STAGE"
-          mkdir -p "$STAGE/.claude-plugin" "$STAGE/skills" "$STAGE/agents" "$STAGE/assets"
+          mkdir -p "$STAGE/.claude-plugin" "$STAGE/skills" "$STAGE/agents" "$STAGE/assets" "$STAGE/scripts" "$STAGE/hooks"
           cp .claude-plugin/plugin.json "$STAGE/.claude-plugin/"
           cp -a skills/. "$STAGE/skills/"
           cp -a agents/. "$STAGE/agents/"
           cp -a assets/. "$STAGE/assets/"
+          cp -a scripts/. "$STAGE/scripts/"
+          cp -a hooks/. "$STAGE/hooks/"
           cp README.md "$STAGE/"
           cp description.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
@@ -81,6 +83,11 @@ jobs:
 
           echo "stage=$STAGE"      >> "$GITHUB_OUTPUT"
           echo "zip=dist/$ZIPNAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify referenced plugin files are staged
+        shell: bash
+        run: |
+          python3 tools/check_plugin_payload.py --stage "${{ steps.stage.outputs.stage }}"
 
       - name: Push orphan release branch and capture commit
         id: rel
