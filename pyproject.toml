@@ -8,7 +8,9 @@ version = "0.0.0"
 requires-python = ">=3.9"
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+test = ["pytest>=7", "pytest-timeout>=2.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 60
+timeout_method = "thread"

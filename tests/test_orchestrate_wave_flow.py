@@ -1167,20 +1167,32 @@ def test_status_check_ping_fires_only_when_git_state_unconfirmed():
     )
 
 
-def test_status_check_ping_is_single_ping_no_timer_no_retry():
+def test_status_check_ping_is_single_ping_then_bounded_liveness_check():
+    """Superseded by ticket #83: the original single-ping/no-wall-clock-
+    timeout bound let a coherent reply buy a wave member unbounded silence,
+    which the #83 postmortem found let two idle agents wait on each other
+    indefinitely. Phase C now bounds a coherent reply to one ~15-minute
+    liveness-checked wait instead of an unbounded one — see
+    test_orchestrate_liveness_check.py for the full driving-test coverage of
+    that rework. This test only confirms the old unbounded phrasing is gone
+    and the single-ping structure (still exactly one ping) survives."""
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
     phase_c = _extract_phase_c(body)
-    assert re.search(r"no\s+wall-clock\s+timeout", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly say the ping introduces no wall-clock "
-        "timeout"
+    assert not re.search(r"no\s+wall-clock\s+timeout", phase_c, re.IGNORECASE), (
+        "Phase C must no longer claim the ping bound has no wall-clock "
+        "timeout (ticket #83 replaced this with a bounded liveness check)"
     )
-    assert re.search(r"no\s+retry\s+count", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly say the ping introduces no retry-count "
-        "number"
+    assert not re.search(r"reply-or-next-idle", phase_c, re.IGNORECASE), (
+        "Phase C must no longer bound the ping as unbounded "
+        "reply-or-next-idle (ticket #83 replaced this with a bounded "
+        "liveness check)"
     )
-    assert re.search(r"reply-or-next-idle", phase_c, re.IGNORECASE), (
-        "Phase C must bound the ping as single-ping, reply-or-next-idle"
+    assert re.search(r"exactly\s+one.{0,40}status-check", phase_c, re.IGNORECASE | re.DOTALL), (
+        "Phase C must still send exactly one status-check ping"
+    )
+    assert re.search(r"~?15[\s-]*minute", phase_c, re.IGNORECASE), (
+        "Phase C must bound the post-ping wait to ~15 minutes"
     )
 
 
@@ -1296,17 +1308,19 @@ def test_agents_md_documents_status_check_ping_before_conservative_rule():
         "AGENTS.md's B6 subsection must document the ping as a SendMessage "
         "call"
     )
-    assert re.search(r"reply-or-next-idle", b6_section, re.IGNORECASE), (
-        "AGENTS.md's B6 subsection must bound the ping as single-ping, "
-        "reply-or-next-idle"
+    # Superseded by ticket #83: the unbounded "reply-or-next-idle, no
+    # wall-clock timeout, no retry-count number" bound let a coherent reply
+    # buy a member indefinite silence. It is now a bounded ~15-minute
+    # liveness/progress check instead — see
+    # test_orchestrate_liveness_check.py for full coverage of that rework.
+    assert not re.search(r"no\s+wall-clock\s+timeout", b6_section, re.IGNORECASE), (
+        "AGENTS.md's B6 subsection must no longer claim the ping bound has "
+        "no wall-clock timeout (ticket #83 replaced this with a bounded "
+        "liveness check)"
     )
-    assert re.search(r"no\s+wall-clock\s+timeout", b6_section, re.IGNORECASE), (
-        "AGENTS.md's B6 subsection must say the ping introduces no "
-        "wall-clock timeout"
-    )
-    assert re.search(r"no\s+retry-count\s+number", b6_section, re.IGNORECASE), (
-        "AGENTS.md's B6 subsection must say the ping introduces no "
-        "retry-count number"
+    assert re.search(r"~?15[\s-]*minute", b6_section, re.IGNORECASE), (
+        "AGENTS.md's B6 subsection must bound the post-ping wait to "
+        "~15 minutes"
     )
 
 

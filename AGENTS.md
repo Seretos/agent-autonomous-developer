@@ -150,24 +150,43 @@ exactly as above and is never pinged. When it fires, the orchestrator sends
 to report its current pipeline phase/state — legitimate and asymmetric,
 because the member (callee) has no `SendMessage` tool to push a reply back
 on its own initiative, but the orchestrator (caller) can send to a
-background/named member and read its reply. The bound is **single ping,
-reply-or-next-idle** — no wall-clock timeout and no retry-count number,
-consistent with the timer-free trigger described above (the orchestrator has
-no timer). A **coherent progress reply** (a plausible in-progress state, not
-gibberish or empty) means the member is still legitimately working: it is
-**not disqualified and not merged yet**, stays eligible, and is resolved
-later by its own eventual Final-step report or by a subsequent
-idle-without-report signal, which simply re-enters this same path; no second
-ping follows a coherent reply, and a coherent-reply member is **not** added
-to the confirmed-done set — only kept alive, not confirmed. An **empty/error
-reply, an incoherent reply, or the member's very next signal being another
-idle-without-report** instead falls through to the Conservative non-merge
-rule below, unchanged. Judging "coherent" stays the orchestrator's own read
-of the reply content, not a new automated check, and the ping never relaxes
-any of the #64 git-state criteria — it only adds a disambiguation gate in
-front of disqualification. This description must stay consistent with Phase
-C step 2's ping sub-step and the Hard Rules B6 bullet in
-`skills/orchestrate-tickets/SKILL.md`.
+background/named member and read its reply. The bound (ticket #83) is
+**single ping, then a bounded ~15-minute liveness/progress check — not a
+deadline**: an **empty/error reply, an incoherent reply, or the member's
+very next signal being another idle-without-report** falls straight through
+to the Conservative non-merge rule below, unchanged. A **coherent progress
+reply** (a plausible in-progress state, not gibberish or empty) means the
+member is *provisionally* still legitimately working — no second ping
+follows it, and it is **not** added to the confirmed-done set — but it no
+longer buys unbounded silence. It stays eligible only for one bounded
+~15-minute wait, after which three liveness probes decide alive-vs-wedged:
+(1) a test/worker **process is alive** for that worktree (command line /
+worktree path match, reusing the B2 sweep's shape); (2) it is making **CPU
+progress** (a positive CPU-time delta sampled over ~25s); (3) **work is
+advancing** (`git -C <worktree_path> diff --stat` growth versus the
+previous check). **Alive-and-progressing** keeps the member eligible,
+unconfirmed, unmerged, exactly as the plain coherent-reply case did before
+— it simply re-enters this path later. **Wedged** (no live process, or a
+live process with neither CPU progress nor diff growth) authorizes exactly
+two actions in order: **kill** the wedged process for that worktree (via
+the same B2 path-matched sweep already used for teardown — cross-
+referenced, never a second kill recipe), then fall through to the
+Conservative non-merge rule below. **There is no automatic re-dispatch** —
+re-running into a worktree holding a partial commit and a possibly-stale
+`.process-ticket-result.json` is exactly the scenario B6 exists to guard
+against. The bounded wait itself is implemented via the same `nohup … &` +
+in-turn `Monitor`-with-until-condition pattern mandated for the sub-agents
+(see the Long-lived process guardrail section below) — **never** a
+foreground `sleep`/`Start-Sleep`, since the Bash tool blocks foreground
+sleeps and a ~15-minute foreground call would hit the same ~10-minute tool
+cliff this ticket fixes; the orchestrator eats its own dog food rather than
+exempting itself from the rule it enforces on `developer`/`reviewer`.
+Judging "coherent" stays the orchestrator's own read of the reply content,
+not a new automated check — only the bounded-wait probes are automated —
+and none of this relaxes any of the #64 git-state criteria; it only adds a
+disambiguation gate in front of disqualification. This description must
+stay consistent with Phase C step 2's ping sub-step and the Hard Rules B6
+bullet in `skills/orchestrate-tickets/SKILL.md`.
 
 **Conservative non-merge rule:** a member that can't be
 confirmed this way — HEAD not ahead of the branch point, marker missing/
@@ -419,6 +438,27 @@ in wrapper projects such as `agent-unity-wrapper`, not in this plugin.
 that the updated rule still covers **both** branches — (1) the tracked-start path
 (`worktree_start` + `start:` contract step) and (2) the manual-warning fallback for ad-hoc
 launches — and update this note to stay consistent with the new wording.
+
+**Second cross-file branch (ticket #83) — never end a turn on a backgrounded command.**
+`agents/developer.md` and `agents/reviewer.md` both carry a Hard Rule forbidding ending a
+turn while a command the agent itself backgrounded is still running — a `task-notification`
+event for a backgrounded Bash command is delivered only to the main/orchestrator session,
+never to the sub-agent that started it, so ending the turn does not suspend the agent, it
+**terminates** it. The two sanctioned resolutions are (a) an in-turn `Monitor` wait on the
+command's log file, or (b) an explicit blocked/in-progress status report handing the wait to
+the parent. No-op yield commands (`true`, `exit 0`, `echo waiting`, `sleep` as a turn filler)
+are named explicitly as a forbidden anti-pattern — they terminate the turn rather than
+suspend it. **Invariant: full-suite runs always background, targeted runs may stay
+foreground.** `agents/developer.md`'s "Run the suite" step documents that the **full-suite
+run always** uses `nohup <detected-test-cmd> > <log> 2>&1 &` + an in-turn `Monitor` wait,
+regardless of the suite's expected duration — there is no duration estimate to weigh and no
+judgment call to make — while **targeted runs during a red→green loop** (a single test file,
+`-x`, `-k`, a single package/spec) **may remain plain foreground `Bash` calls**. A later edit
+must not quietly narrow this boundary: widening "always" to exempt slow-looking suites, or
+narrowing the targeted-run carve-out, would reopen the ~10-minute tool-cliff stall this
+ticket closes. `skills/orchestrate-tickets/SKILL.md`'s own bounded liveness wait (see the B6
+section above) and its Phase C step 5 integration gate dog-food this same nohup+Monitor
+pattern rather than exempting the orchestrator from its own rule.
 
 ## Why ticket-slicing knowledge lives in the orchestrator, not a standalone skill
 
