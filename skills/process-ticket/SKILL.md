@@ -57,9 +57,14 @@ checkout to *verify* behaviour (without editing) is not a bypass; *editing* is.
 1. **Planner approval gate.** The planner subagent produces a plan and answers
    the user's questions before any code is written; the plan is posted as a
    ticket comment for traceability.
-2. **Developer QA / tests.** The developer runs the project's test suite and
-   must report PASS before the workflow continues; unfixable failures stop the
-   pipeline.
+2. **Developer QA / tests.** The developer runs the project's test suite —
+   the full suite backgrounded via `nohup … > <log> 2>&1 &` plus an in-turn
+   `Monitor` wait, never a plain foreground call subject to the tool's
+   ~10-minute timeout — and must report PASS before the workflow continues;
+   unfixable failures stop the pipeline. A developer or reviewer may instead
+   return a **blocked/in-progress** status report (e.g. it is still waiting
+   on its own backgrounded command and is handing ownership of that wait to
+   this skill) — see Phase 3 below for how that return is handled.
 3. **Code review — reviewer subagent + optional Codex pass.** The reviewer
    reads the diff and returns `APPROVE` or `CHANGES_REQUESTED`; blocking
    findings trigger one fix cycle. When the Codex plugin is active, a Codex
@@ -226,10 +231,22 @@ Spawn the developer **synchronously and unnamed**, mirroring Phase 2:
 `Agent(subagent_type="developer", prompt=…, run_in_background: false)`. Pass
 the full `plan` and the `context_summary`. It implements on the **current
 branch/worktree**, edits/writes files, and runs the project's test suite (the
-test command is auto-detected from the stack and named in the plan). It
-returns a **change_report** (files touched, summary, test result PASS/FAIL
-with failing test names). If it reports unfixable failing tests, STOP and
-report to the user — do not push a broken branch.
+test command is auto-detected from the stack and named in the plan; the full
+suite runs backgrounded via `nohup … > <log> 2>&1 &` plus an in-turn
+`Monitor` wait, per `agents/developer.md`'s Hard Rules). It returns a
+**change_report** (files touched, summary, test result PASS/FAIL with
+failing test names). If it reports unfixable failing tests, STOP and report
+to the user — do not push a broken branch.
+
+**Blocked/in-progress report.** A `blocked`/`in-progress` return from the
+developer (or, in Phase 4, the reviewer) is a legitimate result, not an
+error: it means the sub-agent is still waiting on its own backgrounded
+command and is handing ownership of that wait back to this skill instead of
+ending its turn. Treat it as such — **surface it to the user**, and do
+**not** treat it as a completed phase and do **not** proceed to commit on
+the strength of it. The orchestrator then decides whether to re-poll (a
+fresh, synchronous, unnamed re-dispatch, never a `SendMessage` resume — see
+the deadlock note above) or stop and report the blocker.
 
 Do not pass a `name`. Naming this call switches it into background/mailbox
 delivery regardless of `run_in_background`, and the developer has no

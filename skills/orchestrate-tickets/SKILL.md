@@ -515,29 +515,75 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
      its reply — the same asymmetry the root-cause note above already
      describes.
 
-     **Bound: single ping, reply-or-next-idle — no wall-clock timeout, no
-     retry count**, consistent with "the orchestrator has no timer and must
-     not wait on one" above. Outcomes:
+     **Bound: single ping, then a bounded ~15-minute liveness check —
+     not a deadline.** This is a *liveness/progress* gate, not a timer that
+     disqualifies on elapsed time alone. Outcomes of the single ping:
+     - An **empty or error reply, an incoherent reply, or the member's very
+       next signal being another idle-without-report** falls through
+       unchanged to the Conservative non-merge rule described below:
+       genuinely unconfirmed, roll into a later wave.
      - A **coherent progress reply** (the member describes a plausible
        in-progress state, e.g. "in Phase 4 review, awaiting reviewer
-       sub-agent") means it is still legitimately working: **do not
-       disqualify it and do not merge it yet.** It stays eligible and is
-       resolved later, either by its eventual Final-step report or by a
-       subsequent idle-without-report signal, which simply re-enters this
-       same B6 path. Send no second ping in response to this reply. A
-       coherent-reply member is **not** added to the confirmed-done set —
-       it isn't confirmed, only kept alive.
-     - An **empty or error reply, an incoherent reply, or the member's very
-       next signal being another idle-without-report** falls through to the
-       **Conservative non-merge rule** below, unchanged: genuinely
-       unconfirmed, roll into a later wave.
+       sub-agent") means it is *provisionally* still legitimately working:
+       **do not disqualify it and do not merge it yet.** Send no second
+       ping in response to this reply, and it is **not** added to the
+       confirmed-done set. But a coherent reply alone no longer buys it
+       unbounded silence — it stays eligible only for the duration of one
+       **bounded ~15-minute wait**, timed the same dog-food way the
+       sub-agents themselves must wait (see "Dog-fooding the wait" below):
+       `nohup … &` plus an in-turn `Monitor`-with-until-condition, **never**
+       a foreground `sleep`/`Start-Sleep`. At the end of that bounded wait
+       the orchestrator runs three liveness probes against the member's
+       worktree and returns exactly **one verdict — alive-and-progressing,
+       or wedged**:
+       1. **Process alive** — a test/worker process is still running for
+          that worktree: `Get-CimInstance Win32_Process` filtered on
+          command line / worktree path (PowerShell), or `pgrep -f
+          "<worktree_path>"` (POSIX) — reusing B2's path-matching shape.
+       2. **CPU progress** — that process is consuming CPU, not merely
+          resident: sample its CPU time, wait ~25s, sample again, and
+          require a positive delta.
+       3. **Work advancing** — `git -C <worktree_path> diff --stat` shows
+          growth versus the previous check (more changed lines/files than
+          last time).
 
-     Judging "coherent" is the orchestrator's own read of the reply content
-     — a plausible mid-pipeline state versus gibberish or an empty body —
-     not a new automated check. This ping only adds a disambiguation gate
-     in front of disqualification; it never relaxes any of the git-state
-     criteria above or the Conservative non-merge rule below, which remain
-     the last-resort gate for a genuinely dropped or dead spawn.
+       **Alive-and-progressing** (probe 1 true, and at least one of probes
+       2/3 shows real progress): the member stays eligible, still **not**
+       confirmed-done and still **not** merged — it simply re-enters this
+       same path on its next idle signal or eventual Final-step report,
+       exactly as the plain coherent-reply case did before.
+
+       **Wedged** (probe 1 fails, or a live process shows neither CPU
+       progress nor `git -C <worktree_path> diff --stat` growth): this authorizes exactly two
+       actions, in order — (1) **kill** the wedged process for that
+       worktree using the same path-matched sweep B2 already specifies for
+       teardown (cross-referenced, not restated, so the two recipes can't
+       drift); then (2) the member falls through unchanged to the
+       Conservative non-merge rule described below — not merged, rolled
+       into a later wave, exactly like today's `CHANGES_REQUESTED`/red
+       path. **There is
+       no automatic re-dispatch.** Re-running into a worktree that holds a
+       partial commit and a possibly-stale `.process-ticket-result.json` is
+       precisely the scenario B6 exists to guard against — do not add one.
+
+     Judging "coherent" is still the orchestrator's own read of the reply
+     content — a plausible mid-pipeline state versus gibberish or an empty
+     body — not a new automated check; only the *bounded-wait* step above is
+     automated (the three probes). This ping-then-bounded-wait sequence only
+     adds a disambiguation gate in front of disqualification; it never
+     relaxes any of the git-state criteria above or the five disqualifiers
+     in the Conservative non-merge rule below, which remain the last-resort
+     gate for a genuinely dropped or dead spawn.
+
+     **Dog-fooding the wait.** The bounded ~15-minute wait above is
+     **not** a foreground `sleep`/`Start-Sleep` Bash call: the Bash tool
+     blocks foreground sleeps, and a ~15-minute foreground call would hit
+     the same ~10-minute tool cliff this ticket exists to fix. The
+     orchestrator therefore waits the exact same way it requires of its
+     sub-agents — `nohup <probe-loop> > <log> 2>&1 &` followed by an
+     in-turn `Monitor` wait with an until-condition on that log — eating
+     its own dog food rather than exempting itself from the rule it
+     enforces on `developer`/`reviewer`.
 
    **Conservative non-merge rule.** A member whose ending state cannot be
    confirmed this way is **not merged**: HEAD not ahead of the branch point
@@ -577,7 +623,12 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
    `Set-Location <repo_root>` (PowerShell) / `cd <repo_root>` (POSIX) before
    invoking the detected test command; this is not a strategy mix with the
    `-C` convention above, it is the one place where a location change (rather
-   than a per-command flag) is the only option.
+   than a per-command flag) is the only option. This is a **full-suite run**,
+   so — after that `Set-Location`/`cd` — it uses the same backgrounded
+   `nohup <detected-test-cmd> > <log> 2>&1 &` + in-turn `Monitor` pattern
+   mandated for sub-agents (never a plain foreground call, which is subject
+   to the tool's ~10-minute timeout that the suite's real runtime reliably
+   exceeds).
    - **On GREEN:** tear down this wave's worktrees (see Teardown below, with
      the B2/B3 extensions), **then push the integration branch** —
      `git -C <repo_root> push origin <integration>` is a **hard precondition
@@ -782,13 +833,27 @@ for manual cleanup — never silently fail to retry a dropped member.
   merged; it rolls into a later wave. See Phase C step 2 for the full
   protocol. Before that disqualification lands, a single status-check
   `SendMessage` ping disambiguates a busy-but-alive member (coherent reply
-  → keep waiting, not merged, not disqualified) from a genuinely dropped one
-  (empty/error/incoherent reply or another idle-without-report → falls
-  through to disqualification unchanged) — one ping, no timer, no retry
-  count, and it never relaxes the git-state criteria above. Once a member is
-  confirmed-done — its report carried the explicit `final: true` terminal
-  marker, or it was B6-confirmed via the fallback — later idle pings from it
-  are idempotent no-op set lookups, never a re-triggered B6 check.
+  → provisionally keep waiting, not merged, not disqualified) from a
+  genuinely dropped one (empty/error/incoherent reply or another
+  idle-without-report → falls through to disqualification unchanged) — this
+  is a **liveness/progress check, not a deadline**. A coherent reply no
+  longer buys unbounded silence: it stays eligible only for a **bounded
+  ~15-minute wait**, timed via the same `nohup … &` + in-turn `Monitor`
+  dog-food pattern mandated for sub-agents (never a foreground
+  `sleep`/`Start-Sleep`, which would hit the same ~10-minute tool cliff this
+  fix exists for). At the end of that wait, three liveness probes decide
+  alive-vs-wedged: a live process for the worktree (command line/worktree
+  path match, reusing B2's shape), a positive CPU-time delta over ~25s, and
+  `git -C <worktree_path> diff --stat` growth versus the previous check.
+  **Alive-and-progressing** stays eligible, unconfirmed, unmerged — it
+  simply re-enters this path later. **Wedged** authorizes exactly two
+  actions in order: **kill** the process (via B2's existing sweep, not a
+  second recipe), then fall through to the Conservative non-merge rule
+  below — **there is no automatic re-dispatch**. This never relaxes the
+  git-state criteria above. Once a member is confirmed-done — its report
+  carried the explicit `final: true` terminal marker, or it was
+  B6-confirmed via the fallback — later idle pings from it are idempotent
+  no-op set lookups, never a re-triggered B6 check.
 - **Backlog release gate (implicit "none"/"all open" MULTI path only).**
   Before spawning the analyst on that path, `list_board_columns` detects a
   literal `Backlog` column and, whenever a board is configured, also detects
