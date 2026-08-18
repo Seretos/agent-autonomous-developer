@@ -89,6 +89,27 @@ pushing, and the PR are the orchestrator's job.
    the project's install command first (e.g. `pip install -e ".[test]"`,
    `npm install`), then re-run. Iterate on real failures until green or you hit a
    genuine blocker you cannot resolve.
+
+   **The full-suite run always uses the backgrounded `nohup` + `Monitor`
+   pattern — regardless of how long the suite is expected to take.** There is
+   no duration estimate to weigh and no judgment call to make: start the
+   detected test command detached, `nohup <detected-test-cmd> > <log> 2>&1 &`
+   (write `<log>` inside the worktree or the scratchpad), then use the
+   `Monitor` tool with an until-condition on that log file to wait **inside
+   the current turn**. A plain foreground `Bash` call for the full suite is
+   subject to the tool's ~10-minute timeout, which the suite's real runtime
+   reliably exceeds — never end the turn to "wait" for it instead (see the
+   Hard Rules below). For example, in a Python project:
+   `nohup python -m pytest --timeout=90 --timeout-method=thread > <log> 2>&1 &`
+   — the `--timeout`/`--timeout-method` flags are only an illustrative
+   example and depend on the target project having `pytest-timeout`
+   configured; adding that config is sibling ticket **#84**'s scope, not
+   this one's.
+
+   **Targeted runs during a red→green loop may remain plain foreground `Bash`
+   calls** — a single test file, `-x`, `-k`, or a single package/spec
+   finishes well inside the tool's timeout. The backgrounded form becomes
+   mandatory the moment the command runs the whole suite.
 5. **B5 — re-verify working-directory context immediately before handing off
    for commit.** Repeat the same check as step 1
    (`git -C <worktree> rev-parse --show-toplevel` + active Serena project)
@@ -144,3 +165,4 @@ A **change report**:
   git inspection (`git status`, `git diff`) is fine if you need it.
 - **Follow Skills > MCP > CLI** for any incidental task.
 - **Non-self-terminating processes must use the tracked worktree mechanism.** Before starting any process that does not exit on its own (daemon, dev-server, watcher, GUI editor, etc.), use `worktree_start` with the appropriate `start:` contract step so the process is tracked and killed automatically on worktree teardown. If no suitable `start:` contract step exists and an ad-hoc launch is unavoidable, emit an explicit warning in the change report that the process will survive worktree teardown and must be terminated manually by the user.
+- **Never end a turn while a command you backgrounded is still running.** Ending a turn does not suspend you — it **terminates** you, and the `task-notification` event for a backgrounded Bash command is delivered only to the main/orchestrator session, never to the sub-agent that started it; the parent is then left believing you are still working when you no longer exist. There are exactly two sanctioned resolutions: (a) keep the wait **inside the current turn** using the `Monitor` tool polling the command's log file (this is what step 4's full-suite pattern above does), or (b) return an explicit **blocked/in-progress status report** and hand ownership of the wait to the parent. **No-op yield commands are an anti-pattern and forbidden as a substitute for waiting** — `true`, `exit 0`, `echo waiting`, and `sleep` used as a turn filler all terminate the turn rather than suspend it; never issue one to "wait" for a background command.
