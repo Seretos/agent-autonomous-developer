@@ -69,6 +69,12 @@ def _extract_hard_rules(body: str) -> str:
     return m.group(0)
 
 
+def _extract_sh_fence(text: str) -> str:
+    m = re.search(r"```sh\s*\n(.*?)```", text, re.DOTALL)
+    assert m, "Teardown must contain a fenced ```sh``` block for the POSIX recipe"
+    return m.group(1)
+
+
 # ---------------------------------------------------------------------------
 # Regression test
 # ---------------------------------------------------------------------------
@@ -170,11 +176,23 @@ def test_hard_rule_teardown_order_names_self_cwd_lock_terminal_case():
 
 
 def test_b2_foreign_process_sweep_not_weakened():
+    """Updated for ticket #86: the POSIX sweep replaced the old unfiltered
+    `pkill -f "<worktree-path>"` recipe with a pgrep-filtered, /proc-cwd
+    refined, self/ancestor/descendant-excluded B2-match primitive (see
+    test_orchestrate_probe_self_match.py). This is a deliberate update to
+    this pre-existing assertion, not a weakening: it now asserts the new
+    POSIX form (`pgrep -f`) instead of the retired `pkill -f` literal, while
+    every other assertion here (exe-name allowlist, app-server-broker.mjs
+    reference) stays intact and unweakened."""
     body = _extract_body(_read(ORCHESTRATE_MD))
     td = _extract_teardown(body)
 
     assert "Get-CimInstance Win32_Process" in td
-    assert 'pkill -f "<worktree-path>"' in td
+    sh_block = _extract_sh_fence(td)
+    assert "pgrep -f" in sh_block, (
+        "the POSIX fenced recipe (not merely explanatory prose elsewhere in "
+        "Teardown) must invoke pgrep -f"
+    )
     for name in ("serena.exe", "uvx.exe", "uv.exe", "python.exe", "node.exe"):
         assert name in td, f"B2 sweep must still name {name}"
     assert "app-server-broker.mjs" in td
