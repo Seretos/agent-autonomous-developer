@@ -536,35 +536,106 @@ Iterate the `waves` array **wave-by-wave, in order**. For each wave:
        the orchestrator runs three liveness probes against the member's
        worktree and returns exactly **one verdict — alive-and-progressing,
        or wedged**:
-       1. **Process alive** — a test/worker process is still running for
-          that worktree: `Get-CimInstance Win32_Process` filtered on
-          command line / worktree path (PowerShell), or `pgrep -f
-          "<worktree_path>"` (POSIX) — reusing B2's path-matching shape.
-       2. **CPU progress** — that process is consuming CPU, not merely
-          resident: sample its CPU time, wait ~25s, sample again, and
-          require a positive delta.
+       1. **Process alive — via B2-match, self-excluded.** Reuse
+          **B2-match** by name (Teardown step 1) to get this worktree's
+          survivor PID set — command line / worktree path matched — never
+          restate a second matcher inline. Because B2-match already
+          subtracts the orchestrator's own self/ancestor/descendant PID
+          exclusion set before returning, the orchestrator's own
+          pwsh.exe/node.exe session can never self-match and read back as
+          "alive" the way an unfiltered command-line-substring match could.
+       2. **CPU progress** — sample the survivor PID(s)' CPU time at t0 and
+          again at t0+~25s (this round's own two intra-round samples — a
+          first-round member with no prior recorded survivor set still gets
+          a real CPU-delta reading from these two samples alone, so round 1
+          is never wedged-by-default for lack of history) and require a
+          positive delta.
        3. **Work advancing** — `git -C <worktree_path> diff --stat` shows
           growth versus the previous check (more changed lines/files than
           last time).
 
-       **Alive-and-progressing** (probe 1 true, and at least one of probes
-       2/3 shows real progress): the member stays eligible, still **not**
+       **Probe 1 corroboration — never counts un-corroborated.** Probe 1
+       counts toward the verdict only if B2-match's survivor set is
+       **non-empty AND PID-stable**: stable means (a) the same PID(s)
+       persist across this round's own two intra-round CPU samples (t0 and
+       t0+~25s from probe 2), (b) when a previous liveness round exists for
+       this member, at least one PID from that previous round's recorded
+       survivor set is still present now, **or (c) a legitimate re-exec/
+       child-handoff** — a new PID in this round's survivor set whose
+       `ParentProcessId`/`ppid` equals the previously-seen/recorded PID
+       corroborates exactly as if the original PID had persisted, because
+       the worker genuinely continued under a new PID rather than
+       vanishing, and this must not be treated as churn. Only an **actual
+       churn** — a new PID that is neither the previously-seen PID nor a
+       child of it — still fails corroboration. A survivor set that is
+       **empty, or whose PIDs churned/drifted with no such parent-child
+       relationship** between checks does **not** count toward alive —
+       record it explicitly as a **self-match/churn signal**, never as
+       liveness (this is what makes a PID drifting between checks, e.g.
+       34048→31244, with no parent-child link between them, read as
+       evidence of self-matching rather than a genuinely working process
+       that legitimately re-exec'd).
+
+       **Verdict.** **Alive-and-progressing** iff probe 3 (`diff --stat`
+       growth) shows growth, **OR** (probe 1 counts per the corroboration
+       rule above **AND** probe 2 shows a positive CPU delta). Otherwise
+       **wedged**.
+
+       **Accepted tradeoff — probe 3 alone needs no live-process
+       corroboration (approved corroboration-rule design, not a defect).**
+       The verdict formula above makes probe 3 sufficient on its own: a
+       worker that died immediately after its last file write can read as
+       alive-and-progressing purely from `diff --stat` growth versus the
+       previous check's snapshot, with no live PID required. This is
+       bounded and self-correcting, not an indefinite mask: because probe 3
+       requires growth *versus the previous check's own snapshot*, a
+       genuinely dead process cannot produce further growth on the
+       *following* check, so the misclassification costs at most one extra
+       bounded ~15-minute wait cycle before the member correctly falls
+       through to wedged. This is the user's explicit, already-approved
+       corroboration-rule design chosen during planning, not a gap
+       introduced later — accepted as-is, same treatment as the B2-match
+       broad-matching tradeoff immediately below.
+
+       **Accepted tradeoff — out of scope for ticket #86 (broad-by-design
+       matching).** B2-match's survivor set is intentionally broad: it
+       matches *any* process whose command line or cwd references the
+       worktree path, not only the wave member's own worker process (e.g.
+       a user's editor or shell left open on that folder also matches).
+       Because probe 1 consumes that same broad set, an unrelated,
+       coincidentally PID-stable, CPU-active process co-located in the
+       worktree path could in principle satisfy probe 1 and probe 2 and
+       mask a genuinely wedged worker. This is a pre-existing property of
+       the broad-matching design that predates and is unrelated to ticket
+       #86's self-match fix — accepted as-is, explicitly out of scope
+       here. The `/proc/<pid>/cwd` half of B2-match's POSIX matching now
+       requires an equality-or-path-separator boundary (Teardown step 1),
+       closing the sibling-path overmatch case (a worktree path ending
+       `...-575f0fcb` no longer wrongly cwd-matches `...-575f0fcb-retry`);
+       the command-line half (`pgrep -f`/`-like` substring matching) has no
+       equivalent boundary available and keeps this same residual — it
+       cannot do better than substring matching, so a sibling worktree path
+       that is itself a substring of another process's command line can
+       still be pulled into the same broad, unfiltered survivor set
+       described above.
+
+       **Alive-and-progressing:** the member stays eligible, still **not**
        confirmed-done and still **not** merged — it simply re-enters this
        same path on its next idle signal or eventual Final-step report,
        exactly as the plain coherent-reply case did before.
 
-       **Wedged** (probe 1 fails, or a live process shows neither CPU
-       progress nor `git -C <worktree_path> diff --stat` growth): this authorizes exactly two
-       actions, in order — (1) **kill** the wedged process for that
-       worktree using the same path-matched sweep B2 already specifies for
-       teardown (cross-referenced, not restated, so the two recipes can't
-       drift); then (2) the member falls through unchanged to the
-       Conservative non-merge rule described below — not merged, rolled
-       into a later wave, exactly like today's `CHANGES_REQUESTED`/red
-       path. **There is
-       no automatic re-dispatch.** Re-running into a worktree that holds a
-       partial commit and a possibly-stale `.process-ticket-result.json` is
-       precisely the scenario B6 exists to guard against — do not add one.
+       **Wedged:** this authorizes exactly two actions, in order —
+       (1) **kill** the wedged process for that worktree via **B2-kill**
+       (Teardown step 1) — the same named primitive, never a second/raw
+       kill recipe, so the wedged-branch kill inherits B2-match's
+       self-exclusion by construction and the orchestrator's own session
+       can never be the target; then (2) the member falls through unchanged
+       to the Conservative non-merge rule described below — not merged,
+       rolled into a later wave, exactly like today's
+       `CHANGES_REQUESTED`/red path. **There is no automatic re-dispatch.**
+       Re-running into a worktree that holds a partial commit and a
+       possibly-stale `.process-ticket-result.json` is precisely the
+       scenario B6 exists to guard against — do not add one.
 
      Judging "coherent" is still the orchestrator's own read of the reply
      content — a plausible mid-pipeline state versus gibberish or an empty
@@ -689,37 +760,382 @@ When a worktree is no longer needed (its wave's integration gate went green
 and it has been merged, or the user asks to tear one down after resolving a
 RED gate), remove it **safely and statelessly**:
 
-1. **B2 — kill any process still holding this worktree open.** A
-   `process-ticket` run can leave more than one long-lived helper bound to the
-   worktree directory: the reviewer's optional Codex pass spawns
-   `node … app-server-broker.mjs --cwd <worktree-path> …`, and Serena
+1. **B2-match / B2-kill — kill any process still holding this worktree
+   open.** A `process-ticket` run can leave more than one long-lived helper
+   bound to the worktree directory: the reviewer's optional Codex pass
+   spawns `node … app-server-broker.mjs --cwd <worktree-path> …`, and Serena
    navigation tooling can leave its LSP chain (`node`, `uvx`/`uv`,
    `serena.exe`, `python.exe`) running against the same path. None of these
    are `claude --bg` jobs, so `claude stop` does not reach them, and
-   force-killing them triggers **no** daemon respawn. Kill **any process whose
-   command-line or cwd references the worktree path** — not just a
-   name-matched allowlist — **before** `worktree_remove`, while git still
-   knows the worktree, so the MCP's remove stays in sync. On Windows /
-   PowerShell (match on the worktree path, generalized beyond a single process
-   name):
+   force-killing them triggers **no** daemon respawn. This kill is split into
+   two named, cross-referenced halves — **never restated as two separate
+   recipes** — because B6's liveness probe (Phase C step 2) reuses the exact
+   same matching half by name:
+   - **B2-match** — the shared matching primitive. Given a worktree path, it
+     yields the survivor PID set: every process whose command line or cwd
+     references that worktree path, **with the orchestrator's own process
+     tree excluded**. Both B2-kill (below) and B6's probe 1 (Phase C step 2)
+     consume this survivor set; neither restates the matching logic inline.
+   - **B2-kill** — the B2-only consumer of B2-match's survivor set: the
+     existing exe-name allowlist + `app-server-broker.mjs` filter, then
+     `Stop-Process`/`kill` the result. B6's wedged branch also invokes
+     B2-kill by name when it needs to kill a wedged process (see Phase C
+     step 2) — it never has its own separate kill recipe.
+
+   **Env-var indirection — a separate preceding statement, always.** Before
+   B2-match ever runs, assign the worktree path to an env var in its own
+   preceding statement — never inline with the match itself:
+   - Windows/PowerShell: `$env:AAD_WORKTREE = '<worktree-path>'` as a
+     preceding statement; the matcher then reads `"*$env:AAD_WORKTREE*"` —
+     never the literal path substituted directly into the match expression.
+   - POSIX: `export AAD_WORKTREE='<worktree-path>'` as a preceding
+     statement; the matcher then reads `"$AAD_WORKTREE"`.
+   This is a *separate* preceding statement so the match expression itself
+   never needs the literal path re-embedded in its text.
+
+   **Correction (ticket #86) — statement separation alone does not
+   prevent self-matching; PID-exclusion does.** An earlier version of this
+   note implied that keeping the assignment as a separate preceding
+   statement was itself "the root cause fix" for self-matching. That
+   overstates it. When the assignment and the match are issued as **one
+   single shell invocation** — a single `powershell -Command "..."` /
+   `sh -c "..."` string, the pattern this plugin uses elsewhere (e.g. the
+   `nohup <probe-loop> > <log> 2>&1 &` dispatch used by the bounded liveness
+   wait below) — the *wrapping* process's own command-line argument is the
+   entire script text, and that text still contains the literal worktree
+   path baked into the assignment statement. A naive command-line
+   substring/wildcard scan would therefore still match that wrapping
+   process against itself, regardless of how many logical statements the
+   script is broken into — statement separation by itself does not change
+   what appears in the wrapping process's own command line. What actually
+   prevents the wrapping process from self-matching is the
+   **self/ancestor/descendant PID-exclusion** documented immediately below:
+   the wrapping process's own PID is `$PID`/`$$` inside the script it is
+   currently executing, so it is always a member of the self-exclusion set
+   computed before anything is matched or killed. **PID-exclusion is the
+   load-bearing protection against the single-invocation self-match
+   scenario.** Env-var indirection's real, distinct benefit is different: it
+   avoids re-embedding/duplicating the literal (and potentially
+   special-character-laden) worktree path directly inside the match
+   expression text itself — one assignment, one source of truth, referenced
+   by variable everywhere the match runs — not self-match prevention on its
+   own.
+
+   **Empty/unset env-var fail-safe — zero survivors, never a wildcard
+   match.** If the environment variable doesn't persist between calls (e.g.
+   a fresh shell per invocation lost the assignment), the matcher must
+   **never** fall through to evaluating an unscoped wildcard: on Windows,
+   `-like "*$env:AAD_WORKTREE*"` silently degrades to `-like "**"` when the
+   variable is empty, which matches **every** process's command line; on
+   POSIX, `pgrep -f "$AAD_WORKTREE"` degrades to matching **every** process
+   on the system. Neither is a narrowed-but-still-useful match — both are a
+   total loss of worktree-path scoping, and the self/ancestor/descendant PID
+   exclusion filter does **not** rescue this case: that filter only removes
+   self/ancestors/descendants from an already-matched set, it does nothing
+   to stop a wildcard from matching unrelated system processes in the first
+   place (processes B2-kill could then mass-kill if they happen to satisfy
+   its exe-name/broker allowlist, or that B6's probe 1 could corroborate
+   against). The correct guarantee, and the one both B2-match recipes below
+   implement: **before the match expression ever runs, verify the env var is
+   non-empty/set; if it is empty or unset, B2-match immediately yields an
+   EMPTY survivor set — zero processes, full stop.** This is a fail-safe
+   independent of the PID-exclusion layer, not a restatement of it.
+
+   **Self/ancestor/descendant PID exclusion — evaluated per candidate, never
+   a pre-match snapshot subtraction (ticket #86).** An earlier version of
+   this recipe built one exclusion set up front — the orchestrator's own
+   PID, plus a snapshot of its ancestor chain, plus a snapshot of its
+   descendant tree — and subtracted that set from B2-match's raw match
+   result. That is insufficient: in the documented single
+   `sh -c "AAD_WORKTREE=…; …"` invocation form, the matcher's own pipeline
+   forks new processes *after* any such snapshot was taken — most notably
+   `candidates=$(pgrep -f "$escaped_worktree")`, whose command substitution
+   runs inside a **subshell**. That subshell's own `/proc/<pid>/cmdline` can
+   still read as the **parent shell's** full command line (the same script
+   text that carries the literal worktree path baked into the earlier
+   assignment statement), and its cwd can sit inside the worktree too — a
+   genuine match candidate. In POSIX `sh`, `$$` inside a subshell still
+   resolves to the **parent's** PID, not the subshell's own, so that
+   subshell's real PID is neither `$$` itself nor a member of a descendant
+   snapshot taken moments earlier, and `pgrep` excludes only its own PID
+   from its results, never its caller's subshell. Net effect: a survivor
+   that is the orchestrator's own process can leak straight through
+   B2-kill and B6's probe 1 — the exact same self-match failure mode ticket
+   #86 exists to fix, just relocated one layer down into the matcher's own
+   forked pipeline. A pre-match snapshot cannot contain a process the
+   matcher's own pipeline forks *after* the snapshot was taken; only a
+   check performed **per candidate, using each candidate's own live parent
+   linkage,** closes this gap.
+
+   The fix: exclusion is evaluated **per candidate**, never as a set
+   precomputed once and subtracted. For every PID in B2-match's raw match
+   result, walk that candidate's own parent-PID chain upward — `ppid` on
+   POSIX, `ParentProcessId` on Windows — and discard the candidate if the
+   chain reaches the orchestrator's own PID (`$PID`/`$$`) or any PID already
+   known to be one of the orchestrator's own ancestors. This walk runs
+   **before anything is killed or counted toward liveness** — the same
+   invariant as before, just applied per candidate instead of via a
+   precomputed set. Because the walk starts from the candidate's
+   own, already-existing PID and asks "what is your parent, and your
+   parent's parent" using the same self/ancestor/descendant linkage data,
+   it correctly reaches a subshell's parent even when that subshell was
+   forked after any earlier snapshot — there is no stale forward-computed
+   descendant-tree set to have missed it in the first place.
+   - Windows/PowerShell: derive a pid→`ParentProcessId` lookup map from the
+     single `Get-CimInstance Win32_Process` snapshot B2-match already
+     captured for command-line matching, then for each raw-match candidate
+     walk that map upward from the candidate's own PID until it either
+     reaches `$PID` (self/ancestor/descendant exclusion) or runs out of
+     ancestors to walk.
+   - POSIX: build the same pid→`ppid` lookup from B2-match's own descendant
+     discovery data — a primary/fast path and a portable fallback: on
+     Linux, a forward walk over `/proc/*/stat` (fast, reading each
+     process's `ppid` from its stat entry); where `/proc` is unavailable
+     (macOS/BSD), a walk over `ps -eo pid,ppid` output instead — then for
+     each raw-match candidate PID, walk that lookup upward from the
+     candidate's own PID (`ppid`, `ppid`'s `ppid`, …) until it either
+     reaches `$$` (the orchestrator's own PID) or runs out of ancestors.
+     This keeps the self/ancestor/descendant exclusion — and therefore the
+     "excluded by construction" guarantee stated throughout this file —
+     genuinely platform-independent, not Linux-`/proc`-only, while fixing
+     the pre-match-snapshot gap above.
+
+   **B2-match, Windows/PowerShell** (command-line matching only —
+   `Win32_Process` exposes no per-process cwd, so "prefer cwd matching where
+   the platform allows" is scoped to POSIX below, not Windows; command-line
+   matching alone already covers the worktree path, so no separate `Path`/
+   `ExecutablePath` clause is added). This produces the same broad,
+   unfiltered survivor set as POSIX's B2-match below — self/ancestor/
+   descendant exclusion and path matching only, **no exe-name filtering**.
+
+   **Wildcard-escaping (ticket #86).** `-like` treats
+   `*`, `?`, `[`, `]` as pattern metacharacters, not literal text. `*` and
+   `?` cannot appear in a Windows path (NTFS forbids them), but `[` and `]`
+   are legal path characters — an unescaped `[3]` in a worktree path is
+   read as "one char, either `3`" rather than the literal three characters
+   `[`, `3`, `]`, which makes the match **fail to find** a genuinely
+   matching process (verified: `'...[3]...' -like "*...[3]...*"` returns
+   `$false` when the pattern text is the unescaped raw path). The fix is to
+   escape the path with the built-in
+   `[System.Management.Automation.WildcardPattern]::Escape()` before
+   building the `-like` pattern — never hand-roll the escaping. The
+   self/ancestor/descendant exclusion walk above is concrete here, not a
+   placeholder — it derives its pid→`ParentProcessId` map from this same
+   `Get-CimInstance Win32_Process` snapshot, then walks that map per
+   candidate:
    ```powershell
-   Get-CimInstance Win32_Process |
+   $env:AAD_WORKTREE = '<worktree-path>'
+   if ([string]::IsNullOrEmpty($env:AAD_WORKTREE)) {
+     # Fail-safe: empty/unset AAD_WORKTREE must never fall through to the
+     # wildcard match below (`-like "**"` would match every process). Zero
+     # survivors, full stop.
+     $survivors = @()
+   } else {
+     $escapedWorktree = [System.Management.Automation.WildcardPattern]::Escape($env:AAD_WORKTREE)
+     $allProcs = Get-CimInstance Win32_Process
+     $parentOf = @{}
+     foreach ($p in $allProcs) { $parentOf[$p.ProcessId] = $p.ParentProcessId }
+     # Precompute the orchestrator's own ancestor chain ONCE (walk up from
+     # $PID through $parentOf) so the per-candidate check below can also
+     # catch the reverse case: a candidate that is itself an ANCESTOR of the
+     # orchestrator (e.g. a wrapper/launcher shell that spawned this process
+     # and also happens to match the worktree-path substring via its own
+     # cwd or invocation text). The plain upward walk from a candidate alone
+     # (in Test-SelfAncestorOrDescendant below) can only ever detect the
+     # candidate being $PID itself or a DESCENDANT of $PID — it can never
+     # reach an ancestor of $PID, since ancestors lie in the opposite
+     # direction of that walk.
+     $orchestratorAncestorPids = @{}
+     $walkPid = $PID
+     for ($i = 0; $i -lt $allProcs.Count; $i++) {
+       if (-not $parentOf.ContainsKey($walkPid)) { break }
+       $walkPid = $parentOf[$walkPid]
+       $orchestratorAncestorPids[$walkPid] = $true
+     }
+     function Test-SelfAncestorOrDescendant($candidatePid) {
+       # Self/ancestor/descendant PID exclusion (ticket #86), walked per
+       # candidate from the candidate's own PID upward through $parentOf —
+       # never a pre-match snapshot subtraction, so a subshell/helper this
+       # matcher's own pipeline forks after $allProcs was captured is still
+       # correctly excluded, because the walk starts from that candidate's
+       # own, already-existing PID rather than from a stale forward-computed
+       # descendant tree. This covers self ($candidatePid -eq $PID) and any
+       # DESCENDANT of the orchestrator. The reverse case — $candidatePid is
+       # itself an ANCESTOR of the orchestrator — is covered separately
+       # below via membership in the precomputed $orchestratorAncestorPids
+       # set, since this upward-only walk can never reach it.
+       $walkPid = $candidatePid
+       for ($i = 0; $i -lt $allProcs.Count; $i++) {
+         if ($walkPid -eq $PID) { return $true }
+         if (-not $parentOf.ContainsKey($walkPid)) { return $false }
+         $walkPid = $parentOf[$walkPid]
+       }
+       return $false
+     }
+     $rawMatches = $allProcs | Where-Object { $_.CommandLine -like "*$escapedWorktree*" }
+     $survivors = $rawMatches | Where-Object {
+       (-not (Test-SelfAncestorOrDescendant $_.ProcessId)) -and
+       (-not $orchestratorAncestorPids.ContainsKey($_.ProcessId))
+     }
+   }
+   ```
+   `$survivors` is B2-match's output — this is what B6's probe 1 (Phase C
+   step 2) consumes directly, unfiltered, since a legitimately-alive worker
+   process can run under any executable name, not just the five named below.
+
+   **B2-kill, Windows/PowerShell** — a separate, subsequent stage that takes
+   `$survivors` and applies the exe-name allowlist + `app-server-broker.mjs`
+   filter *before* killing, mirroring how POSIX below applies its own
+   filtering only at the kill step, never inside B2-match:
+   ```powershell
+   $survivors |
      Where-Object {
-       $_.CommandLine -like '*<worktree-path>*' -and
-       ($_.Name -in @('node.exe', 'uvx.exe', 'uv.exe', 'serena.exe', 'python.exe') -or
-        $_.CommandLine -like '*app-server-broker.mjs*')
+       $_.Name -in @('node.exe', 'uvx.exe', 'uv.exe', 'serena.exe', 'python.exe') -or
+       $_.CommandLine -like '*app-server-broker.mjs*'
      } |
      ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
    ```
+
    The directory-lock failure is Windows-specific (POSIX lets `git worktree remove`
    unlink a directory with an open handle), but killing orphans is good hygiene
-   everywhere — POSIX equivalent, generalized the same way:
-   `pkill -f "<worktree-path>"` (broad enough to catch the broker, the Serena
-   LSP chain, or any other process rooted in that path). Caveat: this is
-   intentionally broad — it kills **any** process whose command line
-   references the worktree path, not just the Codex broker/Serena LSP chain,
-   so a user-launched editor or shell pointed at that path would also be
-   killed.
+   everywhere.
+
+   **B2-match, POSIX** — replaces the old unfiltered by-path kill
+   sweep entirely, wrapped in a real `if`/`else` short-circuit — not a
+   fragment that merely assigns an empty result and then keeps running the
+   match unconditionally:
+   ```sh
+   if [ -z "$AAD_WORKTREE" ]; then
+     # Fail-safe: an empty/unset AAD_WORKTREE must never fall through to
+     # `pgrep -f ""`/`pgrep -f "$AAD_WORKTREE"` with an empty pattern, which
+     # would match every process on the system. Zero survivors, full stop —
+     # and pgrep never runs in this arm.
+     survivors=""
+   else
+     escaped_worktree=$(printf '%s' "$AAD_WORKTREE" | sed -e 's/\\/\\\\/g' -e 's/[].[*^$(){}?+|]/\\&/g')
+     candidates=$(pgrep -f "$escaped_worktree" || true)
+     survivors=""
+     # Precompute the orchestrator's own ancestor chain ONCE (walk up from
+     # $$ through get_ppid) so the per-candidate loop below can also catch
+     # the reverse case: a candidate that is itself an ANCESTOR of the
+     # orchestrator (e.g. a wrapper/launcher shell that spawned this
+     # process and also happens to match the worktree-path substring via
+     # its own cwd or invocation text). The plain upward walk from a
+     # candidate alone (the self/ancestor/descendant check below) can only
+     # ever detect the candidate being $$ itself or a DESCENDANT of $$ — it
+     # can never reach an ancestor of $$, since ancestors lie in the
+     # opposite direction of that walk.
+     orchestrator_ancestor_pids=""
+     walk_pid=$(get_ppid "$$")
+     while [ -n "$walk_pid" ]; do
+       orchestrator_ancestor_pids="$orchestrator_ancestor_pids $walk_pid"
+       walk_pid=$(get_ppid "$walk_pid")
+     done
+     for candidate_pid in $candidates; do
+       # Self/ancestor/descendant PID exclusion (ticket #86), walked per
+       # candidate from the candidate's own PID upward through the
+       # pid->ppid map below — never a pre-match snapshot subtraction, so a
+       # subshell this same pgrep pipeline forks (e.g. the command
+       # substitution above) is still correctly excluded, because the walk
+       # starts from that candidate's own, already-existing PID rather than
+       # from a stale forward-computed descendant tree. This covers self
+       # and any DESCENDANT of the orchestrator. The reverse case —
+       # candidate_pid is itself an ANCESTOR of the orchestrator — is
+       # covered separately below via membership in the precomputed
+       # $orchestrator_ancestor_pids set, since this upward-only walk can
+       # never reach it.
+       walk_pid=$candidate_pid
+       is_self_or_ancestor=false
+       while [ -n "$walk_pid" ]; do
+         if [ "$walk_pid" = "$$" ]; then
+           is_self_or_ancestor=true
+           break
+         fi
+         walk_pid=$(get_ppid "$walk_pid")  # /proc/*/stat primary; ps -eo pid,ppid fallback
+       done
+       case " $orchestrator_ancestor_pids " in
+         *" $candidate_pid "*) is_self_or_ancestor=true ;;
+       esac
+       [ "$is_self_or_ancestor" = false ] && survivors="$survivors $candidate_pid"
+     done
+   fi
+   ```
+   `get_ppid` sources the same pid→`ppid` linkage B2-match's own descendant
+   discovery already uses — a primary/fast path and a portable fallback: on
+   Linux, a forward walk over `/proc/*/stat` (fast, reading each process's
+   `ppid` from its stat entry); where `/proc` is unavailable (macOS/BSD), a
+   walk over `ps -eo pid,ppid` output instead. This keeps the
+   self/ancestor/descendant exclusion genuinely platform-independent, not
+   Linux-`/proc`-only.
+
+   **Regex-escaping (ticket #86).** `pgrep -f` interprets
+   its argument as an **extended regular expression (ERE)**, not a literal
+   substring. A worktree path containing an ERE metacharacter — `.`, `[`,
+   `]`, `*`, `^`, `$`, `(`, `)`, `{`, `}`, `?`, `+`, `|`, or `\` — can
+   overmatch unrelated processes whose command line happens to satisfy the
+   resulting regex, or fail to match the intended worktree's own processes.
+   Regex-escape `$AAD_WORKTREE` before it is ever passed to `pgrep -f`
+   (verified against `grep -E`, which uses the same ERE engine class): first
+   escape literal backslashes, then escape the remaining ERE metacharacters
+   (`]` placed first inside the bracket expression so it is read as a
+   literal character, not the closing bracket), exactly as shown in the
+   `escaped_worktree=$(printf '%s' "$AAD_WORKTREE" | sed …)` assignment
+   above.
+   Only when `$AAD_WORKTREE` is non-empty: compute `$escaped_worktree` as
+   above, then enumerate candidates via `pgrep -f "$escaped_worktree"`,
+   unioned on Linux with a `/proc/<pid>/cwd` boundary-match against
+   `$AAD_WORKTREE` (readlink each `/proc/[0-9]*/cwd` and keep the ones
+   **equal to** `$AAD_WORKTREE`, **or** prefixed by `$AAD_WORKTREE` followed
+   by a path separator — a bare prefix match would wrongly pull in a
+   sibling worktree whose path merely starts with this one's, e.g. a
+   worktree ending `...-575f0fcb` prefix-matching `...-575f0fcb-retry`, the
+   exact retry-suffix naming this plugin's own B3 fallback recommends on a
+   branch-name collision; this half is a literal path-boundary comparison,
+   not a regex, so it needs no escaping), falling back to
+   `pgrep -f "$escaped_worktree"` alone where `/proc` is unavailable
+   (macOS/BSD); then apply the per-candidate self/ancestor/descendant
+   exclusion walk above. This produces the same broad, unfiltered survivor
+   set as Windows's B2-match above — path matching and self/ancestor/
+   descendant exclusion only, **no exe-name filtering** at this stage. This
+   unfiltered survivor set is what B6's probe 1 (Phase C step 2) consumes
+   directly — including this same escaping step, since probe 1 reuses
+   B2-match by name rather than restating the matching logic — because a
+   legitimately-alive worker process can run under any executable name, not
+   just the five named below. The `/proc/<pid>/cwd` boundary fix above only
+   closes this residual for the cwd half of the match; the command-line
+   half (`pgrep -f`/`-like` substring matching) can't do better than
+   substring matching and keeps the same residual named in the "Accepted
+   tradeoff — out of scope for ticket #86 (broad-by-design matching)" note
+   in Phase C step 2 below.
+
+   **B2-kill, POSIX** — a separate, subsequent stage that takes B2-match's
+   survivor set and applies the exe-name allowlist + `app-server-broker.mjs`
+   filter *before* killing, mirroring Windows's B2-kill above — the raw,
+   unfiltered survivor set is never killed directly: for each survivor PID,
+   inspect its command name/args (`ps -o comm=,args= -p <pid>`) and keep it
+   only if `comm` matches the POSIX equivalents of the Windows exe-name
+   allowlist — `node`, `uvx`, `uv`, `serena`, `python` (the same five names,
+   without the `.exe` suffix, matched against the command basename) — or
+   `args` contains `app-server-broker.mjs`. Only *that filtered subset* gets
+   `kill -TERM`, then a brief in-shell grace (e.g. a plain `sleep 2` — this
+   is a short, local teardown pause, **not** the banned foreground
+   wait; that ban is scoped specifically to B6's bounded ~15-minute
+   liveness wait elsewhere in this file, never to a two-second teardown
+   grace like this one) followed by a `kill -0 <pid>` liveness recheck on
+   that same filtered subset, and only the PIDs the recheck still finds
+   alive get `kill -KILL` (not a blind re-sweep of the full filtered subset,
+   let alone the raw unfiltered survivor set) — broad enough to catch the
+   broker or the Serena LSP chain, but no longer broad enough to kill a
+   user-launched editor or shell that merely happens to be pointed at the
+   worktree path. Caveat: B2-match
+   itself is still intentionally broad — it still matches **any** *other*
+   process whose command line references the worktree path, not just the
+   Codex broker/Serena LSP chain, which is exactly why B2-kill's filtering
+   step above exists and must never be skipped; what's new is that the
+   orchestrator's own process tree is excluded by construction from
+   B2-match's survivor set, and that concurrent probes across wave members
+   in one run each target a distinct worktree path, so cross-member matching
+   does not arise.
 2. **Confirm the directory is free**, then remove the worktree via the
    agent-worktree MCP (`worktree_remove`) so it releases ports, runs teardown,
    and updates its state store. Do not `rm -rf` the directory or run
@@ -842,14 +1258,29 @@ for manual cleanup — never silently fail to retry a dropped member.
   dog-food pattern mandated for sub-agents (never a foreground
   `sleep`/`Start-Sleep`, which would hit the same ~10-minute tool cliff this
   fix exists for). At the end of that wait, three liveness probes decide
-  alive-vs-wedged: a live process for the worktree (command line/worktree
-  path match, reusing B2's shape), a positive CPU-time delta over ~25s, and
-  `git -C <worktree_path> diff --stat` growth versus the previous check.
-  **Alive-and-progressing** stays eligible, unconfirmed, unmerged — it
-  simply re-enters this path later. **Wedged** authorizes exactly two
-  actions in order: **kill** the process (via B2's existing sweep, not a
-  second recipe), then fall through to the Conservative non-merge rule
-  below — **there is no automatic re-dispatch**. This never relaxes the
+  alive-vs-wedged: **B2-match** (Teardown step 1), self/ancestor/descendant-
+  excluded by construction, for a live process bound to the worktree
+  (command line/worktree path match — this self-exclusion is what stops the
+  orchestrator's own session from ever self-matching and reading back as
+  "alive"); a positive CPU-time delta over ~25s (this round's own two
+  intra-round samples, so a first round has no dependency on prior history);
+  and `git -C <worktree_path> diff --stat` growth versus the previous check.
+  Probe 1 counts only when its B2-match survivor set is non-empty **and
+  PID-stable** across checks (same PID(s) persisting, at least one carried
+  over from the previous round, or a new PID whose `ParentProcessId`/`ppid`
+  equals the previously-seen PID — a legitimate re-exec/child-handoff,
+  which corroborates exactly like a persisted PID; only an unrelated PID
+  that is neither the previous PID nor a child of it is an actual churn) —
+  an empty survivor set, or one that churned/drifted with no such
+  parent-child link, is a **self-match signal**, not liveness. **Verdict:**
+  **alive-and-progressing** iff probe 3 shows growth, **OR** (probe 1
+  counts per the corroboration rule **AND** probe 2 shows a positive
+  delta); it then stays eligible, unconfirmed, unmerged, and simply
+  re-enters this path later. **Wedged** authorizes exactly two actions in
+  order: **kill** the process via **B2-kill** (Teardown step 1, self-
+  excluded by construction — the orchestrator's own session can never be
+  the target), then fall through to the Conservative non-merge rule below
+  — **there is no automatic re-dispatch**. This never relaxes the
   git-state criteria above. Once a member is confirmed-done — its report
   carried the explicit `final: true` terminal marker, or it was
   B6-confirmed via the fallback — later idle pings from it are idempotent

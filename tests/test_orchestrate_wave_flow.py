@@ -43,6 +43,18 @@ def _extract_body(text: str) -> str:
     return text[fm_end.end():]
 
 
+def _extract_teardown(body: str) -> str:
+    m = re.search(r"## Teardown.*?(?=\n## Hard rules)", body, re.DOTALL)
+    assert m, "SKILL.md must contain a '## Teardown' section"
+    return m.group(0)
+
+
+def _extract_sh_fence(text: str) -> str:
+    m = re.search(r"```sh\s*\n(.*?)```", text, re.DOTALL)
+    assert m, "Teardown must contain a fenced ```sh``` block for the POSIX recipe"
+    return m.group(1)
+
+
 # ---------------------------------------------------------------------------
 # Group 1 — integration branch created off refreshed base
 # ---------------------------------------------------------------------------
@@ -370,13 +382,27 @@ def test_b2_names_serena_lsp_chain():
 
 
 def test_b2_keeps_windows_and_posix_snippets():
+    """Updated for ticket #86: the POSIX snippet replaced the old unfiltered
+    `pkill -f` sweep with a pgrep-filtered B2-match recipe (see
+    test_orchestrate_probe_self_match.py for the full self/ancestor/
+    descendant-exclusion and /proc-cwd-refinement coverage). This asserts
+    the new POSIX form is present, deliberately in place of the retired
+    `pkill -f` literal. Scoped to the Teardown section specifically (ticket
+    #86 round-7 finding F2) rather than the whole file, so this test can
+    only pass if the snippets genuinely live in the Teardown recipe, not
+    merely somewhere else in SKILL.md."""
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
-    assert "Get-CimInstance Win32_Process" in body, (
-        "SKILL.md must keep the Windows Get-CimInstance Win32_Process snippet"
+    td = _extract_teardown(body)
+    assert "Get-CimInstance Win32_Process" in td, (
+        "SKILL.md's Teardown section must keep the Windows "
+        "Get-CimInstance Win32_Process snippet"
     )
-    assert "pkill -f" in body, (
-        "SKILL.md must keep the POSIX pkill -f snippet"
+    sh_block = _extract_sh_fence(td)
+    assert "pgrep -f" in sh_block, (
+        "SKILL.md's Teardown section must keep the POSIX pgrep -f snippet in "
+        "the fenced ```sh``` recipe block specifically, not merely somewhere "
+        "in the Teardown section's explanatory prose"
     )
 
 

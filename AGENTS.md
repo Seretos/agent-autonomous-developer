@@ -160,21 +160,44 @@ member is *provisionally* still legitimately working — no second ping
 follows it, and it is **not** added to the confirmed-done set — but it no
 longer buys unbounded silence. It stays eligible only for one bounded
 ~15-minute wait, after which three liveness probes decide alive-vs-wedged:
-(1) a test/worker **process is alive** for that worktree (command line /
-worktree path match, reusing the B2 sweep's shape); (2) it is making **CPU
-progress** (a positive CPU-time delta sampled over ~25s); (3) **work is
-advancing** (`git -C <worktree_path> diff --stat` growth versus the
-previous check). **Alive-and-progressing** keeps the member eligible,
-unconfirmed, unmerged, exactly as the plain coherent-reply case did before
-— it simply re-enters this path later. **Wedged** (no live process, or a
-live process with neither CPU progress nor diff growth) authorizes exactly
-two actions in order: **kill** the wedged process for that worktree (via
-the same B2 path-matched sweep already used for teardown — cross-
-referenced, never a second kill recipe), then fall through to the
-Conservative non-merge rule below. **There is no automatic re-dispatch** —
-re-running into a worktree holding a partial commit and a possibly-stale
-`.process-ticket-result.json` is exactly the scenario B6 exists to guard
-against. The bounded wait itself is implemented via the same `nohup … &` +
+(1) **process alive — via B2-match, self-excluded**: reuse the named
+**B2-match** primitive (see the Teardown coupling section below) — never a
+second, restated matcher — to get the worktree's survivor PID set; B2-match
+excludes the orchestrator's own self/ancestor/descendant PID set by walking
+each candidate's own parent-PID chain (`ParentProcessId`/`ppid`) upward
+**per candidate, at match time** — never a set precomputed once before the
+match runs and subtracted afterward, which would miss a subshell/helper the
+matcher's own pipeline forks after that earlier snapshot (e.g. the
+`pgrep`-enumerating command substitution itself) — so the orchestrator's own
+session can never self-match on the worktree-path substring and read back
+as "alive"; (2) it
+is making **CPU progress** (a positive CPU-time delta sampled over ~25s,
+via this round's own two intra-round samples, so a first round has no
+dependency on prior history); (3) **work is advancing** (`git -C
+<worktree_path> diff --stat` growth versus the previous check). **Probe 1
+never counts un-corroborated**: it counts toward the verdict only when
+B2-match's survivor set is non-empty **and PID-stable** across checks (the
+same PID(s) persisting, at least one carried over from the previous round,
+or a new PID whose `ParentProcessId`/`ppid` equals the previously-seen PID
+— a legitimate re-exec/child-handoff that corroborates exactly like a
+persisted PID; only an unrelated PID that is neither the previous PID nor
+a child of it is an actual churn) — an empty survivor set, or one that
+churned/drifted with no such parent-child link, is a **self-match
+signal**, not liveness, and never counts toward alive. **Verdict:**
+**alive-and-progressing** iff probe 3 shows growth, **OR** (probe 1 counts
+per the corroboration rule **AND** probe 2 shows a positive delta); it then
+stays eligible, unconfirmed, unmerged, exactly as the plain coherent-reply
+case did before — it simply re-enters this path later. **Wedged** (neither
+condition above holds) authorizes exactly two actions in order: **kill**
+the wedged process for that worktree via the named **B2-kill** primitive
+(the same one already used for teardown — cross-referenced, never a second
+kill recipe; because it consumes B2-match's already self-excluded survivor
+set, it can never target the orchestrator's own session), then fall
+through to the Conservative non-merge rule below. **There is no automatic
+re-dispatch** — re-running into a worktree holding a partial commit and a
+possibly-stale `.process-ticket-result.json` is exactly the scenario B6
+exists to guard against. The bounded wait itself is implemented via the
+same `nohup … &` +
 in-turn `Monitor`-with-until-condition pattern mandated for the sub-agents
 (see the Long-lived process guardrail section below) — **never** a
 foreground `sleep`/`Start-Sleep`, since the Bash tool blocks foreground
@@ -187,6 +210,27 @@ and none of this relaxes any of the #64 git-state criteria; it only adds a
 disambiguation gate in front of disqualification. This description must
 stay consistent with Phase C step 2's ping sub-step and the Hard Rules B6
 bullet in `skills/orchestrate-tickets/SKILL.md`.
+
+**Accepted tradeoff — probe 3 alone needs no live-process corroboration.**
+The verdict formula makes probe 3 (`diff --stat` growth) sufficient on its
+own to call a member alive-and-progressing, with no live-PID requirement.
+A worker that dies immediately after its last file write can therefore
+read as alive for one bounded ~15-minute wait cycle — but it is
+self-correcting: probe 3 requires growth versus the *previous* check's own
+snapshot, so a genuinely dead process cannot produce further growth on the
+*following* check and the member then correctly falls to wedged. Not an
+indefinite mask. This is the user's explicit, already-approved
+corroboration-rule design from planning, not a gap — accepted as-is.
+
+**Accepted tradeoff (out of scope for #86).** B2-match's survivor set is
+intentionally broad — it matches any process referencing the worktree
+path, not only the wave member's own worker process (e.g. a user's editor
+or shell left open on that folder). Because probe 1 consumes that same
+broad set, an unrelated, coincidentally PID-stable, CPU-active process
+could in principle satisfy probes 1 and 2 and mask a genuinely wedged
+worker. This is a pre-existing property of the broad-matching design, not
+a regression introduced by ticket #86's self-match fix, and is accepted
+as-is.
 
 **Conservative non-merge rule:** a member that can't be
 confirmed this way — HEAD not ahead of the branch point, marker missing/
@@ -203,6 +247,22 @@ the `.process-ticket-result.json` marker *file*), or the fallback validated
 its git state and marker — any further idle pings from it are **idempotent**
 no-op set-membership checks, not a repeated B6 evaluation — the mirror of
 the idle-without-report trigger, and scoped so it cannot weaken B6.
+
+**Shared-primitive invariant (ticket #86 — B2-match/B2-kill).** B2 (the
+Teardown kill sweep) and B6 (this liveness probe) share exactly **one**
+process-matching primitive, **B2-match**, split from the kill-only
+**B2-kill** — see the Teardown coupling section below. `B2-match` must be
+changed in exactly one place for both consumers: a self/ancestor/
+descendant PID-exclusion change, or a path-indirection change (the
+`AAD_WORKTREE` env var), must **never** be applied to only one of B2/B6 —
+doing so would let the two recipes drift apart again, which is exactly how
+this ticket's incident happened (B6's probe restated its own
+"reusing B2's path-matching shape" inline instead of cross-referencing the
+primitive by name). B6's probe 1 additionally **never counts
+un-corroborated**: an un-excluded or PID-unstable/churned survivor set is a
+self-match signal, not liveness, regardless of what B2-match itself
+returns — this corroboration rule lives in B6's verdict logic, not in
+B2-match, and must not be weakened into B2-match's own contract.
 
 **Cross-file consistency invariant.** The literal filename
 `.process-ticket-result.json` must stay identical in both
@@ -413,6 +473,97 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   the worktree path**, explicitly naming the Codex broker (`app-server-broker.mjs`) alongside
   the Serena LSP chain (`node`/`uvx`/`uv`/`serena.exe`/`python.exe`) as known offenders, rather
   than relying on a narrow process-name allowlist that a future helper could silently evade.
+  **Clarification (ticket #86): this "narrow process-name allowlist"
+  phrasing describes B2 as a whole, not B2-kill's own exe-name/broker filter
+  below.** B2-kill's exe-name allowlist (`node`/`uvx`/`uv`/`serena.exe`/
+  `python.exe` + `app-server-broker.mjs`) is unchanged from the pre-#86
+  baseline — ticket #86 only extracted this same pre-existing filter into an
+  explicitly-labeled "B2-kill" stage (previously fused inline into the
+  single B2 `Where-Object`); it did not narrow or widen which processes are
+  eligible for killing. The tension between that allowlist and this
+  paragraph's "rather than relying on a narrow process-name allowlist"
+  wording predates #86 (it describes B2-match's own survivor-set matching,
+  which is path-based and unfiltered, not the allowlist-filtered kill step)
+  and is out of scope for this ticket.
+  **B2-match / B2-kill split, self-exclusion, path indirection (ticket #86).**
+  The matching logic itself is now a named, shared primitive, **B2-match**,
+  split from the kill-only **B2-kill** — B6's liveness probe (Phase C step
+  2 of `skills/orchestrate-tickets/SKILL.md`) reuses B2-match by name rather
+  than restating a second matcher, so the two can never silently drift
+  apart. B2-match now excludes the orchestrator's own PID plus its full
+  ancestor and descendant lineage from the match result *before* anything
+  is killed or counted toward liveness — without this, a probe/sweep whose
+  own invocation embeds the literal worktree path as a substring could
+  match itself, which is exactly how a genuinely dead worker was once
+  misread as "alive" (a self-matched orchestrator shell, a self CPU delta,
+  a PID that drifted between checks). **This exclusion is evaluated per
+  candidate, not as a set precomputed once and subtracted afterward**: for
+  each PID in the raw match result, B2-match walks that candidate's own
+  parent-PID chain (`ParentProcessId`/`ppid`) upward and discards it if the
+  chain reaches the orchestrator's own PID (`$PID`/`$$`) or one of its
+  ancestors. A one-time precomputed snapshot cannot contain a process the
+  matcher's own pipeline forks *after* that snapshot — most notably the
+  `pgrep`-enumerating command substitution's own subshell in the single
+  `sh -c "AAD_WORKTREE=…; …"` invocation form — so only a per-candidate,
+  match-time walk closes that gap; see
+  `skills/orchestrate-tickets/SKILL.md`'s Teardown B2-match section for the
+  full recipe. B2-match also assigns
+  the worktree path to an `AAD_WORKTREE` env var in a separate preceding
+  statement, then matches against the variable rather than substituting the
+  literal path directly into the match expression. **Correction (ticket
+  #86): this is not a second, independent self-match-prevention layer.**
+  An earlier version of this note claimed it was; that overstated it. When
+  the assignment and the match are issued as **one single shell invocation**
+  (a single `-Command`/`-c` string — the pattern this plugin uses elsewhere,
+  e.g. the `nohup <probe-loop> > <log> 2>&1 &` dispatch), the *wrapping*
+  process's own command line is the entire script text, which still carries
+  the literal worktree path baked into the assignment statement — a naive
+  command-line substring/wildcard scan would still match that wrapping
+  process against itself regardless of statement separation. What actually
+  prevents this is the self/ancestor/descendant **PID-exclusion** described
+  above: the wrapping process's own PID is `$PID`/`$$` inside the script it
+  is currently executing, so it is always a member of the self-exclusion set
+  computed before anything is matched or killed — PID-exclusion is the
+  load-bearing protection against the single-invocation self-match scenario.
+  Env-var indirection's real, distinct benefit is different: it avoids
+  re-embedding/duplicating the literal (and potentially
+  special-character-laden) worktree path directly inside the match
+  expression text itself — one assignment, one source of truth, referenced
+  by variable everywhere the match runs. See
+  `skills/orchestrate-tickets/SKILL.md`'s Teardown B2-match section for the
+  full correction. **Empty/unset env-var fail-safe.** If the env
+  var doesn't persist between calls, B2-match must never fall through to an
+  unscoped wildcard match (`-like "**"` on Windows, `pgrep -f ""` on POSIX
+  both degrade to matching every process on the system) — both recipes now
+  guard on the var being non-empty/set before evaluating the match
+  expression, yielding zero survivors, full stop, when it is empty/unset.
+  This guarantee is independent of, and not rescued by, the self/ancestor/
+  descendant PID-exclusion filter, which only trims an already-matched set
+  and does nothing to prevent an unscoped wildcard from matching in the
+  first place. The POSIX half of
+  B2-match replaced its old unfiltered `pkill`-by-path sweep with a
+  `pgrep -f`-enumerated candidate set refined by a `/proc/<pid>/cwd`
+  boundary-match (equal to the worktree path, or prefixed by it followed by
+  a path separator — a bare prefix match would wrongly pull in a sibling
+  worktree directory, e.g. one ending `...-575f0fcb` overmatching
+  `...-575f0fcb-retry`) where `/proc` is available, falling back to
+  `pgrep -f` alone otherwise. The per-candidate exclusion walk above sources
+  its POSIX pid→`ppid` linkage the same way B2-match's own descendant
+  discovery does: a `/proc/*/stat` forward walk on Linux, falling back to
+  `ps -eo pid,ppid` output on macOS/BSD where `/proc` is unavailable.
+  **Regex-escaping (ticket #86).** `pgrep -f`
+  treats its argument as an extended regular expression, not a literal
+  substring, and PowerShell's `-like` treats `*`, `?`, `[`, `]` as wildcard
+  metacharacters — both matched against `$AAD_WORKTREE` as a raw string.
+  Worktree paths can legally contain these characters, so both recipes now
+  escape the path before matching: POSIX escapes ERE metacharacters via
+  `sed` before passing the result to `pgrep -f`; Windows escapes wildcard
+  metacharacters via
+  `[System.Management.Automation.WildcardPattern]::Escape()` before
+  building the `-like` pattern. See `skills/orchestrate-tickets/SKILL.md`'s
+  Teardown B2-match section for the exact recipes. See "Shared-primitive
+  invariant (ticket #86 — B2-match/B2-kill)"
+  above for the cross-consumer invariant this split protects.
   **Self-cwd-lock terminal case (#67).** When B2's sweep finds zero processes and
   `worktree_remove` still reports the dir locked/`Permission denied`, the holder isn't a
   foreign PID at all — it's the orchestrator's own background-job shell whose cwd silently
