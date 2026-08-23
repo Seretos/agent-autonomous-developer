@@ -1,7 +1,7 @@
 ---
 name: orchestrate-tickets
 disable-model-invocation: true
-description: Required entry-point for executing ticket work — one ticket, several, or all open — for a project (stack auto-detected). Use to split tickets, re-slice epics, and execute them. Serial/single-ticket is the normal safe path (SINGLE mode); parallel fleet drives per-wave process-ticket(mode=integration) runs to a shared integration branch, merges and gates each wave, and opens exactly one combined draft PR at the end. Bypassing it — manual work on `main`, or editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
+description: Required entry-point for executing ticket work — one ticket, several, or all open — for a project (stack auto-detected). Use to split tickets, re-slice epics, and execute them. Serial/single-ticket is the normal safe path (SINGLE mode); MULTI mode drives a multi-ticket fleet across ordered waves, sequential process-ticket(mode=integration) runs into a shared integration branch, gated per wave, ending in exactly one combined draft PR. Bypassing it — manual work on `main`, or editing inside a worktree directly — forfeits code review, planner approval, QA/tests, Codex pass, and PR-based merge.
 ---
 
 # orchestrate-tickets — fleet orchestrator
@@ -398,277 +398,66 @@ run takes.
 Iterate the `waves` array **wave-by-wave, in order**. For each wave:
 
 1. **Create that wave's worktrees, SEQUENTIALLY.** Never in parallel —
-   concurrent `git worktree` ops on one repo race on the index lock. Before
-   creating any worktree, capture this wave's **branch point**: `git -C
-   <repo_root> rev-parse <integration>`, the integration branch's current head
-   SHA (call it `<branch_point_sha>`) — every member's worktree in this wave
-   branches from exactly this commit, and step 2's fallback protocol needs it
-   to prove a member produced a genuine new commit this run, not merely
-   inherited the branch-point commit.
+   concurrent `git worktree` ops on one repo race on the index lock.
    `worktree_create(repo_root, branch=<branch>, base=<integration>)` — branch
    off the **current integration-branch head**, not `base` directly, so each
    wave builds on top of everything already merged from earlier waves. Capture
    the returned `path` for each — **use that returned path**, never construct a
    directory from the branch name (the `fix/<n>-…` convention contains a `/`).
-2. **Drive `process-ticket` per member, in parallel.** For every ticket in the
-   wave, invoke `process-ticket` with `mode=integration` and
-   `worktree_path=<path>` (the path captured above). Each member runs the full
-   Phase 1-4 pipeline (context → plan → code → review) and does its own local
-   commit, but does **not** push, open a PR, or comment — this skill owns that,
-   once, at the end of the whole run (Phase D). Collect each member's ending
-   state: `APPROVE`/`CHANGES_REQUESTED` verdict and test PASS/FAIL.
+2. **Drive `process-ticket` per member, SEQUENTIALLY, one at a time — never in
+   parallel.** For every ticket in the wave, **in order**, invoke
+   `process-ticket` with `mode=integration` and `worktree_path=<path>` (the
+   path captured above) as a **fresh, synchronous, unnamed** spawn, mirroring
+   the exact pattern `process-ticket`'s own Phase 2-4 already use for the
+   planner/developer/reviewer (see `skills/process-ticket/SKILL.md`: "Do not
+   pass a `name`... always fresh synchronous unnamed Agent() calls"). Wait for
+   that one dispatch's synchronous reply — verdict (`APPROVE`/
+   `CHANGES_REQUESTED`) and test result (`PASS`/`FAIL`) — before starting the
+   next member's dispatch. Never issue a second wave member's dispatch while
+   one is still outstanding, and never `SendMessage` an already-dispatched
+   member instead of waiting for its one synchronous reply. Each member still
+   runs the full Phase 1-4 pipeline (context → plan → code → review) and does
+   its own local commit, but does **not** push, open a PR, or comment on the
+   PR/link — this skill owns that, once, at the end of the whole run
+   (Phase D). `process-ticket` itself now posts short status comments to the
+   ticket after Phase 3 and Phase 4 (test result, review verdict — see
+   `skills/process-ticket/SKILL.md`'s Phase 3/4 notes), so the ticket carries
+   a durable trail of how far a run got even if the orchestrator session
+   itself dies mid-run.
 
-   **Root cause — why a member's report-back can silently never arrive.**
-   Driving several members **in parallel** necessarily means each is a
-   background/named `Agent` spawn (that's the only mechanism that runs
-   concurrently). This is the same delivery mechanism whose failure mode
-   caused the planner-spawn deadlock fixed in **#58/#60** (a named spawn
-   switches into background/mailbox delivery, and the callee has no
-   `SendMessage` tool to push a reply back if that delivery silently drops)
-   — see `skills/process-ticket/SKILL.md`'s Phase 2 note for the original
-   case. Here it surfaces one level up: a wave member can finish all its real
-   work — local commit made, reviewer verdict `APPROVE` — and still go idle
-   without ever sending its mandated Final-step report, making an otherwise-
-   successful run look stalled. Unlike the planner fix, members here must run
-   in parallel, so eliminating background/named spawns is not viable — the
-   fix is a fallback, not elimination (this is **AGENTS.md's B6** safeguard).
+   **Root cause eliminated, not compensated for (ticket #88).** The previous
+   design drove wave members **in parallel**, which necessarily meant each
+   was a background/named `Agent` spawn — the only mechanism that runs
+   concurrently. That is the same delivery mechanism whose failure mode
+   caused the planner-spawn deadlock originally fixed in **#58/#60** (a
+   named spawn switches into background/mailbox delivery, and the callee has
+   no `SendMessage` tool to push a reply back if that delivery silently
+   drops) — see `skills/process-ticket/SKILL.md`'s Phase 2 note for the
+   original case. A live incident (ticket #88) found this surfacing at the
+   wave-member level repeatedly in one run: duplicate developer instances
+   racing concurrently in the same worktree, a report arriving at the wrong
+   parent, and separately, a developer ending its turn without ever starting
+   its mandated test run — each one silent, discovered only by manual
+   follow-up. Sequential, unnamed dispatch removes the precondition for all
+   of these at once, rather than compensating for them after the fact: there
+   is never more than one open dispatch at a time, so there is never a
+   report with an ambiguous recipient, and never a reason to `SendMessage` a
+   running dispatch instead of simply waiting for its one synchronous reply
+   or re-dispatching it fresh. This is why the git-state/marker-file
+   self-healing apparatus that used to live here (formerly documented as
+   `AGENTS.md`'s "B6" safeguard) is gone rather than merely narrowed: the
+   orchestrator now always gets each member's real, complete ending state
+   directly from that member's own synchronous report, so there is nothing
+   left to reconstruct from git state or a result-marker file.
 
-   **Idle-triggered, timer-free fallback protocol.** The orchestrator has no
-   timer and must not wait on one. The trigger is a member going **idle**
-   (`idle_notification`/`idleReason: "available"`) **without** having sent its
-   Final-step report — a member that reports first and *then* goes idle does
-   **not** re-trigger this fallback; the trigger is scoped to idle-**without**-
-   a-report, not idle alone. When that happens, do not rely solely on the
-   member's self-report — verify its real ending state directly:
-
-   Concretely, the orchestrator keeps a **confirmed-done set**: a member
-   enters it the moment its report carries the explicit **`final: true`**
-   terminal marker (see `skills/process-ticket/SKILL.md`'s Final step 7) —
-   set entry is keyed on the **presence of that marker** in the received
-   report, not merely on "a report arrived" — or, via this fallback, the
-   moment its ending state is confirmed (git HEAD-ahead check passed and the
-   result-marker validated). Any subsequent `idle_notification`
-   (`idleReason: "available"`) from a member already in the confirmed-done set
-   is a cheap set-membership no-op — acknowledge and discard it; it is **not**
-   a fresh B6 evaluation. This short-circuit is **idempotent**: members are
-   known to ping idle more than once after reporting, and every
-   consecutive/repeated idle ping from an already-confirmed-done member
-   resolves to the same no-op, so two (or any number of) consecutive pings
-   from one confirmed-done member cost **zero B6 evaluations** in total, not
-   one each. B6 is scoped to idle-*without*-a-report from a member **not**
-   yet confirmed-done, so this short-circuit cannot weaken it.
-   - Run `git -C <worktree_path> log -1` and
-     `git -C <worktree_path> status --porcelain`. Expect the marker file
-     (see below) to be **absent** from plain `status --porcelain` output on a
-     fully successful run — `process-ticket`'s Final step 1 ensures the
-     target repo's `.gitignore` contains the marker's line **before** the
-     commit, so by the time the marker is written it is already gitignored,
-     and a gitignored untracked file produces no entry at all (not even an
-     untracked-file marker) in plain `status --porcelain`. This absence is
-     expected and is **not** itself a sign of uncommitted work — do not treat
-     it as anomalous.
-   - Confirm HEAD is actually **ahead of** this wave's branch point (the
-     `<branch_point_sha>` captured in step 1 above, the integration-branch
-     head this worktree was created from): `git -C <worktree_path> rev-list
-     --count <branch_point_sha>..HEAD` must be **> 0**. This check is
-     required, not optional — a worktree that never did any real work still
-     has a valid `git log -1` (the branch-point commit itself) and can show a
-     clean `status --porcelain`, so "a commit exists at HEAD" alone does not
-     prove *this run* produced one; combined with a possibly-stale leftover
-     marker file, that could otherwise be misread as a confirmed success.
-     Only "HEAD is ahead of the branch point" proves a genuine new commit
-     landed this run.
-   - Only **after** the HEAD-ahead-of-branch-point check above has passed,
-     read the result-marker file
-     `<worktree_path>/.process-ticket-result.json` (written unconditionally
-     by `process-ticket`'s Final step, in both `solo` and `integration` mode
-     — see `skills/process-ticket/SKILL.md`) to recover the reviewer
-     `verdict` and `test` result — git alone cannot recover those. The marker
-     is **not trusted on its own**: since a RED wave deliberately leaves its
-     worktrees intact for inspection (no auto-revert), a worktree could in
-     principle be reused or retried, and a stale marker from an earlier
-     attempt could otherwise be misread as confirming this run. Tying the
-     marker's trustworthiness to the already-proven "HEAD is ahead of the
-     branch point" fact — a genuine new commit landed this run — is what
-     makes reading it safe. Additionally, verify the marker's own `ticket`
-     field equals this wave member's actual ticket number; if it does not
-     match, the marker is stale (left over from a different ticket ever
-     processed in this worktree) and must be **rejected and treated as
-     unconfirmed**, exactly as if the marker were missing.
-   - **B6 status-check ping — disambiguate busy vs. dead before
-     disqualifying.** This sub-step fires only when both are true: the
-     member is on the already-narrow B6 trigger (idle-without-report, not
-     yet in the confirmed-done set), **and** the git-state check above came
-     back **unconfirmed** — HEAD not ahead of the branch point, or the
-     marker missing/unreadable/ticket-mismatched/`verdict` not
-     `APPROVE`/`test` not `PASS`. A member whose git-state check **passed**
-     is confirmed-done exactly as described above and is **never pinged** —
-     this sub-step only ever runs in front of a disqualification that is
-     otherwise about to happen.
-
-     The orchestrator sends **exactly one** direct status-check
-     `SendMessage` to the member, asking it to report its current pipeline
-     phase/state. This is legitimate and asymmetric, not a violation of
-     "never merge on self-report alone": the member (callee) has no
-     `SendMessage` tool to push a reply back on its own initiative, but the
-     orchestrator (caller) can send *to* a background/named member and read
-     its reply — the same asymmetry the root-cause note above already
-     describes.
-
-     **Bound: single ping, then a bounded ~15-minute liveness check —
-     not a deadline.** This is a *liveness/progress* gate, not a timer that
-     disqualifies on elapsed time alone. Outcomes of the single ping:
-     - An **empty or error reply, an incoherent reply, or the member's very
-       next signal being another idle-without-report** falls through
-       unchanged to the Conservative non-merge rule described below:
-       genuinely unconfirmed, roll into a later wave.
-     - A **coherent progress reply** (the member describes a plausible
-       in-progress state, e.g. "in Phase 4 review, awaiting reviewer
-       sub-agent") means it is *provisionally* still legitimately working:
-       **do not disqualify it and do not merge it yet.** Send no second
-       ping in response to this reply, and it is **not** added to the
-       confirmed-done set. But a coherent reply alone no longer buys it
-       unbounded silence — it stays eligible only for the duration of one
-       **bounded ~15-minute wait**, timed the same dog-food way the
-       sub-agents themselves must wait (see "Dog-fooding the wait" below):
-       `nohup … &` plus an in-turn `Monitor`-with-until-condition, **never**
-       a foreground `sleep`/`Start-Sleep`. At the end of that bounded wait
-       the orchestrator runs three liveness probes against the member's
-       worktree and returns exactly **one verdict — alive-and-progressing,
-       or wedged**:
-       1. **Process alive — via B2-match, self-excluded.** Reuse
-          **B2-match** by name (Teardown step 1) to get this worktree's
-          survivor PID set — command line / worktree path matched — never
-          restate a second matcher inline. Because B2-match already
-          subtracts the orchestrator's own self/ancestor/descendant PID
-          exclusion set before returning, the orchestrator's own
-          pwsh.exe/node.exe session can never self-match and read back as
-          "alive" the way an unfiltered command-line-substring match could.
-       2. **CPU progress** — sample the survivor PID(s)' CPU time at t0 and
-          again at t0+~25s (this round's own two intra-round samples — a
-          first-round member with no prior recorded survivor set still gets
-          a real CPU-delta reading from these two samples alone, so round 1
-          is never wedged-by-default for lack of history) and require a
-          positive delta.
-       3. **Work advancing** — `git -C <worktree_path> diff --stat` shows
-          growth versus the previous check (more changed lines/files than
-          last time).
-
-       **Probe 1 corroboration — never counts un-corroborated.** Probe 1
-       counts toward the verdict only if B2-match's survivor set is
-       **non-empty AND PID-stable**: stable means (a) the same PID(s)
-       persist across this round's own two intra-round CPU samples (t0 and
-       t0+~25s from probe 2), (b) when a previous liveness round exists for
-       this member, at least one PID from that previous round's recorded
-       survivor set is still present now, **or (c) a legitimate re-exec/
-       child-handoff** — a new PID in this round's survivor set whose
-       `ParentProcessId`/`ppid` equals the previously-seen/recorded PID
-       corroborates exactly as if the original PID had persisted, because
-       the worker genuinely continued under a new PID rather than
-       vanishing, and this must not be treated as churn. Only an **actual
-       churn** — a new PID that is neither the previously-seen PID nor a
-       child of it — still fails corroboration. A survivor set that is
-       **empty, or whose PIDs churned/drifted with no such parent-child
-       relationship** between checks does **not** count toward alive —
-       record it explicitly as a **self-match/churn signal**, never as
-       liveness (this is what makes a PID drifting between checks, e.g.
-       34048→31244, with no parent-child link between them, read as
-       evidence of self-matching rather than a genuinely working process
-       that legitimately re-exec'd).
-
-       **Verdict.** **Alive-and-progressing** iff probe 3 (`diff --stat`
-       growth) shows growth, **OR** (probe 1 counts per the corroboration
-       rule above **AND** probe 2 shows a positive CPU delta). Otherwise
-       **wedged**.
-
-       **Accepted tradeoff — probe 3 alone needs no live-process
-       corroboration (approved corroboration-rule design, not a defect).**
-       The verdict formula above makes probe 3 sufficient on its own: a
-       worker that died immediately after its last file write can read as
-       alive-and-progressing purely from `diff --stat` growth versus the
-       previous check's snapshot, with no live PID required. This is
-       bounded and self-correcting, not an indefinite mask: because probe 3
-       requires growth *versus the previous check's own snapshot*, a
-       genuinely dead process cannot produce further growth on the
-       *following* check, so the misclassification costs at most one extra
-       bounded ~15-minute wait cycle before the member correctly falls
-       through to wedged. This is the user's explicit, already-approved
-       corroboration-rule design chosen during planning, not a gap
-       introduced later — accepted as-is, same treatment as the B2-match
-       broad-matching tradeoff immediately below.
-
-       **Accepted tradeoff — out of scope for ticket #86 (broad-by-design
-       matching).** B2-match's survivor set is intentionally broad: it
-       matches *any* process whose command line or cwd references the
-       worktree path, not only the wave member's own worker process (e.g.
-       a user's editor or shell left open on that folder also matches).
-       Because probe 1 consumes that same broad set, an unrelated,
-       coincidentally PID-stable, CPU-active process co-located in the
-       worktree path could in principle satisfy probe 1 and probe 2 and
-       mask a genuinely wedged worker. This is a pre-existing property of
-       the broad-matching design that predates and is unrelated to ticket
-       #86's self-match fix — accepted as-is, explicitly out of scope
-       here. The `/proc/<pid>/cwd` half of B2-match's POSIX matching now
-       requires an equality-or-path-separator boundary (Teardown step 1),
-       closing the sibling-path overmatch case (a worktree path ending
-       `...-575f0fcb` no longer wrongly cwd-matches `...-575f0fcb-retry`);
-       the command-line half (`pgrep -f`/`-like` substring matching) has no
-       equivalent boundary available and keeps this same residual — it
-       cannot do better than substring matching, so a sibling worktree path
-       that is itself a substring of another process's command line can
-       still be pulled into the same broad, unfiltered survivor set
-       described above.
-
-       **Alive-and-progressing:** the member stays eligible, still **not**
-       confirmed-done and still **not** merged — it simply re-enters this
-       same path on its next idle signal or eventual Final-step report,
-       exactly as the plain coherent-reply case did before.
-
-       **Wedged:** this authorizes exactly two actions, in order —
-       (1) **kill** the wedged process for that worktree via **B2-kill**
-       (Teardown step 1) — the same named primitive, never a second/raw
-       kill recipe, so the wedged-branch kill inherits B2-match's
-       self-exclusion by construction and the orchestrator's own session
-       can never be the target; then (2) the member falls through unchanged
-       to the Conservative non-merge rule described below — not merged,
-       rolled into a later wave, exactly like today's
-       `CHANGES_REQUESTED`/red path. **There is no automatic re-dispatch.**
-       Re-running into a worktree that holds a partial commit and a
-       possibly-stale `.process-ticket-result.json` is precisely the
-       scenario B6 exists to guard against — do not add one.
-
-     Judging "coherent" is still the orchestrator's own read of the reply
-     content — a plausible mid-pipeline state versus gibberish or an empty
-     body — not a new automated check; only the *bounded-wait* step above is
-     automated (the three probes). This ping-then-bounded-wait sequence only
-     adds a disambiguation gate in front of disqualification; it never
-     relaxes any of the git-state criteria above or the five disqualifiers
-     in the Conservative non-merge rule below, which remain the last-resort
-     gate for a genuinely dropped or dead spawn.
-
-     **Dog-fooding the wait.** The bounded ~15-minute wait above is
-     **not** a foreground `sleep`/`Start-Sleep` Bash call: the Bash tool
-     blocks foreground sleeps, and a ~15-minute foreground call would hit
-     the same ~10-minute tool cliff this ticket exists to fix. The
-     orchestrator therefore waits the exact same way it requires of its
-     sub-agents — `nohup <probe-loop> > <log> 2>&1 &` followed by an
-     in-turn `Monitor` wait with an until-condition on that log — eating
-     its own dog food rather than exempting itself from the rule it
-     enforces on `developer`/`reviewer`.
-
-   **Conservative non-merge rule.** A member whose ending state cannot be
-   confirmed this way is **not merged**: HEAD not ahead of the branch point
-   (no genuine commit this run), the marker file missing or unreadable, the
-   marker's `ticket` field not matching this member's actual ticket number
-   (stale marker from a different run), the marker's `verdict` is not
-   `APPROVE`, **or the marker's `test` is not `PASS`** — any one of these
-   disqualifies the member. This matches the ordinary (non-fallback) merge
-   criterion in step 4 below — "every member that ended `APPROVE` **with a
-   green test run**" — so the fallback path is never weaker than the normal
-   path; checking `verdict` alone is not sufficient. A disqualified member
-   rolls into a later wave, exactly like today's `CHANGES_REQUESTED`/red
-   members; do not merge on the strength of a
-   self-report alone.
+   **Merge criterion — directly from the report, the only mechanism.** A
+   member counts as approved-and-green simply when its Phase-4 report shows
+   `VERDICT: APPROVE` **and** a `PASS` test result — read straight off the
+   synchronous reply this step already waited for. No fallback, no
+   self-report-versus-git-state cross-check is needed or performed. A member
+   that ends `CHANGES_REQUESTED`, or reports a failing test run, is **not
+   merged**; it rolls into a later (possibly solo, single-member) wave for a
+   subsequent run — see step 4 below.
 3. **Checkout the integration branch, then B4 — clean-checkout gate, before
    any merge.** On the main checkout (`repo_root`), first switch onto the
    integration branch itself: `git -C <repo_root> checkout <integration>` (or
@@ -768,19 +557,16 @@ RED gate), remove it **safely and statelessly**:
    `serena.exe`, `python.exe`) running against the same path. None of these
    are `claude --bg` jobs, so `claude stop` does not reach them, and
    force-killing them triggers **no** daemon respawn. This kill is split into
-   two named, cross-referenced halves — **never restated as two separate
-   recipes** — because B6's liveness probe (Phase C step 2) reuses the exact
-   same matching half by name:
+   two named halves — matching, then killing — so the matching logic lives
+   in exactly one place rather than being restated inline:
    - **B2-match** — the shared matching primitive. Given a worktree path, it
      yields the survivor PID set: every process whose command line or cwd
      references that worktree path, **with the orchestrator's own process
-     tree excluded**. Both B2-kill (below) and B6's probe 1 (Phase C step 2)
-     consume this survivor set; neither restates the matching logic inline.
+     tree excluded**. B2-kill (below) consumes this survivor set directly;
+     nothing restates the matching logic inline.
    - **B2-kill** — the B2-only consumer of B2-match's survivor set: the
      existing exe-name allowlist + `app-server-broker.mjs` filter, then
-     `Stop-Process`/`kill` the result. B6's wedged branch also invokes
-     B2-kill by name when it needs to kill a wedged process (see Phase C
-     step 2) — it never has its own separate kill recipe.
+     `Stop-Process`/`kill` the result.
 
    **Env-var indirection — a separate preceding statement, always.** Before
    B2-match ever runs, assign the worktree path to an env var in its own
@@ -800,8 +586,9 @@ RED gate), remove it **safely and statelessly**:
    overstates it. When the assignment and the match are issued as **one
    single shell invocation** — a single `powershell -Command "..."` /
    `sh -c "..."` string, the pattern this plugin uses elsewhere (e.g. the
-   `nohup <probe-loop> > <log> 2>&1 &` dispatch used by the bounded liveness
-   wait below) — the *wrapping* process's own command-line argument is the
+   `nohup <detected-test-cmd> > <log> 2>&1 &` dispatch used by Phase C step
+   5's integration-gate test run) — the *wrapping* process's own command-line
+   argument is the
    entire script text, and that text still contains the literal worktree
    path baked into the assignment statement. A naive command-line
    substring/wildcard scan would therefore still match that wrapping
@@ -834,8 +621,8 @@ RED gate), remove it **safely and statelessly**:
    self/ancestors/descendants from an already-matched set, it does nothing
    to stop a wildcard from matching unrelated system processes in the first
    place (processes B2-kill could then mass-kill if they happen to satisfy
-   its exe-name/broker allowlist, or that B6's probe 1 could corroborate
-   against). The correct guarantee, and the one both B2-match recipes below
+   its exe-name/broker allowlist). The correct guarantee, and the one both
+   B2-match recipes below
    implement: **before the match expression ever runs, verify the env var is
    non-empty/set; if it is empty or unset, B2-match immediately yields an
    EMPTY survivor set — zero processes, full stop.** This is a fail-safe
@@ -860,7 +647,7 @@ RED gate), remove it **safely and statelessly**:
    snapshot taken moments earlier, and `pgrep` excludes only its own PID
    from its results, never its caller's subshell. Net effect: a survivor
    that is the orchestrator's own process can leak straight through
-   B2-kill and B6's probe 1 — the exact same self-match failure mode ticket
+   B2-kill — the exact same self-match failure mode ticket
    #86 exists to fix, just relocated one layer down into the matcher's own
    forked pipeline. A pre-match snapshot cannot contain a process the
    matcher's own pipeline forks *after* the snapshot was taken; only a
@@ -979,9 +766,10 @@ RED gate), remove it **safely and statelessly**:
      }
    }
    ```
-   `$survivors` is B2-match's output — this is what B6's probe 1 (Phase C
-   step 2) consumes directly, unfiltered, since a legitimately-alive worker
-   process can run under any executable name, not just the five named below.
+   `$survivors` is B2-match's output, consumed directly by B2-kill's own
+   exe-name/broker filtering step below — B2-match itself deliberately does
+   no exe-name filtering, since a legitimately-alive worker process can run
+   under any executable name, not just the five named below.
 
    **B2-kill, Windows/PowerShell** — a separate, subsequent stage that takes
    `$survivors` and applies the exe-name allowlist + `app-server-broker.mjs`
@@ -1097,16 +885,25 @@ RED gate), remove it **safely and statelessly**:
    exclusion walk above. This produces the same broad, unfiltered survivor
    set as Windows's B2-match above — path matching and self/ancestor/
    descendant exclusion only, **no exe-name filtering** at this stage. This
-   unfiltered survivor set is what B6's probe 1 (Phase C step 2) consumes
-   directly — including this same escaping step, since probe 1 reuses
-   B2-match by name rather than restating the matching logic — because a
-   legitimately-alive worker process can run under any executable name, not
-   just the five named below. The `/proc/<pid>/cwd` boundary fix above only
-   closes this residual for the cwd half of the match; the command-line
-   half (`pgrep -f`/`-like` substring matching) can't do better than
-   substring matching and keeps the same residual named in the "Accepted
-   tradeoff — out of scope for ticket #86 (broad-by-design matching)" note
-   in Phase C step 2 below.
+   unfiltered survivor set is consumed directly by B2-kill's own exe-name/
+   broker filtering step below — B2-match itself deliberately does no
+   exe-name filtering, because a legitimately-alive worker process can run
+   under any executable name, not just the five named below. The
+   `/proc/<pid>/cwd` boundary fix above only closes this residual for the
+   cwd half of the match; the command-line half (`pgrep -f`/`-like`
+   substring matching) can't do better than substring matching and keeps the
+   same residual.
+
+   **Accepted tradeoff — out of scope for ticket #86 (broad-by-design
+   matching).** B2-match's survivor set is intentionally broad: it matches
+   *any* process whose command line or cwd references the worktree path, not
+   only a `process-ticket` worker process (e.g. a user's editor or shell left
+   open on that folder also matches). B2-kill's exe-name/broker filtering
+   step (immediately below) narrows this before anything is actually killed
+   — the broad, unfiltered survivor set above is never killed directly. This
+   is a pre-existing property of the broad-matching design that predates and
+   is unrelated to ticket #86's self-match fix — accepted as-is, explicitly
+   out of scope here.
 
    **B2-kill, POSIX** — a separate, subsequent stage that takes B2-match's
    survivor set and applies the exe-name allowlist + `app-server-broker.mjs`
@@ -1118,10 +915,11 @@ RED gate), remove it **safely and statelessly**:
    without the `.exe` suffix, matched against the command basename) — or
    `args` contains `app-server-broker.mjs`. Only *that filtered subset* gets
    `kill -TERM`, then a brief in-shell grace (e.g. a plain `sleep 2` — this
-   is a short, local teardown pause, **not** the banned foreground
-   wait; that ban is scoped specifically to B6's bounded ~15-minute
-   liveness wait elsewhere in this file, never to a two-second teardown
-   grace like this one) followed by a `kill -0 <pid>` liveness recheck on
+   is a short, local teardown pause, **not** a long-running foreground wait;
+   this skill never blocks a turn on a long foreground wait, per the
+   full-suite integration-gate step's `nohup`+`Monitor` pattern, but a
+   two-second teardown grace like this one is a different, short-lived thing
+   entirely) followed by a `kill -0 <pid>` liveness recheck on
    that same filtered subset, and only the PIDs the recheck still finds
    alive get `kill -KILL` (not a blind re-sweep of the full filtered subset,
    let alone the raw unfiltered survivor set) — broad enough to catch the
@@ -1133,9 +931,10 @@ RED gate), remove it **safely and statelessly**:
    Codex broker/Serena LSP chain, which is exactly why B2-kill's filtering
    step above exists and must never be skipped; what's new is that the
    orchestrator's own process tree is excluded by construction from
-   B2-match's survivor set, and that concurrent probes across wave members
-   in one run each target a distinct worktree path, so cross-member matching
-   does not arise.
+   B2-match's survivor set. Dispatch is sequential now (ticket #88), so
+   B2-match's teardown sweep only ever targets one worktree path per
+   invocation — there is no concurrent-across-members case for it to
+   disambiguate.
 2. **Confirm the directory is free**, then remove the worktree via the
    agent-worktree MCP (`worktree_remove`) so it releases ports, runs teardown,
    and updates its state store. Do not `rm -rf` the directory or run
@@ -1212,9 +1011,12 @@ for manual cleanup — never silently fail to retry a dropped member.
   the confirm step so the ordering check is visible, never silently skipped.
 - **agent-worktree MCP only — no raw-git fallback.** If the MCP isn't loaded,
   hard-fail and tell the user to `/reload-plugins`. Never `git worktree add`.
-- **Sequential, not parallel**, for worktree creation within a wave (git index
-  lock races). Driving `process-ticket` for each wave member IS parallel —
-  only the `git worktree` creation step is serialized.
+- **Sequential, not parallel, throughout Phase C.** Worktree creation within a
+  wave is serialized (git index lock races), and — as of ticket #88 —
+  driving `process-ticket` for each wave member is sequential too, one fresh
+  unnamed dispatch at a time, never parallel/named spawns. Only the wave's
+  *worktrees* are set up ahead of a member's own dispatch (step 1); nothing
+  in this skill runs two wave members' pipelines concurrently.
 - **Worktrees branch off the integration-branch head, not `base`.** Only the
   integration branch itself (created once, at run start) branches off `base`.
   Every wave's worktrees branch off whatever the integration branch's head is
@@ -1235,56 +1037,17 @@ for manual cleanup — never silently fail to retry a dropped member.
   the `manual-cleanup-needed` list, don't loop the B2 kill logic, and don't
   try to cd away.** These are plain helper processes — force-killing them is
   correct and safe.
-- **Never merge on self-report alone (B6).** If a wave member goes idle
-  without having sent its Final-step report, that is the trigger to confirm
-  its real ending state directly — `git -C <worktree_path> log`/`status` plus
-  `rev-list --count <branch_point_sha>..HEAD` (must be `> 0`, proving HEAD is
-  ahead of the wave's branch point — not merely that a commit exists at HEAD,
-  which a never-touched worktree would also show) for a landed commit, plus
-  `<worktree_path>/.process-ticket-result.json` for the reviewer verdict and
-  test result — not a timer, and never the self-report alone. A member that
-  can't be confirmed this way (HEAD not ahead of the branch point, missing/
-  unreadable marker, marker `ticket` not matching this member's actual ticket
-  number, marker `verdict` not `APPROVE`, or marker `test` not `PASS`) is not
-  merged; it rolls into a later wave. See Phase C step 2 for the full
-  protocol. Before that disqualification lands, a single status-check
-  `SendMessage` ping disambiguates a busy-but-alive member (coherent reply
-  → provisionally keep waiting, not merged, not disqualified) from a
-  genuinely dropped one (empty/error/incoherent reply or another
-  idle-without-report → falls through to disqualification unchanged) — this
-  is a **liveness/progress check, not a deadline**. A coherent reply no
-  longer buys unbounded silence: it stays eligible only for a **bounded
-  ~15-minute wait**, timed via the same `nohup … &` + in-turn `Monitor`
-  dog-food pattern mandated for sub-agents (never a foreground
-  `sleep`/`Start-Sleep`, which would hit the same ~10-minute tool cliff this
-  fix exists for). At the end of that wait, three liveness probes decide
-  alive-vs-wedged: **B2-match** (Teardown step 1), self/ancestor/descendant-
-  excluded by construction, for a live process bound to the worktree
-  (command line/worktree path match — this self-exclusion is what stops the
-  orchestrator's own session from ever self-matching and reading back as
-  "alive"); a positive CPU-time delta over ~25s (this round's own two
-  intra-round samples, so a first round has no dependency on prior history);
-  and `git -C <worktree_path> diff --stat` growth versus the previous check.
-  Probe 1 counts only when its B2-match survivor set is non-empty **and
-  PID-stable** across checks (same PID(s) persisting, at least one carried
-  over from the previous round, or a new PID whose `ParentProcessId`/`ppid`
-  equals the previously-seen PID — a legitimate re-exec/child-handoff,
-  which corroborates exactly like a persisted PID; only an unrelated PID
-  that is neither the previous PID nor a child of it is an actual churn) —
-  an empty survivor set, or one that churned/drifted with no such
-  parent-child link, is a **self-match signal**, not liveness. **Verdict:**
-  **alive-and-progressing** iff probe 3 shows growth, **OR** (probe 1
-  counts per the corroboration rule **AND** probe 2 shows a positive
-  delta); it then stays eligible, unconfirmed, unmerged, and simply
-  re-enters this path later. **Wedged** authorizes exactly two actions in
-  order: **kill** the process via **B2-kill** (Teardown step 1, self-
-  excluded by construction — the orchestrator's own session can never be
-  the target), then fall through to the Conservative non-merge rule below
-  — **there is no automatic re-dispatch**. This never relaxes the
-  git-state criteria above. Once a member is confirmed-done — its report
-  carried the explicit `final: true` terminal marker, or it was
-  B6-confirmed via the fallback — later idle pings from it are idempotent
-  no-op set lookups, never a re-triggered B6 check.
+- **Merge criterion comes directly from the report — no self-report-loss
+  fallback needed (ticket #88).** Because Phase C step 2 dispatches wave
+  members sequentially and unnamed, one at a time, the orchestrator always
+  gets each member's real, complete ending state — `VERDICT: APPROVE`/
+  `CHANGES_REQUESTED` and test `PASS`/`FAIL` — directly from that member's
+  own synchronous Phase-4 report; there is never a dropped-report gap to
+  compensate for, so no git-state/marker-file fallback and no separate
+  liveness-disambiguation step are needed here any more. A member is merged
+  only when its report shows `APPROVE` **and** `PASS`; anything else is not
+  merged and rolls into a later wave. See Phase C step 2 for the full
+  rationale.
 - **Backlog release gate (implicit "none"/"all open" MULTI path only).**
   Before spawning the analyst on that path, `list_board_columns` detects a
   literal `Backlog` column and, whenever a board is configured, also detects

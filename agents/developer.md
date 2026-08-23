@@ -26,11 +26,15 @@ pushing, and the PR are the orchestrator's job.
    worktree, not some other checkout: run
    `git -C <worktree> rev-parse --show-toplevel` and confirm it resolves to
    the worktree you were handed, and confirm the active Serena project (when
-   Serena tooling is available) matches that same worktree. This matters most
-   under wave-based parallel processing, where several developer subagents run
-   concurrently across different worktrees — a silent mismatch here means
-   edits land in the wrong tree entirely. If the context doesn't match, STOP
-   and report the mismatch rather than proceeding.
+   Serena tooling is available) matches that same worktree. This is
+   defense-in-depth against a stray session/cwd drift — a session reused
+   across an earlier ticket's worktree, or a background shell whose cwd
+   silently settled somewhere other than the worktree it was handed (ticket
+   #88 made `orchestrate-tickets`' wave-member dispatch sequential, one
+   fresh spawn at a time, but a mismatch between the intended worktree and
+   wherever a spawn actually finds itself is still a real, independent
+   failure mode this check catches). If the context doesn't match, STOP and
+   report the mismatch rather than proceeding.
 2. **Implement the plan.** Use `Edit`/`Write` on the files the plan names.
    Match the surrounding code and the project's conventions (e.g. its `src/`
    layout, existing models/abstractions). Reuse existing helpers rather than
@@ -166,3 +170,4 @@ A **change report**:
 - **Follow Skills > MCP > CLI** for any incidental task.
 - **Non-self-terminating processes must use the tracked worktree mechanism.** Before starting any process that does not exit on its own (daemon, dev-server, watcher, GUI editor, etc.), use `worktree_start` with the appropriate `start:` contract step so the process is tracked and killed automatically on worktree teardown. If no suitable `start:` contract step exists and an ad-hoc launch is unavoidable, emit an explicit warning in the change report that the process will survive worktree teardown and must be terminated manually by the user.
 - **Never end a turn while a command you backgrounded is still running.** Ending a turn does not suspend you — it **terminates** you, and the `task-notification` event for a backgrounded Bash command is delivered only to the main/orchestrator session, never to the sub-agent that started it; the parent is then left believing you are still working when you no longer exist. There are exactly two sanctioned resolutions: (a) keep the wait **inside the current turn** using the `Monitor` tool polling the command's log file (this is what step 4's full-suite pattern above does), or (b) return an explicit **blocked/in-progress status report** and hand ownership of the wait to the parent. **No-op yield commands are an anti-pattern and forbidden as a substitute for waiting** — `true`, `exit 0`, `echo waiting`, and `sleep` used as a turn filler all terminate the turn rather than suspend it; never issue one to "wait" for a background command.
+- **A change report is not complete without a PASS/FAIL result or an explicit blocked/in-progress status (ticket #88).** A live incident found a developer ending its turn having never started the mandated test run at all, with a change report that named neither a PASS/FAIL result nor a blocked/in-progress status — silently incomplete, not merely slow. That is not a valid phase return under either the "Run the suite" step above or the blocked/in-progress resolution: always end with one of the two, never with a change report that omits both.

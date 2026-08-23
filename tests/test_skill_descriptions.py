@@ -359,3 +359,32 @@ def test_orchestrate_body_has_create_ticket_scope_note():
         "'create_ticket' token as a scope note directing bare ticket creation "
         "to the MCP call directly, not through this skill."
     )
+
+
+# ---------------------------------------------------------------------------
+# Reviewer fix round on ticket #88 [nit]: frontmatter descriptions must not
+# imply concurrent/parallel dispatch -- Phase C now drives wave members
+# sequentially, one at a time.
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrate_description_does_not_claim_parallel_dispatch():
+    text = _read(ORCHESTRATE_MD)
+    desc = _extract_description(text)
+    assert not re.search(r"\bparallel\s+fleet\b", desc, re.IGNORECASE), (
+        "orchestrate-tickets description must not describe the fleet as "
+        "'parallel' -- ticket #88 made Phase C's wave-member dispatch "
+        "sequential, one ticket at a time within each wave.\n"
+        f"Current description:\n{desc}"
+    )
+
+
+def test_process_description_does_not_claim_parallel_dispatch():
+    text = _read(PROCESS_MD)
+    desc = _extract_description(text)
+    assert not re.search(r"\bparallel\b", desc, re.IGNORECASE), (
+        "process-ticket description must not describe its invocation as "
+        "'parallel' -- ticket #88 made orchestrate-tickets' wave-member "
+        "dispatch sequential, one ticket at a time.\n"
+        f"Current description:\n{desc}"
+    )
