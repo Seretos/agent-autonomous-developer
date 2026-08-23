@@ -9,10 +9,13 @@ principle (AGENTS.md), just applied to the plugin's own tests instead of a
 target project's.
 
 Fix: add a `test` job to `.github/workflows/lint.yml` that installs the
-`test` extra and runs `python -m pytest`. This test pins that the job
-exists and actually invokes pytest, on both push and pull_request triggers
-(the same triggers the `validate` job already runs under) — so a future
-edit that removes or defangs the job is itself caught by this test.
+`test` extra and runs `python -m pytest`, triggered on `pull_request` only
+(every push to a branch backing an open PR already fires a `pull_request`
+synchronize event for the same commit, so a `push` trigger would just
+duplicate every run — this repo always merges via PR). This test pins
+that the job exists, actually invokes pytest, and that the workflow is not
+also push-triggered — so a future edit that removes or defangs the job,
+or reintroduces the duplicate-run trigger, is itself caught by this test.
 """
 
 from __future__ import annotations
@@ -43,12 +46,24 @@ def test_lint_workflow_has_a_test_job():
     )
 
 
-def test_test_job_runs_on_push_and_pull_request():
+def test_workflow_triggers_only_on_pull_request():
+    """
+    All work in this repo goes through a PR (never a direct push to a
+    feature branch that isn't backing one), and pushing to an open PR's
+    branch fires both a `push` and a `pull_request` (synchronize) event
+    for the same commit — a `push` trigger alongside `pull_request` would
+    run this workflow's jobs twice per commit for no benefit. Trigger on
+    `pull_request` only.
+    """
     data = _load_workflow()
     triggers = data.get(True, data.get("on", {}))
-    assert "push" in triggers, f"{LINT_WORKFLOW} must trigger on push."
     assert "pull_request" in triggers, (
         f"{LINT_WORKFLOW} must trigger on pull_request."
+    )
+    assert "push" not in triggers, (
+        f"{LINT_WORKFLOW} must not also trigger on push — every push to a "
+        "branch backing an open PR already fires a pull_request event for "
+        "the same commit, so a push trigger duplicates every run."
     )
 
 
