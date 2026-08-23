@@ -1,0 +1,17 @@
+{
+  "description": "Abort the pipeline when agent-project-issues MCP is unavailable during context extraction.",
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "context-extractor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/check-mcp-availability.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
