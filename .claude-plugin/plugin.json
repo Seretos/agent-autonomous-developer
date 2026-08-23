@@ -1,10 +1,14 @@
 {
   "name": "agent-autonomous-developer",
-  "description": "Turns agent-project-issues tickets into draft pull requests for projects in any language (stack auto-detected). Ships three skills — dispatch (model-facing lane-aware entry point), orchestrate-tickets (fleet orchestrator, main-checkout lane), and process-ticket (end-to-end ticket pipeline, worktree lane) — backed by five subagents. Drives the agent-project-issues and agent-worktree MCPs.",
+  "description": "Takes one work package (a ticket or an epic with all its children) from a prepared worktree to a pull request with a GREEN CI pipeline, for projects in any language (stack auto-detected). One headless skill — process-ticket — backed by six subagents (context-extractor, planner, plan-critic, developer, test-critic, reviewer) with isolated critics, three-round caps and machine-readable progress events on the ticket. Never asks a human. Drives the agent-project-issues MCP.",
   "version": "0.0.0",
-  "author": { "name": "Arne von Appen" },
+  "author": {
+    "name": "Arne von Appen"
+  },
   "dependencies": [
-    { "name": "agent-project-issues", "version": ">=0.0.1 <1.0.0" },
-    { "name": "agent-worktree", "version": ">=0.0.1 <1.0.0" }
+    {
+      "name": "agent-project-issues",
+      "version": ">=0.2.5 <1.0.0"
+    }
   ]
 }

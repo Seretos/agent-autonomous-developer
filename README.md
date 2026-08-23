@@ -2,86 +2,75 @@
 
 # agent-autonomous-developer
 
-A Claude Code **skill + agents** plugin that turns [agent-project-issues](https://github.com/Seretos/agent-project-issues)
-tickets into draft pull requests for projects in **any language** — single tickets end-to-end, or a
-whole backlog dispatched across isolated git worktrees, wave by wave.
+A Claude Code **skill + agents** plugin that takes one **work package** — a
+[agent-project-issues](https://github.com/Seretos/agent-project-issues) ticket, or an epic
+standing for all of its child tickets — from a prepared worktree to a pull request with a
+**green CI pipeline**, for projects in **any language**. Built to run headless overnight: it
+never asks a human; it escalates by writing a `blocked` event on the ticket and ending.
 
-Ships **only skill/agent content** — no binaries, no MCP server of its own. It drives two
-other plugins' MCP servers (see [Dependencies](#dependencies)).
+Ships **only skill/agent content** — no binaries, no MCP server of its own. It drives the
+agent-project-issues MCP (see [Dependencies](#dependencies)).
 
 ## What it does
 
-Three skills: one model-facing dispatcher that routes to two lane-specific backing skills:
+One skill, not model-invocable — the caller invokes it by slash command from a worktree:
 
-| Skill | Runs from | Does |
+```
+/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>
+```
+
+| Phase | Agent | Result |
 |---|---|---|
-| **dispatch** | anywhere | Model-facing entry point. Normally selected automatically by the model; runs a git lane check and routes to the right skill. To invoke a backing skill directly, use `/orchestrate-tickets` or `/process-ticket`. |
-| **orchestrate-tickets** | the **main** checkout | Drives the whole run: lays out open tickets into an ordered set of parallel-safe **waves** (via the `conflict-analyst` subagent — disjoint file footprints **and** no unmet "must come after" dependency stated in a ticket; the rest are deferred, tagged `file-collision` or `logical-dependency`), then executes wave-by-wave against one shared **integration branch** — see below. |
-| **process-ticket** | inside a **worktree** on a feature branch | Runs one ticket end-to-end through four subagents — `context-extractor → planner → developer → reviewer` — committing locally. In `solo` mode (direct/manual invocation) it also pushes its own branch and opens its own draft PR; in `integration` mode (driven by `orchestrate-tickets`) it leaves the push/PR/ticket-comment to the caller. |
+| 1 | `context-extractor` | distilled context + a **verbatim transcript** of the package (for the critics) |
+| 2 | `planner` → `plan-critic` | a code-grounded plan, judged by three isolated critics (missed / misread / untestable) |
+| 3a | `developer` (`phase=tests`) → `test-critic` | driving tests proven RED, judged by an isolated critic ("which wrong implementation still passes?") |
+| 3b | `developer` (`phase=implement`) | GREEN, full suite locally (a pre-filter, not a verdict) |
+| 4 | `reviewer` (+ Codex pass when available) | `APPROVE` / `CHANGES_REQUESTED`, full re-review per fix round |
+| 5 | the skill itself | commit, push, PR with one `Closes #n` per ticket |
+| 6 | the skill itself | **CI gate**: poll the pipeline, repair red runs, up to three rounds |
 
-The five subagents (`agents/`): `conflict-analyst`, `context-extractor`, `planner`,
-`developer`, `reviewer`. Each has a narrow, mostly read-only scope; only `developer` edits code.
+Every phase posts an `adev:event` comment on the package ticket (`started`, `plan-committed`,
+`plan-critic-verdict`, `tests-red`, `test-critic-verdict`, `tests-green`, `review-verdict`,
+`pr-opened`, `ci-red`, `ci-green`, `blocked`, `failed`). The only success event is `ci-green`.
+State lives in the ticket, never in the session.
 
-### The wave-based fleet run
+### What it deliberately does not do
 
-`orchestrate-tickets` no longer stops after handing off a batch of worktrees for the user to
-drive by hand — it runs the whole fleet to completion:
+- **No human in the loop.** The dispatching session passes `--disallowedTools AskUserQuestion`.
+  A question the run cannot answer from ticket, siblings and code becomes a `blocked` event
+  with the question, options, a recommendation, and what was already checked.
+- **No board, no ticket selection, no worktrees.** The caller — in the Seretos ecosystem
+  `agent-ticket-orchestrator` — owns those. This plugin sees one package and one worktree.
+- **No "not included" lists.** A package is done when all of it is done; otherwise it is
+  `blocked` or `failed`.
 
-1. Creates one shared **integration branch** (`integration/<run-slug>`) off the refreshed
-   default branch, and pushes it once.
-2. Asks the `conflict-analyst` for an ordered `waves` array (DAG-layered parallel-safe sets),
-   or synthesizes a single one-member wave for a single ticket.
-3. For each wave, **sequentially**: creates that wave's worktrees off the integration branch's
-   **current head** (not the default branch — only the integration branch itself branches off
-   that), then runs `process-ticket(mode=integration)` **sequentially**, one fresh spawn at a
-   time, across the wave's members.
-4. Merges every approved-and-green member into the integration branch with `git merge --no-ff`,
-   then runs the project's **full test suite** on the integration branch as a cross-wave
-   integration gate.
-   - **Green** → tears down the wave's worktrees, pushes the integration branch, and moves on
-     to the next wave.
-   - **Red** → **stops immediately, with no automatic revert.** The failed wave's merge stays
-     local and unpushed, its worktrees are left intact for inspection, and every already-pushed
-     prior wave is left untouched. Resolving it is the user's call.
-5. Once every wave is processed, opens **exactly one** combined draft PR (`head` = the
-   integration branch) with `Closes #<n>` for every ticket that landed, and comments once per
-   ticket.
+### Isolated critics
 
-A single ticket still goes through the identical pipeline — SINGLE mode is just a one-member,
-one-wave run, so it gets the same safety gates without any of the fleet ceremony mattering.
-
-> **Optional Codex review.** If the [Codex plugin](https://github.com/openai/codex-plugin-cc)
-> is installed and logged in, the `reviewer` automatically adds a Codex correctness pass and
-> folds its blocking findings into the verdict. Without Codex, the review step runs exactly as
-> before — no setup required either way.
-
-> **Optional Serena navigation.** If the [agent-serena-wrapper](https://github.com/Seretos/agent-serena-wrapper)
-> plugin is installed, the `process-ticket` subagents (`context-extractor`, `planner`,
-> `developer`, `reviewer`) automatically gain access to Serena's symbol-aware navigation and
-> editing tools (`find_symbol`, `find_implementations`, `replace_symbol_body`, etc.) for more
-> precise, token-efficient code exploration and edits. Without `agent-serena-wrapper`, behaviour
-> is unchanged — the unresolved tool names are silently dropped by Claude Code, and the
-> subagents fall back to `Read`/`Glob`/`Grep`/`Edit`/`Write` as before. No hard dependency.
+`plan-critic` and `test-critic` run the critique in separate `claude -p` processes with
+`--setting-sources "" --strict-mcp-config --disable-slash-commands --tools ""`, started in a
+temporary directory outside the repository, against review packages assembled by script from
+verbatim inputs. Findings are merged by deterministic code. `scripts/critic/check-critic-isolation.sh`
+runs as a pre-flight on every gate; run it with `--live` after a CLI upgrade. Ported from the
+`sothis` project's gates.
 
 ## Dependencies
 
-This plugin is inert without two MCP plugins enabled **in the consuming session**:
+This plugin is inert without the agent-project-issues MCP plugin enabled **in the consuming
+session** (ticket/PR/comment/pipeline operations: `get_ticket`, `list_hierarchy`,
+`list_comments`, `add_comment`, `create_pr`, `list_pipeline_runs`, `get_pipeline_run`,
+`get_pipeline_step_log`, …). It needs version **0.2.5 or newer** for the pipeline tools.
 
 ```json
 // .claude/settings.json (or settings.local.json) of the target project
 "enabledPlugins": {
   "agent-autonomous-developer@agent-marketplace": true,
-  "agent-project-issues@agent-marketplace": true,
-  "agent-worktree@agent-marketplace": true
+  "agent-project-issues@agent-marketplace": true
 }
 ```
 
-- **agent-project-issues** — ticket/PR/comment operations (`get_ticket`, `list_tickets`,
-  `list_comments`, `get_pr`, `add_comment`, `create_pr`, …).
-- **agent-worktree** — git-worktree lifecycle (`worktree_create`, `worktree_remove`, …).
-
-These are declared in `.claude-plugin/plugin.json` under `dependencies`, but the marketplace
-registry does not auto-install them today — enabling them is the consumer's responsibility.
+Declared in `.claude-plugin/plugin.json` under `dependencies`, but the marketplace registry does
+not auto-install them today — enabling them is the consumer's responsibility. The project needs
+`pulls.create` in `~/.seretos/projects.yml`; merging is the caller's job (`pulls.merge`).
 
 ## Install
 
@@ -90,32 +79,21 @@ registry does not auto-install them today — enabling them is the consumer's re
 /plugin install agent-autonomous-developer@agent-marketplace
 ```
 
-Then enable the two MCP dependencies as shown above.
+Then enable the MCP dependency as shown above.
 
 ## Usage
 
-From the **main** checkout of a project registered in agent-project-issues:
+Normally you do not invoke this plugin yourself — `agent-ticket-orchestrator`'s `run` skill
+prepares a worktree per package and starts a headless session in it. To drive one package by
+hand, prepare a worktree on a feature branch and run, from inside it:
 
 ```
-orchestrate tickets in <project>            # all open tickets
-orchestrate ticket 7 in <project>           # one ticket
-```
-
-This runs the whole fleet automatically — wave by wave, against one shared integration
-branch — and ends with a single combined draft PR. There is nothing to run by hand in each
-worktree; `process-ticket` is invoked for you, per wave member, in `mode=integration`.
-
-To drive a single worktree yourself instead (bypassing the fleet, e.g. for a one-off manual
-fix on a branch/worktree you prepared outside this flow), run `process-ticket` directly in
-`solo` mode:
-
-```
-process ticket #7 in <project>
+/agent-autonomous-developer:process-ticket package=42 project_id=<project> worktree_path=<abs path> base_branch=main
 ```
 
 > **Scope:** any language — the worker agents **auto-detect** the project's stack and test
 > command (`python -m pytest`, `npm test`, `go test`, `cargo test`, …) from its config files.
-> The project id is **not** auto-detected — pass it explicitly (`… in <project>`).
+> The project id is **not** auto-detected — pass it explicitly.
 
 ## Branches
 
