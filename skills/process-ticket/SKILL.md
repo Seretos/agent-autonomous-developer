@@ -1,532 +1,255 @@
 ---
 name: process-ticket
 disable-model-invocation: true
-description: End-to-end ticket processing inside a prepared worktree on a feature branch — always one ticket at a time, invoked directly or as a sequential wave member of orchestrate-tickets. Enforces mandatory safety gates: planner approval, developer QA/tests, code review, draft PR (no force-push), and traceability comments. Invoke e.g. "process ticket #42". Bypassing it — editing manually on `main`, or inside a worktree without this skill — forfeits all safety guarantees and is not permitted. Worktree/branch are prepared by orchestrate-tickets or the user; this skill never creates them.
+description: Takes ONE work package (a ticket id or an epic id = all its child tickets) from a prepared worktree on a feature branch all the way to a pull request with a GREEN CI pipeline — planner, isolated plan critique, test-first developer, isolated test critique, reviewer (+ optional Codex pass), push, PR, CI gate with self-repair, every step reported as a machine-readable ticket comment. Never asks a human; escalates by writing a `blocked` event and ending. Invoked as "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>". Never creates worktrees or branches, never touches board columns, never selects tickets — the caller owns those.
 ---
 
-# process-ticket — orchestrator
+# process-ticket — one work package → one green PR
 
-You orchestrate the processing of one ticket. You receive a **ticket number**
-(e.g. `#42`) and a **project**, and drive the whole workflow **exclusively
-through subagents** via the `Agent` tool. You do not read the ticket, write the
-plan, edit code, or review yourself — each is a subagent's job. Your job is
-sequencing, threading context between phases, handling the planner's questions,
-posting traceability comments, and the final commit/push/draft-PR.
+You drive one **work package** from a prepared worktree to a pull request whose
+CI pipeline is green. You do it exclusively through subagents and the bundled
+critic runners. You do not read code, write the plan, edit files, or review a
+diff yourself — you sequence, thread context, count rounds, post events, and do
+the git/PR/CI steps at the end.
 
-There is **no cwd→project auto-detection**. The `project_id` is supplied at
-invocation (see preconditions); thread it into every subagent prompt and every
-project-issues call.
+There is nobody to ask. This skill runs in a headless session with
+`AskUserQuestion` disallowed. Every question that cannot be answered from the
+ticket, its comments, its siblings and the code is a **`blocked` event** that
+ends the run — the caller and, last, a human decide. A question is never a
+reason to wait.
 
-### Mode parameter
+## Parameters
 
-This skill takes an optional **`mode`** parameter: `solo` or `integration`.
+| parameter | required | meaning |
+|---|---|---|
+| `package` | yes | a ticket id, or an epic id. An epic means **all** its child tickets (`list_hierarchy`): one branch, one PR, one `Closes #<n>` per child |
+| `project_id` | yes | the project-issues project. Never guessed — if missing, STOP with a `failed` event |
+| `worktree_path` | yes | absolute path of the prepared worktree. Every git call is `git -C <worktree_path> …`; never rely on cwd |
+| `base_branch` | yes | the PR base (usually the default branch) |
+| `attempt` | no | caller's attempt counter, default 1; copied into every event |
 
-- **`solo` (default).** Today's behaviour, unchanged: the branch+worktree
-  guard self-detects the invoking session's cwd, and the Final step commits,
-  pushes (`git push -u origin <branch>`), opens its own draft PR
-  (`create_pr`), and posts its own ticket link-comment. Use this when the
-  user (or a power-user direct invocation) drives a single worktree by hand.
-- **`integration` (orchestrator-invoked).** Runs the **identical** Phase 1-4,
-  and the Final step still does the local commit — but push, `create_pr`,
-  and the ticket link-comment are **skipped**: the **caller** (the
-  `orchestrate-tickets` wave loop) owns those, because it merges several
-  approved members into one shared integration branch and opens a single
-  combined PR at the end of the run. In this mode the caller supplies an
-  explicit **`worktree_path`** (and branch name) so the branch+worktree guard
-  can validate the right directory instead of self-detecting cwd — see
-  Preconditions 2. If `mode=integration` is given with no `worktree_path`,
-  **STOP**.
+## Events — the contract with whoever called you
 
-The commit step runs in **both modes**; push/create_pr/the ticket comment run
-**ONLY in `solo` mode**; the final report-to-caller step runs in both modes
-(adjusted wording — see Final step). The never-on-main invariant (branch
-guard STOP on `main`/`master`) is **not relaxed** in either mode — it is
-still checked, unconditionally, in both.
+State lives in the ticket, not in your return value. After every phase you post
+a comment on the **package ticket** (the epic, if the package is an epic) via
+`add_comment` (the MCP prepends `#ai-generated`; never type it). Each comment
+starts with a machine block, then one short human-readable paragraph:
 
-### Mandatory safety gates (apply to every ticket — SINGLE or MULTI mode)
+```
+<!-- adev:event v1
+event: <name>
+package: <id>
+attempt: <n>
+rounds: plan-critic=<u>/3(<f>f,<i>i) test-critic=<u>/3(<f>f,<i>i) review=<u>/3(<f>f,<i>i) ci=<u>/3(<f>f,<i>i)
+pr: <number or empty>
+ci_run: <id or empty>
+-->
+```
 
-This skill is the required processing path whether the ticket is a single
-SINGLE-mode change or one member of a MULTI-mode multi-ticket fleet. Running a ticket
-manually on `main` — editing files directly, committing inline, or
-force-pushing — bypasses all of the following guarantees and is **not
-permitted**. The same applies if the orchestrator session enters a worktree
-and edits files directly — bypassing this skill in a worker's directory is
-identical in effect. Building or running the project locally from the main
-checkout to *verify* behaviour (without editing) is not a bypass; *editing* is.
+`f` counts rounds that ended with real findings/failures, `i` rounds lost to
+infrastructure (crash, timeout, unparseable output). **Both count toward the
+cap.** Event names, exhaustively:
 
-1. **Planner approval gate.** The planner subagent produces a plan and answers
-   the user's questions before any code is written; the plan is posted as a
-   ticket comment for traceability.
-2. **Developer QA / tests.** The developer runs the project's test suite —
-   the full suite backgrounded via `nohup … > <log> 2>&1 &` plus an in-turn
-   `Monitor` wait, never a plain foreground call subject to the tool's
-   ~10-minute timeout — and must report PASS before the workflow continues;
-   unfixable failures stop the pipeline. A developer or reviewer may instead
-   return a **blocked/in-progress** status report (e.g. it is still waiting
-   on its own backgrounded command and is handing ownership of that wait to
-   this skill) — see Phase 3 below for how that return is handled.
-3. **Code review — reviewer subagent + optional Codex pass.** The reviewer
-   reads the diff and returns `APPROVE` or `CHANGES_REQUESTED`; blocking
-   findings trigger one fix cycle. When the Codex plugin is active, a Codex
-   correctness pass is folded into the verdict automatically.
-4. **Draft PR, no force-push on shared branches.** The feature branch is
-   pushed and the PR opened as a draft; the user finalizes and merges. Direct
-   commits to `main` or force-pushes to shared branches are never performed.
-5. **Traceability comments.** The short-form plan (Phase 2), the test-result
-   status (Phase 3), the review-verdict status (Phase 4), and the PR link are
-   all posted back to the ticket so every change — and how far a run got, even
-   if it never reaches the PR — is auditable.
+`started` · `plan-committed` · `plan-critic-verdict` · `tests-red` ·
+`test-critic-verdict` · `tests-green` · `review-verdict` · `pr-opened` ·
+`ci-red` · `ci-green` · `blocked` · `failed`
 
-## Preconditions / guards (before anything else)
+Terminal events: **`ci-green`** (the only success), **`blocked`** (needs a human
+*decision*: the text carries the question, 2–4 options, a recommendation, and
+what you already checked), **`failed`** (a cap was exhausted or infrastructure
+broke — the text says which rounds were findings and which were infrastructure,
+so the reader can decide instead of just retrying). Post exactly one terminal
+event, then end your turn.
 
-1. **Confirm the ticket number and the project.** The invocation carries a
-   ticket number and a project id (e.g. `process ticket #42 in acme-api`). If
-   the ticket number is missing, ask. If the project id is missing or unclear,
-   resolve it via `find_projects` and confirm with the user — never guess.
-   Capture `project_id` for every downstream call.
-2. **Branch + worktree guard.** This guard is now defense-in-depth; the dispatcher normally ensures the correct skill is loaded before reaching this point. This skill runs **only inside a worktree** on a
-   feature branch — it is the worker half of `orchestrate-tickets` (which runs
-   only on the main checkout). The check target depends on `mode`:
-   - **`solo` mode (default):** checks run against the invoking session's own
-     cwd, unchanged:
-     - `git rev-parse --abbrev-ref HEAD` — if `main`/`master`, STOP.
-     - `git rev-parse --git-dir` vs `git rev-parse --git-common-dir` — if they
-       are EQUAL you're in the main checkout, not a worktree → STOP.
-   - **`integration` mode:** the orchestrator passes an explicit
-     `worktree_path` and branch name. If `mode=integration` but no
-     `worktree_path` was supplied, **STOP** — do not guess a directory. When
-     it is supplied, run the same two checks against that path instead of
-     self-detecting cwd:
-     - `git -C <worktree_path> rev-parse --abbrev-ref HEAD` — if
-       `main`/`master`, STOP. This invariant is **not relaxed** for
-       integration mode — still STOP.
-     - `git -C <worktree_path> rev-parse --git-dir` vs
-       `git -C <worktree_path> rev-parse --git-common-dir` — if EQUAL, STOP.
-   On STOP, tell the user (or the caller, in integration mode) this skill must
-   run inside a prepared feature-branch worktree, which the user (or
-   orchestrate-tickets) owns. Do not create a branch or worktree yourself.
-   Capture the branch name and the default branch (for the PR base).
+## Round caps
 
-## Phase sequence
+| gate | cap | counted by |
+|---|---|---|
+| plan-critic | 3 | this skill |
+| test-critic | 3 | this skill |
+| review | 3 | this skill |
+| CI | 3 | this skill |
 
-Each subagent is a leaf (no further delegation) and cannot refetch context
-it wasn't given. Thread each phase's output into the next phase's prompt.
+Package ceiling: 9 gate rounds in total, CI excluded. An infrastructure-failed
+round counts. When a cap is hit with a `critical` finding, a `CHANGES_REQUESTED`
+verdict, or a red pipeline still open → `failed`, never "proceed anyway".
 
-### Board card movement (ticket #77)
+## Preconditions
 
-As this skill drives each phase, it best-effort moves the ticket's board card
-to reflect pipeline state — the write side of sibling ticket #76's read/
-filter-only "Backlog release gate." Gated on the same board-detection
-mechanism #76 introduced: `list_board_columns(project_id)` (exact/full-token
-column-name match, not substring — mirrors #76's own matching convention). No
-board configured, or no board column literally matching the target phase's
-name, means the specific write is skipped silently — same backward-compat
-semantics as #76's read-side gate.
+1. All four required parameters present; otherwise post `failed` (if you at
+   least have `project_id` + `package`) and stop.
+2. **Worktree guard.** `git -C <worktree_path> rev-parse --abbrev-ref HEAD` is
+   not `main`/`master`; `git -C <worktree_path> rev-parse --git-dir` ≠
+   `--git-common-dir` (otherwise this is a main checkout, not a worktree).
+   Violation → `failed`.
+3. **MCP presence.** `list_board_columns` is not needed here. Call
+   `list_projects(fields="light")`; if the project-issues tools are missing, you
+   cannot even post an event — end with a plain-text failure naming
+   `/reload-plugins`.
+4. Create `<rundir>` = `<worktree_path>/.adev/<package>-<attempt>/` and ensure
+   `.adev/` is in the target repo's `.gitignore` (idempotent one-line append,
+   done **before** the first commit so the append lands in this package's own
+   commit).
+5. Post `started`.
 
-**Phase → column mapping:**
-- **Phase 1** (context-extractor + planner begin) → move the card to
-  `Doing`: `update_ticket(project_id=<project>, ticket_id=<#>,
-  custom_fields={"Status": "Doing"})`.
-- **Phase 4** (reviewer invoked) → move the card to `Review`:
-  `update_ticket(project_id=<project>, ticket_id=<#>,
-  custom_fields={"Status": "Review"})`.
-- **Fix loop** (`CHANGES_REQUESTED` re-dispatch) → move the card back to
-  `Doing` before the developer re-dispatch, then to `Review` again once the
-  re-review runs.
+## Phase 1 — context-extractor (read-only)
 
-**Best-effort, never blocking.** This is intentionally looser than #76's
-read-side STOP-on-ambiguous-error behavior — state the contrast explicitly so
-it is not "hardened" into a blocker later. ANY failure here — a
-`list_board_columns` detection error, no target column matching, or a failed
-`update_ticket` call — degrades to a logged warning and the pipeline
-continues; a board-write failure must never STOP or block the ticket's real
-work.
+Dispatch `context-extractor` with `project_id`, `package`. It returns two
+things: a distilled **`context_summary`** and a **verbatim transcript** of the
+package (title, body, every comment, and — for an epic — every child ticket's
+title, body and comments). Write the transcript to `<rundir>/spec.md` with the
+Write tool, byte-for-byte. The spec is what the plan critics judge against;
+nothing may paraphrase it on the way.
 
-**Provider-agnostic.** This mapping relies solely on `list_board_columns` and
-`update_ticket`, which already normalize the underlying board/column model
-for the connected provider — never hardcode provider-specific column
-semantics here.
+If the extractor reports the MCP unavailable, end as in precondition 3.
 
-**Review is terminal automated state — no automated `Done` write anywhere.**
-Phase 4's move to `Review` is the LAST board write this skill ever makes for
-a ticket, in both `solo` and `integration` mode. The Final step below adds no
-completion/terminal board write in either mode — deliberate: only a human (or
-the real PR-merge event) later transitions the card to `Done`.
+## Phase 2 — planner → plan-critic (question-free)
 
-### Phase 1 — context-extractor (read-only)
-Spawn `context-extractor`. Pass: the `project_id` and the ticket number. It
-returns a distilled **context_summary** (problem, acceptance criteria,
-constraints from comments, related tickets/PRs, candidate affected modules).
-Capture it verbatim — downstream agents never see the raw ticket.
+Dispatch `planner` synchronously and unnamed with `context_summary` and
+`worktree_path`. It ends with `STATUS: PLAN_FINAL` or `STATUS: NEEDS_INPUT`.
 
-**Board card movement.** At the start of this phase (context-extractor +
-planner begin), gated on `list_board_columns` per the Board card movement
-subsection above, move the ticket's board card to `Doing` via `update_ticket`.
+- `PLAN_FINAL` → write the plan to `<rundir>/plan.md`; post `plan-committed`
+  with the short-form plan (goal, approach bullets, affected files).
+- `NEEDS_INPUT` → **you try to answer first.** Read the transcript you already
+  hold (`spec.md`): the epic body, sibling tickets, prior comments, the code
+  references the planner cites. If the answer is there, re-dispatch the planner
+  (fresh, unnamed) with the previous plan draft verbatim plus your answer keyed
+  to the question number and the instruction to fold it in, not start over. Cap
+  two such rounds. If the question is a genuine decision the context does not
+  settle → post `blocked` (question, options, recommendation, what you checked
+  and why it was not enough) and end.
 
-If the context-extractor is blocked by the MCP-availability hook (i.e. the
-`agent-project-issues` MCP was not loaded), `process-ticket` will receive no
-`context_summary`. In that case, surface the hook's failure reason to the user
-and stop — do not attempt Phase 2 with an empty or missing summary.
+**Plan critique.** Dispatch `plan-critic` (fresh, unnamed) with `spec_file`,
+`plan_file`, a one-paragraph scope statement (what this package covers, round
+number), `output_dir=<rundir>/plan-critic-<round>/`. It runs three isolated
+`claude -p` critics and a mechanical merge and returns `GATE_RESULT: OK` with
+severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
 
-### Phase 2 — planner (read-only, question-loop)
-Spawn the planner **synchronously and unnamed**:
-`Agent(subagent_type="planner", prompt=…, run_in_background: false)`. Pass
-the `context_summary` and the repo cwd.
+- `INFRA_FAILURE` → the round counts as `i`; re-dispatch. Three infra rounds →
+  `failed`.
+- Any `critical` → the round counts as `f`; re-dispatch the **planner** (fresh)
+  with the plan verbatim plus the critical findings, then critique again.
+- `major` → your call: route it to the planner if it concerns the package's
+  scope, else note it in the plan comment as accepted with one line of reason.
+- `minor` → proceed.
+- Findings of kind `unverified-assumption` and the `unverifiable_…` list are
+  **not** defects. The critics have no repository access; the planner grounded
+  the plan in code and you do not second-guess that with a critic that could not
+  see it.
 
-Do not pass a `name`. Naming this call switches it into background/mailbox
-delivery regardless of `run_in_background`, and the planner has no
-`SendMessage` tool to push a reply back once it's in that mode — the
-orchestrator then only ever receives `idle_notification` pings and Phase 2
-deadlocks permanently. Always use a plain, unnamed, foreground call.
+Post `plan-critic-verdict` after every round (counts + one line per critical/
+major). A critical still open after round 3 → `failed`.
 
-The planner ends every reply with a status line as its LAST line:
-- `STATUS: PLAN_FINAL` — no open questions.
-- `STATUS: NEEDS_INPUT` — reply contains a numbered `## Open Questions`
-  section (each question 2-4 options, one marked *(recommended)*).
+## Phase 3 — developer, test-first, with the test critique between RED and GREEN
 
-Loop:
-1. Read the status line of the synchronous reply.
-2. `PLAN_FINAL` → capture full plan text as `plan`, exit loop.
-3. `NEEDS_INPUT` → present each open question to the user via
-   **AskUserQuestion** (options from the planner, recommended flagged).
-   Collect answers, then issue a **fresh synchronous planner call** (same
-   unnamed, `run_in_background: false` pattern as above) whose prompt
-   inlines: the `context_summary`, the repo cwd, the planner's full previous
-   plan draft **verbatim**, and the user's answers keyed to question numbers
-   — with the explicit instruction to fold the answers into that same plan
-   and revise, not start over. Back to step 1.
+Two developer dispatches, both fresh and unnamed.
 
-Each round is a brand-new subagent process with no memory of the previous
-one — continuity comes from the orchestrator re-inlining the full plan draft
-into every follow-up prompt, not from any runtime session. If `NEEDS_INPUT`
-recurs more than ~4 times, surface it and ask whether to proceed with the
-recommended defaults.
+**3a — tests (`phase=tests`).** Dispatch `developer` with `plan`,
+`context_summary`, `worktree_path`, `phase=tests`. It writes the driving tests
+for every behavioural requirement, confirms each fails for the expected reason
+(valid RED), and returns the RED evidence plus the list of test files. Post
+`tests-red`. Then write the verbatim test diff to `<rundir>/tests.diff`
+(`git -C <worktree_path> diff -- <test files>` plus `git diff --no-index
+/dev/null <new file>` for untracked ones) and dispatch `test-critic` (fresh,
+unnamed) with `plan_file`, `tests_file=<rundir>/tests.diff`,
+`output_dir=<rundir>/test-critic-<round>/`.
 
-This same class of bug used to surface one level up too: when
-`orchestrate-tickets` drove several wave members in parallel, each member was
-necessarily a background/named `Agent` spawn (the only mechanism that runs
-concurrently), and that spawn's mailbox delivery could just as silently drop
-a worker's final report-back. Ticket #88 fixed that one at the root instead
-of adding a fallback for it: `skills/orchestrate-tickets/SKILL.md`'s Phase C
-now drives wave members **sequentially**, one fresh synchronous unnamed spawn
-at a time — the same pattern this file already uses for Phase 2-4 — so there
-is never more than one open dispatch to lose track of, and no
-background/named spawn for a wave member's report to ever drop out of.
+- `INFRA_FAILURE` → `i`, re-dispatch; three → `failed`.
+- `critical` → `f`; re-dispatch the developer `phase=tests` with the findings
+  (it rewrites only the assertions named), critique again. Three → `failed`.
+- `major`/`minor` → forward to 3b as notes; proceed.
 
-The same class of bug also recurs a third time, *within this pipeline*, at
-the Phase 3/4 fix loop: re-dispatching the developer or re-running the
-reviewer by resuming the same, already-spawned agent via `SendMessage` is
-inherently background/mailbox delivery too, regardless of how the original
-spawn was made — see Phase 4's fix-loop bullet below. It is resolved the same
-way as Phase 2: every fix-loop re-dispatch is a fresh, synchronous, unnamed
-`Agent()` call, never a `SendMessage` resume of the prior spawn. Keep this in
-mind before reintroducing a fourth instance of the bug elsewhere in the
-pipeline.
+Post `test-critic-verdict` per round. Non-behavioural packages (docs, config,
+pure refactor) have no driving test: the developer says so in 3a, 3b keeps the
+suite green, and the test critique is skipped with one line in `tests-red`'s
+text saying why.
 
-**After PLAN_FINAL — post short plan comment.** Condense `plan` to a
-short-form summary (goal + approach bullets + affected files; NOT every
-detail) and post it to the ticket via
-`add_comment(project_id=<project>, ticket_id=<#>, body=…)`.
-Do not type `#ai-generated` — the MCP prepends it.
+**3b — implementation (`phase=implement`).** Dispatch `developer` with `plan`,
+`context_summary`, `worktree_path`, `phase=implement`, the test-critic notes.
+It implements to GREEN and runs the **full suite** locally, backgrounded with an
+in-turn `Monitor` wait. It returns the change report with GREEN evidence and the
+full-suite result.
 
-### Phase 3 — developer (Edit / Write / Bash)
-Spawn the developer **synchronously and unnamed**, mirroring Phase 2:
-`Agent(subagent_type="developer", prompt=…, run_in_background: false)`. Pass
-the full `plan` and the `context_summary`. It implements on the **current
-branch/worktree**, edits/writes files, and runs the project's test suite (the
-test command is auto-detected from the stack and named in the plan; the full
-suite runs backgrounded via `nohup … > <log> 2>&1 &` plus an in-turn
-`Monitor` wait, per `agents/developer.md`'s Hard Rules). It returns a
-**change_report** (files touched, summary, test result PASS/FAIL with
-failing test names). If it reports unfixable failing tests, STOP and report
-to the user — do not push a broken branch.
+- `PASS` → post `tests-green` (text: "local pre-filter only — CI decides").
+- `FAIL` with a named blocker the developer could not resolve → one fresh
+  re-dispatch with the failure tail; still `FAIL` → `failed` (infra or findings,
+  say which).
+- A report without PASS/FAIL **and** without an explicit `blocked/in-progress`
+  status is incomplete: one fresh re-dispatch noting that the previous attempt
+  returned without running the suite; twice → `failed`.
+- `blocked/in-progress` → the developer handed you a wait it could not finish
+  inside its turn. Re-dispatch fresh with the log path; never `SendMessage`.
 
-**Blocked/in-progress report.** A `blocked`/`in-progress` return from the
-developer (or, in Phase 4, the reviewer) is a legitimate result, not an
-error: it means the sub-agent is still waiting on its own backgrounded
-command and is handing ownership of that wait back to this skill instead of
-ending its turn. Treat it as such — **surface it to the user**, and do
-**not** treat it as a completed phase and do **not** proceed to commit on
-the strength of it. The orchestrator then decides whether to re-poll (a
-fresh, synchronous, unnamed re-dispatch, never a `SendMessage` resume — see
-the deadlock note above) or stop and report the blocker.
+## Phase 4 — reviewer
 
-**Incomplete report — one retry, then STOP (ticket #88).** A live incident
-found a developer ending its turn without ever starting its mandated test
-run, returning a change_report with no PASS/FAIL result and no explicit
-`blocked`/`in-progress` status either — silently incomplete, not merely slow.
-Such a report does **not** count as a completed Phase 3: it is neither a
-valid PASS/FAIL result (Phase sequence above) nor a legitimate
-blocked/in-progress hand-off (the bullet immediately above). On this specific
-shape — missing PASS/FAIL **and** missing an explicit blocked/in-progress
-status — issue exactly **one** fresh, synchronous, unnamed re-dispatch (same
-`Agent(subagent_type="developer", ..., run_in_background: false)` pattern,
-same `plan`/`context_summary`, plus a note that the previous attempt returned
-without running the test suite). If the retry also comes back incomplete in
-the same way, **STOP** and report the incomplete-report blocker to the user
-— do not silently retry a second time and do not proceed to Phase 4 on an
-incomplete report.
+Dispatch `reviewer` (fresh, unnamed) with `plan`, `change_report`,
+`worktree_path`, `base_branch`. It returns `VERDICT: APPROVE` or
+`VERDICT: CHANGES_REQUESTED` with `[blocking]`/`[nit]` findings (Codex pass
+folded in when available). Post `review-verdict`.
 
-**After the developer reports PASS or FAIL — post short status comment.**
-Post a brief status comment to the ticket via
-`add_comment(project_id=<project>, ticket_id=<#>, body=…)`: the test result
-(`PASS`/`FAIL`) and a one-line summary of what changed. Do not type
-`#ai-generated` — the MCP prepends it. This mirrors Phase 2's plan comment
-(see "After PLAN_FINAL — post short plan comment" above) so the ticket
-carries a durable, human-readable trail of how far a run got even if the
-session driving this skill dies before Phase 4 completes.
+- `CHANGES_REQUESTED` → `f`; fresh developer dispatch (`phase=implement`, plan +
+  findings appended, prior change report inlined), then a fresh **full**
+  re-review — never narrowed to "were the findings fixed". Three rounds with
+  blocking findings still open → `failed`.
+- `APPROVE` → Phase 5.
 
-Do not pass a `name`. Naming this call switches it into background/mailbox
-delivery regardless of `run_in_background`, and the developer has no
-`SendMessage` tool to push a reply back once it's in that mode — the
-orchestrator then only ever receives `idle_notification` pings and Phase 3
-deadlocks permanently. Always use a plain, unnamed, foreground call. This
-applies to the initial spawn here **and** to every fix-loop re-dispatch in
-Phase 4 below — see that section for why resuming this same spawn via
-`SendMessage` is not a substitute.
+## Phase 5 — commit, push, PR
 
-### Phase 4 — reviewer (read-only)
-Spawn the reviewer **synchronously and unnamed**, mirroring Phase 2 and
-Phase 3: `Agent(subagent_type="reviewer", prompt=…, run_in_background:
-false)`. Pass the final `plan` and the developer's `change_report`; instruct
-it to review the working-tree diff (`git diff` / `git diff --staged`). It
-returns `VERDICT: APPROVE` or `VERDICT: CHANGES_REQUESTED` plus
-severity-tagged findings (`[blocking]` / `[nit]`).
-(If the Codex plugin is active, the reviewer adds a Codex correctness pass on
-its own — the verdict format and this fix loop are unchanged.)
+1. `.gitignore` guarantee already done in preconditions; verify `.adev/` is
+   ignored (`git -C <worktree_path> check-ignore .adev`).
+2. `git -C <worktree_path> add -A`, then commit. Single-line: `-m "<summary>
+   (#<ticket>)"`. Multi-line: Write the message to `<rundir>/commit-msg.txt`,
+   `git -C <worktree_path> commit -F <rundir>/commit-msg.txt`. Never a
+   PowerShell here-string through the Bash tool.
+3. `git -C <worktree_path> push -u origin <branch>`.
+4. `create_pr(project_id, title=<from plan>, head=<branch>, base=<base_branch>,
+   draft=False, body=<summary + plan recap + review verdict + one
+   "Closes #<n>" line per ticket in the package>)`. Not a draft: the caller
+   merges on `ci-green`; a human never has to finalize it.
+5. Post `pr-opened` with `pr:` filled.
 
-Do not pass a `name` to this spawn either, for the same reason as Phase 3:
-naming it switches delivery to background/mailbox regardless of
-`run_in_background`, and the reviewer has no `SendMessage` tool to push a
-reply back once it's in that mode.
+## Phase 6 — CI gate (the only verdict)
 
-**Board card movement.** When the reviewer is invoked for this phase, gated
-on `list_board_columns` per the Board card movement subsection above, move
-the ticket's board card to `Review` via `update_ticket`.
+A local PASS was a pre-filter. The pipeline decides.
 
-**After the reviewer's verdict — post short status comment.** Post a brief
-status comment to the ticket via `add_comment(project_id=<project>,
-ticket_id=<#>, body=…)`: the review verdict (`APPROVE`/`CHANGES_REQUESTED`)
-and, if `CHANGES_REQUESTED`, a one-line summary of the blocking findings.
-Do not type `#ai-generated` — the MCP prepends it. Mirrors Phase 2's plan
-comment and Phase 3's test-result comment above, so the ticket's comment
-trail covers plan → test result → review verdict. Post this once per review
-pass, including the re-review after a fix cycle (see below).
-
-- `CHANGES_REQUESTED` with blocking findings → re-dispatch the developer and
-  reviewer, **each as a brand-new, fresh, synchronous, unnamed `Agent(...)`
-  call** — `Agent(subagent_type="developer", prompt=…, run_in_background:
-  false)` with the findings appended to the plan, then, once it reports,
-  `Agent(subagent_type="reviewer", prompt=…, run_in_background: false)` for a
-  **full review** (correctness, test coverage, consistency, and — if the Codex
-  plugin is active — the Codex correctness pass). Do not narrow the re-review
-  prompt to only checking that prior blocking findings are resolved. As with
-  Phase 2's question-loop, each round is a brand-new subagent process with no
-  memory of the previous one — re-inline the plan (plus the findings) and the
-  `change_report` into each fresh prompt for continuity.
-  This re-dispatch is **never a `SendMessage` resume** of the prior developer
-  or reviewer spawn: resuming an existing agent via `SendMessage` is
-  *inherently* background/mailbox delivery regardless of how the original
-  spawn was made, silently reintroducing the same idle-without-report gap on
-  every fix-cycle iteration. Always issue a fresh foreground `Agent()` call
-  instead. After one fix cycle, proceed and report any remaining
-  non-blocking findings.
-  **Board card movement:** before the developer re-dispatch, gated the same
-  way, move the card back to `Doing`; then, once this re-review runs, move it
-  to `Review` again.
-- `APPROVE` → proceed to the final step.
-
-## Final step — commit, push, open draft PR, comment (orchestrator does this)
-
-The orchestrator owns this (not the developer): it depends on the whole
-pipeline's outcome (final plan + review verdict) and the branch/ticket the
-orchestrator holds, and it keeps the developer's tool scope minimal.
-
-**Mode-gated.** Step 1 (the target-repo `.gitignore` guarantee) and Step 2
-(commit) both run in **both** `solo` and `integration` mode — Step 1 runs
-**first**, so its append (when needed) is folded into Step 2's `git add -A`
-and becomes part of *this run's own commit*, correctly attributed. Steps 3-5
-(push, create_pr, ticket comment) run **ONLY in `solo` mode** — in
-`integration` mode the **caller** (the `orchestrate-tickets` wave loop) owns
-the push, the merge into the shared integration branch, and the single
-end-of-run combined PR + comments, so this skill skips them here. Step 6
-(write the result-marker file) runs **unconditionally in both modes**. Step 7
-(report) also runs in both modes, with adjusted wording for integration mode.
-
-**No completion/terminal board write (either mode).** None of the steps below
-write a completion/terminal board column in **`solo`** or **`integration`**
-mode. Phase 4's move to `Review` (see the Board card movement subsection
-above) is the last board write this skill ever makes for a ticket — this
-Final step never moves the card to `Done` or any other terminal column.
-
-1. **Target-repo `.gitignore` guarantee** (both modes — runs **before** the
-   commit below, so any append lands inside this ticket's own commit rather
-   than sitting uncommitted for a later, unrelated ticket to sweep up via its
-   own `git add -A`). `process-ticket` always runs against an arbitrary
-   **target project repo** supplied via `project_id`/`worktree_path`, never
-   "this plugin repo itself" — see AGENTS.md's "Why the project id is always
-   a parameter". This plugin's own `.gitignore` entry for
-   `.process-ticket-result.json` therefore has **zero effect** on real usage:
-   it only helps when testing this plugin against its own repo, and is not
-   representative of how process-ticket is actually invoked. To make the
-   marker actually safe in an arbitrary target repo, check the
-   **target repo's own `.gitignore`**, not this plugin's:
-   - Read `<target repo root>/.gitignore` (repo root for `solo` mode,
-     `<worktree_path>` for `integration` mode) — treat a missing file as
-     empty.
-   - If it does not already contain the exact line
-     `.process-ticket-result.json`, append that line as a new final line
-     (creating the file if it doesn't exist yet). This is a one-line,
-     idempotent, safe append: check first, and never touch, reorder, or
-     rewrite any other line already in that file.
-   - Because this check/append runs **before** step 2's `git add -A`, when an
-     append is needed it is staged and committed as part of *this run's own*
-     commit — properly attributed to the ticket that first needed it — rather
-     than left as an uncommitted stray change for a later, unrelated ticket's
-     `git add -A` to silently absorb.
-   - **Persistence note (both modes).** Once the line is present, every
-     subsequent `process-ticket` run against this same worktree/repo finds it
-     already there and appends nothing further — by the time a later run
-     reaches its own step 1, `.gitignore` already excludes the marker, so that
-     later run's step 2 `git add -A` correctly skips the still-untracked,
-     now-ignored marker file left over from this run. In `solo` mode no
-     orchestrator ever reads the marker (only the `integration`-mode wave
-     loop's fallback does), so no cleanup step is needed here.
-2. **Commit** (raw git — no MCP for a local commit; both modes). The commit
-   target depends on `mode`, mirroring the branch/worktree guard in
-   Preconditions 2:
-   - **`solo` mode:** commit against the invoking session's own cwd, unchanged
-     — `git add -A`, then:
-     - **Single-line message** (summary only, no body or trailers):
-       `git commit -m "<concise summary> (#<ticket>)"`.
-     - **Multi-line message** (body text, Co-Authored-By trailer, etc.): use
-       the Write tool to write the full message to `/tmp/commit-msg.txt`, then
-       run `git commit -F /tmp/commit-msg.txt`.
-   - **`integration` mode:** the orchestrator's session cwd may be the main
-     checkout, not the worktree, by the time this step runs — do **not** rely
-     on cwd. Target the supplied `worktree_path` explicitly on every git call:
-     - `git -C <worktree_path> add -A`, then:
-     - **Single-line message:**
-       `git -C <worktree_path> commit -m "<concise summary> (#<ticket>)"`.
-     - **Multi-line message:** use the Write tool to write the full message to
-       `/tmp/commit-msg.txt`, then run
-       `git -C <worktree_path> commit -F /tmp/commit-msg.txt`.
-   - In both modes, for a multi-line message, writing via the Write tool
-     sidesteps shell quoting entirely — no heredoc, no escaping. Never compose
-     a multi-line commit message as a PowerShell here-string (`@'...'@`) and
-     run it through the Bash tool. The Bash tool executes real `bash`, not
-     PowerShell — `@'...'@` delimiters have no meaning in bash and pass `@`
-     literally as text, corrupting the commit subject line.
-3. **Push** the feature branch (**`solo` mode only**):
-   `git push -u origin <branch>`.
-4. **Open the PR as a draft via MCP** (**`solo` mode only**; MCP over CLI per
-   the priority law):
-   `create_pr(project_id=<project>, title=<from plan>,
-   head=<branch>, base=<default branch>, draft=True,
-   body=<summary + "Closes #<ticket>" + plan recap + review verdict>)`.
-   Never type `#ai-generated` — the MCP prepends it.
-   (`Closes #<n>` auto-links on GitHub/GitLab; if the project's provider is
-   Azure DevOps or Jira this keyword differs — adjust if you ever target those.)
-5. **Comment on the ticket** linking the PR (**`solo` mode only**):
-   `add_comment(project_id=<project>, ticket_id=<#>,
-   body="Draft PR opened: <PR URL>. <one-line status>")`.
-6. **Write a result-marker file** (raw `Write` tool — **unconditional, in
-   both modes**, not mode-gated). Ticket #88 removed the report-loss
-   fallback that used to read this file for a background/named
-   wave-member spawn (see AGENTS.md's "Sequential, unnamed wave-member
-   dispatch replaces the report-loss fallback (ticket #88)" note) —
-   `skills/orchestrate-tickets/SKILL.md`'s Phase C now dispatches wave
-   members sequentially, one fresh synchronous unnamed spawn at a time, and
-   reads each member's ending state directly off its own synchronous report,
-   so nothing reads this marker file any more. The write itself is
-   unaffected by that removal: it still happens unconditionally, every run,
-   as a harmless diagnostic artifact for manual inspection. Write it **after**
-   the commit (step 2) — `git add -A` has already run by then, so the marker
-   is never staged into the ticket's own diff. By this point step 1 has
-   already ensured the target repo's `.gitignore` contains the marker's
-   line, so this newly-written marker file is untracked-and-ignored from the
-   moment it's written, not merely untracked:
-   - **`solo` mode:** write to `<repo root, resolved via `git rev-parse
-     --show-toplevel` from the invoking session's own cwd>/.process-ticket-result.json`.
-   - **`integration` mode:** write to `<worktree_path>/.process-ticket-result.json`
-     (the caller-supplied path, same as the commit step). Unconditional, both
-     modes.
-   - **Contents (JSON object):**
-     ```json
-     {
-       "ticket": <ticket number>,
-       "branch": "<branch>",
-       "verdict": "APPROVE",
-       "test": "PASS",
-       "mode": "integration"
-     }
-     ```
-     `verdict` is one of `APPROVE` / `CHANGES_REQUESTED` (the reviewer's final
-     verdict); `test` is one of `PASS` / `FAIL` (the developer's final test
-     result); `mode` is `solo` or `integration`, whichever this run used.
-     `ticket` is this run's own ticket number, kept for diagnostic value in
-     case a worktree left intact after a RED wave (no auto-revert) carries a
-     stale marker from an earlier attempt — nothing in
-     `skills/orchestrate-tickets/SKILL.md` reads this field any more (ticket
-     #88 removed the reader; see AGENTS.md's note referenced above). This
-     write itself is unconditional in both modes — only the `mode` field's
-     *value* varies.
-   - **Persistence note (both modes).** This file is expected to persist in
-     the worktree afterward as a harmless untracked, gitignored artifact (see
-     step 1's guarantee, not this plugin's own `.gitignore`) — nothing in
-     either mode reads it any more (see the note above), so no cleanup step
-     is needed here.
-7. **Report back:**
-   - **`solo` mode:** report to the user — PR URL, branch, review verdict,
-     test result, and `final: true`.
-   - **`integration` mode:** report to the caller (the orchestrator) instead
-     of the user — branch, review verdict, test result, `final: true`, and
-     the local commit is ready for the caller to merge. No PR URL exists yet
-     at this point; the caller opens the single combined PR at the end of
-     the run.
-   - **`final: true`** is an explicit terminal-marker field carried by the
-     report message itself — distinct from the `.process-ticket-result.json`
-     marker *file* (step 6 above), which already carries
-     ticket/branch/verdict/test/mode. It marks this report as the
-     definitive, complete terminal signal for this run. Required in **both**
-     modes for a single uniform report contract, even though nothing
-     currently reads it programmatically: in `solo` mode no orchestrator
-     ever reads it, and in `integration` mode `orchestrate-tickets`' Phase C
-     gets each wave member's real, complete ending state directly from that
-     member's own synchronous report and decides merge eligibility purely
-     from `VERDICT: APPROVE`/`CHANGES_REQUESTED` and test `PASS`/`FAIL` —
-     it does not key off `final: true` at all. Ticket #88 removed the
-     separate git-state/marker-file tracking mechanism this field used to
-     be keyed on (see AGENTS.md's note referenced above); the field is kept
-     here purely as an explicit, human-readable terminal signal in the
-     report contract.
+1. `head = git -C <worktree_path> rev-parse HEAD`.
+2. Poll **in this turn**: `list_pipeline_runs(project_id, commit_sha=head,
+   limit=20)`; if no run exists yet or any run has `status != "completed"`,
+   `Bash("sleep 60")` and poll again. Cap 45 minutes per round; a cap hit is an
+   `i` round. Never poll from inside a subagent — a subagent's background
+   processes die with its turn; yours do not.
+3. All runs `conclusion == "success"` → post **`ci-green`** with `ci_run:` and
+   end. Done.
+4. Any failure → post `ci-red` (`f`), then for the failing run:
+   `get_pipeline_run(project_id, run_id, include_failure_excerpt=True)` and
+   `get_pipeline_step_log(project_id, run_id, job_id, mode="around_failure")`.
+   Classify:
+   - a **finding** (test failure, lint, build error caused by the diff) → fresh
+     developer dispatch (`phase=implement`, plan + the failing job excerpt), then
+     a fresh full review (Phase 4, its own counter), then commit/push/poll again;
+   - **infrastructure** (runner lost, timeout unrelated to the diff, workflow
+     misconfiguration not introduced by this package) → `i`; re-run by pushing
+     an empty commit (`git -C <worktree_path> commit --allow-empty -m "ci:
+     retry (#<ticket>)"`) and poll again.
+5. Three CI rounds without green → `failed`. The text must separate `f` from
+   `i` rounds and quote the last failing job.
 
 ## Hard rules
-- **Delegate everything.** Never call `get_ticket`, `Edit`/`Write`, or review
-  a diff yourself. Your tools: `Agent`/`SendMessage`, `AskUserQuestion`, the
-  branch-guard git reads, the final commit/push git calls, and the
-  project-issues write calls (`add_comment`, `create_pr`, `update_ticket`,
-  `list_board_columns` — the last two for the best-effort board card
-  movement writes, see the Board card movement subsection above).
-- **Project id is a parameter.** Thread the supplied `project_id` into every
-  subagent prompt and MCP call — never hardcode a project.
-- **Subagents can't refetch.** Inline the summary/plan into each prompt.
-- **Never run on main.** Enforce the branch guard up front.
-- **Never create the worktree/branch.** The user owns that.
-- **Push is authorized for this workflow only** (user-confirmed). PR opens as
-  a **draft** so the user finalizes it.
-- **Multi-line commit messages must use `git commit -F <tempfile>` — never
-  `@'...'@` via the Bash tool.** The Bash tool runs real `bash`, not
-  PowerShell. A PowerShell here-string (`@'...'@`) passed to the Bash tool
-  produces `@` as the commit subject, corrupting the message. For any message
-  with a body or trailers, use the Write tool to write it to a well-known temp
-  path (e.g. `/tmp/commit-msg.txt`) and commit with `git commit -F
-  <tempfile>`. The single-line `-m` form remains correct for summary-only
-  messages.
-- **`integration` mode's commit must target `-C <worktree_path>` explicitly —
-  never a bare `git add`/`git commit` relying on cwd.** The orchestrator's
-  session cwd is not pinned to the worktree the way a `solo`-mode invoking
-  session's cwd is, so a bare `git commit` in integration mode risks landing
-  in the wrong repository/branch. This mirrors the branch/worktree guard's own
-  `-C <worktree_path>` fix in Preconditions 2 — same assumption, same fix,
-  applied at the point where files actually get committed.
+
+- **Delegate everything.** Your own tools: `Agent` (always unnamed, always
+  `run_in_background: false`, always a fresh call — never `name`, never
+  `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git
+  and `sleep` calls named above, and these MCP calls: `list_projects`,
+  `add_comment`, `create_pr`, `list_pipeline_runs`, `get_pipeline_run`,
+  `get_pipeline_step_log`. Nothing else.
+- **No human in the loop.** `AskUserQuestion` does not exist for you. A
+  question is a `blocked` event. A retry is never a question.
+- **Every return trip is a fresh dispatch with everything inlined.** Subagents
+  cannot refetch; re-inline plan, findings, change report each time.
+- **Never on main, never create the branch/worktree, never `-C`-less git.**
+- **Never move a board column.** The caller owns the board.
+- **One terminal event, then stop.** Do not keep working after `ci-green`,
+  `blocked`, or `failed`.
+- **No "not included" lists.** A package is done when all of it is done. If
+  part of it cannot be done, that is `blocked` or `failed`, not a PR with a
+  caveat.
