@@ -1,7 +1,7 @@
 ---
 name: process-ticket
 disable-model-invocation: true
-description: End-to-end ticket processing inside a prepared worktree on a feature branch — serial or parallel, one ticket at a time. Enforces mandatory safety gates: planner approval, developer QA/tests, code review (reviewer + optional Codex pass), draft PR (no force-push on shared branches), and traceability comments. Invoke e.g. "process ticket #42". Bypassing it — editing manually on `main`, or editing directly inside a worktree without this skill — forfeits all safety guarantees and is not permitted. Worktree/branch are prepared by orchestrate-tickets or the user; this skill never creates them.
+description: End-to-end ticket processing inside a prepared worktree on a feature branch — always one ticket at a time, invoked directly or as a sequential wave member of orchestrate-tickets. Enforces mandatory safety gates: planner approval, developer QA/tests, code review, draft PR (no force-push), and traceability comments. Invoke e.g. "process ticket #42". Bypassing it — editing manually on `main`, or inside a worktree without this skill — forfeits all safety guarantees and is not permitted. Worktree/branch are prepared by orchestrate-tickets or the user; this skill never creates them.
 ---
 
 # process-ticket — orchestrator
@@ -43,10 +43,10 @@ The commit step runs in **both modes**; push/create_pr/the ticket comment run
 guard STOP on `main`/`master`) is **not relaxed** in either mode — it is
 still checked, unconditionally, in both.
 
-### Mandatory safety gates (apply to every ticket — serial or parallel)
+### Mandatory safety gates (apply to every ticket — SINGLE or MULTI mode)
 
 This skill is the required processing path whether the ticket is a single
-serial/foundational change or one of a parallel fleet. Running a ticket
+SINGLE-mode change or one member of a MULTI-mode multi-ticket fleet. Running a ticket
 manually on `main` — editing files directly, committing inline, or
 force-pushing — bypasses all of the following guarantees and is **not
 permitted**. The same applies if the orchestrator session enters a worktree
@@ -72,8 +72,10 @@ checkout to *verify* behaviour (without editing) is not a bypass; *editing* is.
 4. **Draft PR, no force-push on shared branches.** The feature branch is
    pushed and the PR opened as a draft; the user finalizes and merges. Direct
    commits to `main` or force-pushes to shared branches are never performed.
-5. **Traceability comments.** The short-form plan and the PR link are posted
-   back to the ticket so every change is auditable.
+5. **Traceability comments.** The short-form plan (Phase 2), the test-result
+   status (Phase 3), the review-verdict status (Phase 4), and the PR link are
+   all posted back to the ticket so every change — and how far a run got, even
+   if it never reaches the PR — is auditable.
 
 ## Preconditions / guards (before anything else)
 
@@ -200,15 +202,16 @@ into every follow-up prompt, not from any runtime session. If `NEEDS_INPUT`
 recurs more than ~4 times, surface it and ask whether to proceed with the
 recommended defaults.
 
-This same class of bug can also surface one level up: when `orchestrate-tickets`
-drives several wave members in parallel, each member is necessarily a
-background/named `Agent` spawn (required to run concurrently), and that
-spawn's mailbox delivery can just as silently drop a worker's final
-report-back. See AGENTS.md's **B6** note and
-`skills/orchestrate-tickets/SKILL.md`'s Phase C idle-triggered fallback for
-how that worker-level analogue is handled — unlike here, the fix there is a
-fallback, not elimination of named spawns, because Phase C's members must run
-in parallel.
+This same class of bug used to surface one level up too: when
+`orchestrate-tickets` drove several wave members in parallel, each member was
+necessarily a background/named `Agent` spawn (the only mechanism that runs
+concurrently), and that spawn's mailbox delivery could just as silently drop
+a worker's final report-back. Ticket #88 fixed that one at the root instead
+of adding a fallback for it: `skills/orchestrate-tickets/SKILL.md`'s Phase C
+now drives wave members **sequentially**, one fresh synchronous unnamed spawn
+at a time — the same pattern this file already uses for Phase 2-4 — so there
+is never more than one open dispatch to lose track of, and no
+background/named spawn for a wave member's report to ever drop out of.
 
 The same class of bug also recurs a third time, *within this pipeline*, at
 the Phase 3/4 fix loop: re-dispatching the developer or re-running the
@@ -248,6 +251,31 @@ the strength of it. The orchestrator then decides whether to re-poll (a
 fresh, synchronous, unnamed re-dispatch, never a `SendMessage` resume — see
 the deadlock note above) or stop and report the blocker.
 
+**Incomplete report — one retry, then STOP (ticket #88).** A live incident
+found a developer ending its turn without ever starting its mandated test
+run, returning a change_report with no PASS/FAIL result and no explicit
+`blocked`/`in-progress` status either — silently incomplete, not merely slow.
+Such a report does **not** count as a completed Phase 3: it is neither a
+valid PASS/FAIL result (Phase sequence above) nor a legitimate
+blocked/in-progress hand-off (the bullet immediately above). On this specific
+shape — missing PASS/FAIL **and** missing an explicit blocked/in-progress
+status — issue exactly **one** fresh, synchronous, unnamed re-dispatch (same
+`Agent(subagent_type="developer", ..., run_in_background: false)` pattern,
+same `plan`/`context_summary`, plus a note that the previous attempt returned
+without running the test suite). If the retry also comes back incomplete in
+the same way, **STOP** and report the incomplete-report blocker to the user
+— do not silently retry a second time and do not proceed to Phase 4 on an
+incomplete report.
+
+**After the developer reports PASS or FAIL — post short status comment.**
+Post a brief status comment to the ticket via
+`add_comment(project_id=<project>, ticket_id=<#>, body=…)`: the test result
+(`PASS`/`FAIL`) and a one-line summary of what changed. Do not type
+`#ai-generated` — the MCP prepends it. This mirrors Phase 2's plan comment
+(see "After PLAN_FINAL — post short plan comment" above) so the ticket
+carries a durable, human-readable trail of how far a run got even if the
+session driving this skill dies before Phase 4 completes.
+
 Do not pass a `name`. Naming this call switches it into background/mailbox
 delivery regardless of `run_in_background`, and the developer has no
 `SendMessage` tool to push a reply back once it's in that mode — the
@@ -275,6 +303,15 @@ reply back once it's in that mode.
 **Board card movement.** When the reviewer is invoked for this phase, gated
 on `list_board_columns` per the Board card movement subsection above, move
 the ticket's board card to `Review` via `update_ticket`.
+
+**After the reviewer's verdict — post short status comment.** Post a brief
+status comment to the ticket via `add_comment(project_id=<project>,
+ticket_id=<#>, body=…)`: the review verdict (`APPROVE`/`CHANGES_REQUESTED`)
+and, if `CHANGES_REQUESTED`, a one-line summary of the blocking findings.
+Do not type `#ai-generated` — the MCP prepends it. Mirrors Phase 2's plan
+comment and Phase 3's test-result comment above, so the ticket's comment
+trail covers plan → test result → review verdict. Post this once per review
+pass, including the re-review after a fix cycle (see below).
 
 - `CHANGES_REQUESTED` with blocking findings → re-dispatch the developer and
   reviewer, **each as a brand-new, fresh, synchronous, unnamed `Agent(...)`
@@ -394,17 +431,21 @@ Final step never moves the card to `Done` or any other terminal column.
    `add_comment(project_id=<project>, ticket_id=<#>,
    body="Draft PR opened: <PR URL>. <one-line status>")`.
 6. **Write a result-marker file** (raw `Write` tool — **unconditional, in
-   both modes**, not mode-gated). This step exists so a caller can recover
-   this run's ending state even if step 7's report never arrives (e.g. a
-   parallel `orchestrate-tickets` wave-member spawn that goes idle without
-   replying — see AGENTS.md's **B6** note and
-   `skills/orchestrate-tickets/SKILL.md`'s Phase C fallback, which reads this
-   exact file). Write it **after** the commit (step 2) — `git add -A` has
-   already run by then, so the marker is never staged into the ticket's own
-   diff. By this point step 1 has already ensured the target repo's
-   `.gitignore` contains the marker's line, so this newly-written marker file
-   is untracked-and-ignored from the moment it's written, not merely
-   untracked:
+   both modes**, not mode-gated). Ticket #88 removed the report-loss
+   fallback that used to read this file for a background/named
+   wave-member spawn (see AGENTS.md's "Sequential, unnamed wave-member
+   dispatch replaces the report-loss fallback (ticket #88)" note) —
+   `skills/orchestrate-tickets/SKILL.md`'s Phase C now dispatches wave
+   members sequentially, one fresh synchronous unnamed spawn at a time, and
+   reads each member's ending state directly off its own synchronous report,
+   so nothing reads this marker file any more. The write itself is
+   unaffected by that removal: it still happens unconditionally, every run,
+   as a harmless diagnostic artifact for manual inspection. Write it **after**
+   the commit (step 2) — `git add -A` has already run by then, so the marker
+   is never staged into the ticket's own diff. By this point step 1 has
+   already ensured the target repo's `.gitignore` contains the marker's
+   line, so this newly-written marker file is untracked-and-ignored from the
+   moment it's written, not merely untracked:
    - **`solo` mode:** write to `<repo root, resolved via `git rev-parse
      --show-toplevel` from the invoking session's own cwd>/.process-ticket-result.json`.
    - **`integration` mode:** write to `<worktree_path>/.process-ticket-result.json`
@@ -423,17 +464,18 @@ Final step never moves the card to `Done` or any other terminal column.
      `verdict` is one of `APPROVE` / `CHANGES_REQUESTED` (the reviewer's final
      verdict); `test` is one of `PASS` / `FAIL` (the developer's final test
      result); `mode` is `solo` or `integration`, whichever this run used.
-     `ticket` is this run's own ticket number — a downstream reader (see
-     AGENTS.md's **B6** note) must treat a `ticket` value that doesn't match
-     the run it thinks it's confirming as untrustworthy, since a worktree
-     left intact after a RED wave (no auto-revert) could in principle carry a
-     stale marker from an earlier attempt. This write itself is unconditional
-     in both modes — only the `mode` field's *value* varies.
+     `ticket` is this run's own ticket number, kept for diagnostic value in
+     case a worktree left intact after a RED wave (no auto-revert) carries a
+     stale marker from an earlier attempt — nothing in
+     `skills/orchestrate-tickets/SKILL.md` reads this field any more (ticket
+     #88 removed the reader; see AGENTS.md's note referenced above). This
+     write itself is unconditional in both modes — only the `mode` field's
+     *value* varies.
    - **Persistence note (both modes).** This file is expected to persist in
      the worktree afterward as a harmless untracked, gitignored artifact (see
-     step 1's guarantee, not this plugin's own `.gitignore`) — in `solo` mode
-     no orchestrator ever reads it (only the `integration`-mode wave loop's
-     fallback does), so no cleanup step is needed here.
+     step 1's guarantee, not this plugin's own `.gitignore`) — nothing in
+     either mode reads it any more (see the note above), so no cleanup step
+     is needed here.
 7. **Report back:**
    - **`solo` mode:** report to the user — PR URL, branch, review verdict,
      test result, and `final: true`.
@@ -445,11 +487,19 @@ Final step never moves the card to `Done` or any other terminal column.
    - **`final: true`** is an explicit terminal-marker field carried by the
      report message itself — distinct from the `.process-ticket-result.json`
      marker *file* (step 6 above), which already carries
-     ticket/branch/verdict/test/mode. It marks this report as the definitive
-     terminal signal a caller keys its confirmed-done-set entry on (see
-     AGENTS.md's **B6** note). Required in **both** modes for a single
-     uniform report contract, even though in `solo` mode no orchestrator
-     ever reads it.
+     ticket/branch/verdict/test/mode. It marks this report as the
+     definitive, complete terminal signal for this run. Required in **both**
+     modes for a single uniform report contract, even though nothing
+     currently reads it programmatically: in `solo` mode no orchestrator
+     ever reads it, and in `integration` mode `orchestrate-tickets`' Phase C
+     gets each wave member's real, complete ending state directly from that
+     member's own synchronous report and decides merge eligibility purely
+     from `VERDICT: APPROVE`/`CHANGES_REQUESTED` and test `PASS`/`FAIL` —
+     it does not key off `final: true` at all. Ticket #88 removed the
+     separate git-state/marker-file tracking mechanism this field used to
+     be keyed on (see AGENTS.md's note referenced above); the field is kept
+     here purely as an explicit, human-readable terminal signal in the
+     report contract.
 
 ## Hard rules
 - **Delegate everything.** Never call `get_ticket`, `Edit`/`Write`, or review

@@ -212,30 +212,45 @@ def test_no_sendmessage_resume_instruction_in_phase3_or_phase4():
 
 # ---------------------------------------------------------------------------
 # Group 5 -- cross-reference paragraph updated to mention the in-pipeline
-# fix-loop recurrence alongside the existing B6/Phase C reference.
+# fix-loop recurrence alongside the orchestrator-level (Phase C) reference.
 # ---------------------------------------------------------------------------
+#
+# Updated for ticket #88: the orchestrator-level occurrence of this bug class
+# used to be compensated for by AGENTS.md's "B6" fallback (git-state +
+# result-marker verification for parallel/named wave-member spawns). Ticket
+# #88 eliminated the root cause instead — orchestrate-tickets now dispatches
+# wave members sequentially, one fresh synchronous unnamed spawn at a time —
+# so the cross-reference paragraph here must describe that fix, not the
+# retired B6 fallback.
 
 
 def test_cross_reference_paragraph_mentions_fix_loop_recurrence():
     body = _extract_body(_read(PROCESS_MD))
     m = re.search(
-        r"This same class of bug can also surface.*?(?=\*\*After PLAN_FINAL)",
+        r"This same class of bug.*?(?=\*\*After PLAN_FINAL)",
         body,
         re.DOTALL,
     )
     assert m, (
-        "Could not find the 'This same class of bug can also surface...' "
-        "cross-reference paragraph"
+        "Could not find the 'This same class of bug...' cross-reference "
+        "paragraph"
     )
     cross_ref = m.group(0)
     assert re.search(r"Phase 3|Phase 4|fix loop", cross_ref, re.IGNORECASE), (
         "The cross-reference paragraph must also mention the in-pipeline "
         "Phase 3/4 fix-loop recurrence of this bug class, alongside the "
-        "existing B6/Phase C reference, so a future contributor doesn't "
-        "reintroduce a fourth instance"
+        "orchestrator-level reference, so a future contributor doesn't "
+        "reintroduce a third instance"
     )
-    assert re.search(r"B6", cross_ref), (
-        "The cross-reference paragraph must still reference AGENTS.md's B6 note"
+    assert re.search(r"#88", cross_ref), (
+        "The cross-reference paragraph must reference ticket #88's fix for "
+        "the orchestrator-level occurrence"
+    )
+    assert not re.search(r"\bB6\b", cross_ref), (
+        "The cross-reference paragraph must no longer reference the retired "
+        "B6 fallback — ticket #88 replaced it with sequential/unnamed "
+        "dispatch, described in `skills/orchestrate-tickets/SKILL.md`'s "
+        "Phase C, not compensated for here"
     )
 
 

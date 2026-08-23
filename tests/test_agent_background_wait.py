@@ -202,3 +202,37 @@ def test_process_ticket_handles_blocked_in_progress_report():
         "process-ticket SKILL.md must say a blocked/in-progress report is "
         "never treated as a completed phase and must not proceed to commit"
     )
+
+
+# ---------------------------------------------------------------------------
+# BR5 (ticket #88, reviewer fix round 2, finding 6) — recovered from the
+# wholesale-deleted tests/test_orchestrate_liveness_check.py: AGENTS.md's
+# cross-file "## Long-lived process guardrail" section must still cover the
+# never-end-turn-on-a-backgrounded-command rule (BR1 above, restated
+# cross-file) and the full-suite-always/targeted-may-be-foreground boundary.
+# AGENTS.md itself calls this an invariant a later edit "must not quietly
+# narrow" -- ticket #88 must not be the edit that silently drops its test
+# coverage, even though #88's own changes don't touch this section's
+# substance.
+# ---------------------------------------------------------------------------
+
+
+AGENTS_MD = REPO_ROOT / "AGENTS.md"
+
+
+def test_agents_md_long_lived_process_section_covers_never_end_turn_boundary():
+    body = _read(AGENTS_MD)
+    m = re.search(
+        r"## Long-lived process guardrail.*?(?=\n## )", body, re.DOTALL
+    )
+    assert m, "AGENTS.md must contain the Long-lived process guardrail section"
+    section = _normalize(m.group(0))
+
+    assert "never end" in section.lower() and "turn" in section.lower(), (
+        "the guardrail section must cover the never-end-turn-on-a-"
+        "backgrounded-command rule as its second cross-file branch"
+    )
+    assert "full-suite" in section.lower() and "foreground" in section.lower(), (
+        "the guardrail section must record the full-suite-always / "
+        "targeted-may-be-foreground boundary as an invariant"
+    )

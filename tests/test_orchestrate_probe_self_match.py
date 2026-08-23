@@ -92,26 +92,6 @@ def _extract_sh_fence(text: str) -> str:
     return m.group(1)
 
 
-def _extract_phase_c_step2(body: str) -> str:
-    m = re.search(
-        r"B6 status-check ping.*?(?=\n\s*3\. \*\*Checkout the integration branch)",
-        body,
-        re.DOTALL,
-    )
-    assert m, "SKILL.md must contain Phase C step 2's B6 ping sub-step"
-    return m.group(0)
-
-
-def _extract_hard_rules_b6(body: str) -> str:
-    m = re.search(
-        r"\*\*Never merge on self-report alone \(B6\)\.\*\*.*?(?=\n- \*\*Backlog release gate)",
-        body,
-        re.DOTALL,
-    )
-    assert m, "SKILL.md must contain the Hard Rules B6 bullet"
-    return m.group(0)
-
-
 # ---------------------------------------------------------------------------
 # BR1 — B2-match excludes self, ancestors, descendants (both OSes)
 # ---------------------------------------------------------------------------
@@ -307,140 +287,6 @@ def test_posix_sweep_is_pgrep_filtered_not_unfiltered_pkill():
 
 
 # ---------------------------------------------------------------------------
-# BR4 — B6 probe 1 requires self-exclusion + PID stability; corroboration
-# verdict
-# ---------------------------------------------------------------------------
-
-
-def test_b6_probe1_requires_self_exclusion_and_pid_stability():
-    body = _read(ORCHESTRATE_MD)
-    step2 = _normalize(_extract_phase_c_step2(body))
-
-    assert re.search(r"pid.stable|stability", step2, re.IGNORECASE), (
-        "Phase C step 2 must state probe 1 requires PID stability across "
-        "rounds"
-    )
-    assert re.search(
-        r"self.{0,15}exclud|excluded\s+by\s+construction", step2, re.IGNORECASE
-    ), "Phase C step 2 must state probe 1's survivor set is self-excluded"
-    assert re.search(
-        r"churn|drift(ed|ing)?", step2, re.IGNORECASE
-    ), (
-        "Phase C step 2 must state a churned/drifting PID is a self-match "
-        "signal, not liveness"
-    )
-    assert re.search(
-        r"self.match", step2, re.IGNORECASE
-    ), "Phase C step 2 must name the self-match signal explicitly"
-
-    # Verdict formula: alive iff probe 3 growth OR (probe1 counts AND probe2).
-    assert re.search(r"verdict", step2, re.IGNORECASE)
-    assert re.search(
-        r"probe\s*3.{0,60}(growth|advancing).{0,80}or.{0,120}probe\s*1.{0,80}(and|corroborat).{0,80}probe\s*2|"
-        r"probe\s*1.{0,120}and.{0,80}probe\s*2.{0,120}or.{0,80}probe\s*3",
-        step2, re.IGNORECASE | re.DOTALL,
-    ), "Phase C step 2 must state the reweighted verdict formula"
-
-
-def test_first_round_pid_stability_uses_intra_round_samples():
-    body = _read(ORCHESTRATE_MD)
-    step2 = _normalize(_extract_phase_c_step2(body))
-
-    assert re.search(
-        r"(this\s+round'?s?\s+own\s+two|two\s+intra.round)\s+.{0,40}sample",
-        step2, re.IGNORECASE,
-    ), (
-        "Phase C step 2 must state PID stability is checked via this "
-        "round's own two intra-round CPU samples (t0 and t0+~25s), so "
-        "round 1 doesn't default to wedged for lack of prior history"
-    )
-    assert re.search(r"round\s*1|first.round", step2, re.IGNORECASE), (
-        "Phase C step 2 must explicitly address the first-round case"
-    )
-
-
-def test_wedged_kill_cannot_target_the_orchestrator():
-    body = _read(ORCHESTRATE_MD)
-    step2 = _normalize(_extract_phase_c_step2(body))
-
-    assert re.search(r"B2-kill", step2), (
-        "the wedged branch must route the kill through the named B2-kill "
-        "primitive, not restate a raw kill recipe"
-    )
-    assert re.search(
-        r"orchestrator'?s?\s+own\s+session\s+can\s+never\s+be\s+the\s+target|"
-        r"can\s+never\s+target\s+the\s+orchestrator",
-        step2, re.IGNORECASE,
-    ), (
-        "Phase C step 2 must state the wedged-branch kill can never target "
-        "the orchestrator's own session, because it inherits B2-match's "
-        "self-exclusion"
-    )
-
-
-# ---------------------------------------------------------------------------
-# BR5 — B2 and B6 share exactly one primitive; AGENTS.md mirrors it
-# ---------------------------------------------------------------------------
-
-
-def test_b2_b6_share_one_named_primitive_and_agents_md_mirrors_it():
-    body = _read(ORCHESTRATE_MD)
-    step2 = _extract_phase_c_step2(body)
-    hard_rules = _extract_hard_rules_b6(body)
-
-    assert "B2-match" in step2, (
-        "Phase C step 2 must reference the B2-match primitive by name"
-    )
-    assert "B2-match" in hard_rules, (
-        "the Hard Rules B6 bullet must reference the B2-match primitive by "
-        "name"
-    )
-
-    # Negative guard: step 2 must not restate a second, raw matcher inline.
-    assert "reusing B2's path-matching shape" not in step2, (
-        "Phase C step 2 must not restate its own probe inline any more — "
-        "it must cross-reference B2-match by name instead"
-    )
-    assert not re.search(r'pgrep -f "<worktree_path>"', step2), (
-        "Phase C step 2 must not restate a raw pgrep matcher inline; it "
-        "must reference B2-match instead"
-    )
-
-    agents = _read(AGENTS_MD)
-    agents_norm = _normalize(agents)
-    assert "B2-match" in agents, (
-        "AGENTS.md must name the shared B2-match primitive"
-    )
-    # Normalized so a line-wrapped occurrence (e.g. "self/ancestor/" then
-    # "descendant ..." on the next line) is matched the same as an
-    # unwrapped one, instead of accidentally relying on some other,
-    # unwrapped occurrence elsewhere in the file to pass.
-    assert re.search(r"self.{0,15}(/|and)?\s*ancestor.{0,15}(/|and)?\s*descendant", agents_norm, re.IGNORECASE), (
-        "AGENTS.md must document self/ancestor/descendant exclusion"
-    )
-    assert re.search(r"AAD_WORKTREE|path\s+indirection|env.var\s+indirection", agents_norm, re.IGNORECASE), (
-        "AGENTS.md must document the path-indirection layer"
-    )
-    assert re.search(
-        r"probe\s*1\s+never\s+counts\s+un-?corroborated|"
-        r"never\s+counts?\s+un-?corroborated",
-        agents_norm, re.IGNORECASE,
-    ), (
-        "AGENTS.md must document the 'probe 1 never counts "
-        "un-corroborated' invariant"
-    )
-    assert re.search(
-        r"changed\s+in\s+exactly\s+one\s+place|"
-        r"one\s+place\s+for\s+both\s+consumers|"
-        r"must\s+never\s+be\s+applied\s+to\s+only\s+one\s+of\s+B2/B6",
-        agents, re.IGNORECASE,
-    ), (
-        "AGENTS.md must state the shared-primitive invariant: changes must "
-        "never be applied to only one of B2/B6"
-    )
-
-
-# ---------------------------------------------------------------------------
 # BR6 (round 3, Codex finding 1) — POSIX B2-kill applies the exe-name /
 # app-server-broker.mjs filter before killing, mirroring Windows's B2-kill;
 # it must not kill B2-match's raw, unfiltered survivor set directly.
@@ -550,52 +396,6 @@ def test_posix_descendant_exclusion_has_non_proc_fallback():
         "the /proc/*/stat forward walk must remain the primary descendant-"
         "tree discovery path on Linux"
     )
-
-
-# ---------------------------------------------------------------------------
-# BR8 (round 4, Codex finding 2) — PID-stability corroboration tolerates a
-# legitimate re-exec/child-handoff: a new PID whose parent is the
-# previously-seen PID corroborates probe 1 exactly like a persisted PID,
-# while an unrelated PID (not a child of the previous one) must still fail
-# corroboration as a genuine churn/self-match signal.
-# ---------------------------------------------------------------------------
-
-
-def test_b6_probe1_corroborates_parent_child_handoff_not_just_persisted_pid():
-    body = _read(ORCHESTRATE_MD)
-    step2 = _normalize(_extract_phase_c_step2(body))
-    hard_rules = _normalize(_extract_hard_rules_b6(body))
-
-    for section, label in ((step2, "Phase C step 2"), (hard_rules, "Hard Rules B6 bullet")):
-        assert re.search(
-            r"ParentProcessId.{0,20}ppid|ppid.{0,20}ParentProcessId",
-            section, re.IGNORECASE,
-        ), (
-            f"{label} must reference ParentProcessId/ppid as the "
-            "parent-child linkage used to corroborate a handoff"
-        )
-        assert re.search(
-            r"(re-?exec|handoff).{0,200}(previously.(seen|recorded)|previous).{0,40}pid|"
-            r"(previously.(seen|recorded)|previous).{0,40}pid.{0,200}(re-?exec|handoff)",
-            section, re.IGNORECASE | re.DOTALL,
-        ), (
-            f"{label} must describe a new PID whose parent equals the "
-            "previously-seen/recorded PID as a legitimate re-exec/handoff"
-        )
-        assert re.search(
-            r"corroborat\w*\s+exactly\s+(as\s+if|like)", section, re.IGNORECASE
-        ), (
-            f"{label} must state the handoff corroborates exactly as if "
-            "the original PID had persisted"
-        )
-        assert re.search(
-            r"(actual|genuine)\s+churn|not\s+a\s+child\s+of\s+it|"
-            r"neither.{0,40}nor\s+a\s+child", section, re.IGNORECASE
-        ), (
-            f"{label} must still treat an unrelated PID (not a child of "
-            "the previous one) as a genuine churn/self-match signal that "
-            "fails corroboration"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -928,7 +728,9 @@ def test_windows_exclusion_walk_is_concrete_not_placeholder():
 # ---------------------------------------------------------------------------
 # BR-A5 (self-found) — POSIX B2-kill rechecks liveness (kill -0) between
 # kill -TERM and kill -KILL, with a brief in-shell grace period, explicitly
-# distinguished from the banned foreground ~15-minute B6 liveness wait.
+# distinguished from a long-running foreground wait (ticket #88: the former
+# ~15-minute B6 liveness wait this used to be contrasted with is gone, but
+# the distinction from ANY long-running foreground wait must survive).
 # ---------------------------------------------------------------------------
 
 
@@ -945,12 +747,16 @@ def test_posix_kill_rechecks_liveness_between_term_and_kill():
         "kill -TERM and kill -KILL"
     )
     assert re.search(
-        r"not.{0,20}the banned foreground.{0,80}~?15.minute",
+        r"not.{0,20}a\s+long-running\s+foreground\s+wait",
         n, re.IGNORECASE,
     ), (
         "Teardown must explicitly distinguish this brief in-shell grace "
-        "from the banned foreground ~15-minute B6 liveness wait, so a "
-        "future reader doesn't conflate the two"
+        "from a long-running foreground wait, so a future reader doesn't "
+        "conflate the two"
+    )
+    assert not re.search(r"~?15.minute\s+B6\s+liveness\s+wait", n, re.IGNORECASE), (
+        "Teardown must no longer contrast this grace period against the "
+        "removed B6 liveness wait specifically — ticket #88 removed it"
     )
 
 
@@ -974,4 +780,63 @@ def test_agents_md_mirrors_per_candidate_exclusion_and_cwd_boundary():
     )
     assert re.search(r"575f0fcb-retry|path separator", n, re.IGNORECASE), (
         "AGENTS.md must mirror the cwd path-boundary substance (BR-A2)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BR13 (ticket #88, reviewer fix round 2, finding 1) — Teardown's B2-match
+# Windows section must not frame its sequential-dispatch guarantee as
+# "concurrent probes across wave members ... each target a distinct worktree
+# path". That sentence describes the removed B6 concurrent-liveness-probe
+# mechanism as still active. Since ticket #88 made wave-member dispatch
+# sequential (Phase C runs one fresh synchronous spawn at a time, never
+# parallel/named spawns), there are no "concurrent probes" any more — B2-
+# match's teardown sweep only ever runs once per worktree, one invocation at
+# a time.
+# ---------------------------------------------------------------------------
+
+
+def test_b2_match_teardown_does_not_frame_concurrent_probes_as_current():
+    body = _extract_body(_read(ORCHESTRATE_MD))
+    td = _extract_teardown(body)
+    n = _normalize(td)
+
+    assert "concurrent probes across wave members" not in n, (
+        "Teardown's B2-match Windows section must not describe the removed "
+        "B6 concurrent-liveness-probe mechanism ('concurrent probes across "
+        "wave members') as still active — ticket #88 made wave-member "
+        "dispatch sequential"
+    )
+    assert re.search(
+        r"one\s+worktree\s+path\s+per\s+invocation|sequential",
+        n, re.IGNORECASE,
+    ), (
+        "Teardown must instead plainly state that B2-match's teardown sweep "
+        "only ever targets one worktree path per invocation, because "
+        "dispatch is sequential now"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BR14 (ticket #88, reviewer fix round 2, finding 2) — AGENTS.md's B2-match
+# self-match-prevention correction note must cite the CURRENT nohup+Monitor
+# example (Phase C step 5's integration-gate run, `<detected-test-cmd>`), not
+# the removed B6 bounded-wait's `<probe-loop>` example. SKILL.md's equivalent
+# sentence was already fixed in a prior round; this AGENTS.md sentence was
+# missed.
+# ---------------------------------------------------------------------------
+
+
+def test_agents_md_probe_loop_example_updated_to_detected_test_cmd():
+    agents = _read(AGENTS_MD)
+
+    assert "<probe-loop>" not in agents, (
+        "AGENTS.md must no longer reference the removed B6 bounded-wait's "
+        "<probe-loop> example"
+    )
+    assert "nohup <detected-test-cmd> > <log> 2>&1 &" in agents, (
+        "AGENTS.md's B2-match self-match-prevention correction note must "
+        "cite the current nohup+Monitor example, "
+        "'nohup <detected-test-cmd> > <log> 2>&1 &' (Phase C step 5's "
+        "integration-gate run), matching SKILL.md's already-fixed sentence"
     )
