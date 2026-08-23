@@ -102,178 +102,38 @@ next wave) and the RED no-auto-revert behavior intact — they are what makes a
 pushed integration branch a safe, always-green base for the next wave to
 build on.
 
-**B6 — idle-triggered report-loss fallback (distinct from B1-B5).** Phase C
-drives wave members **in parallel**, which necessarily means each is a
+**Sequential, unnamed wave-member dispatch replaces the report-loss fallback
+(ticket #88 — supersedes the former "B6" safeguard).** Phase C used to drive
+wave members **in parallel**, which necessarily meant each was a
 background/named `Agent` spawn — the same delivery mechanism whose failure
-mode caused the planner-spawn deadlock originally fixed in #58/#60 (naming an
-`Agent()` call switches it to background/mailbox delivery, and the callee has
-no `SendMessage` tool to push a reply back if that delivery silently drops).
-Ticket #64 found the worker-level analogue one layer up: a wave member can
-finish all its real work — local commit made, reviewer verdict `APPROVE` —
-and still go idle without ever sending its mandated Final-step report,
-leaving an otherwise-successful run looking stalled. Unlike the planner fix,
-eliminating background/named spawns is not viable here because members must
-run in parallel, so the fix is a **fallback**, not elimination: when a member
-goes **idle** without having sent its report — the trigger, not a timer, the
-orchestrator has none — Phase C verifies the member's real ending state
-directly instead of relying on the self-report: `git -C <worktree_path>
-log`/`status --porcelain` plus `rev-list --count <branch_point_sha>..HEAD` (>
-0, proving HEAD is ahead of the wave's branch point — the integration-branch
-head SHA this worktree was created from — not merely that a commit exists at
-HEAD, which a worktree that never did any real work would also show) to
-confirm a genuine local commit landed this run, **only after which** the
-result-marker file `<worktree_path>/.process-ticket-result.json` (written
-unconditionally by `process-ticket`'s Final step, in both `solo` and
-`integration` mode) is read to recover the reviewer verdict and test result
-that git alone can't. The marker is never trusted on its own: because a RED
-wave deliberately leaves its worktrees intact for inspection (no
-auto-revert), a worktree could in principle be reused or retried, and a
-stale marker from an earlier attempt could otherwise be misread as
-confirming this run. Two things tie the marker to *this* run before it's
-trusted: (1) it is only read after the HEAD-ahead-of-branch-point check
-above has already proven a genuine new commit landed this run, and (2) its
-own `ticket` field must equal this wave member's actual ticket number — a
-mismatch means the marker is stale (left over from a different ticket ever
-processed in this worktree) and it is rejected, treated the same as a
-missing marker.
-
-**Status-check ping — disambiguate busy vs. dead before disqualifying.**
-Before the Conservative non-merge rule below fires, a sanctioned single-ping
-`SendMessage` step gets a chance to distinguish a legitimately-busy member
-(idle while blocked on its own nested sub-agent reply, e.g. mid Phase-4
-review) from a genuinely dropped/dead spawn. It fires only when both are
-true: the trigger is the already-narrow idle-without-report case (a member
-not yet in the confirmed-done set), **and** the git-state check above came
-back unconfirmed. A member whose git-state check passed is confirmed-done
-exactly as above and is never pinged. When it fires, the orchestrator sends
-**exactly one** direct status-check `SendMessage` to the member, asking it
-to report its current pipeline phase/state — legitimate and asymmetric,
-because the member (callee) has no `SendMessage` tool to push a reply back
-on its own initiative, but the orchestrator (caller) can send to a
-background/named member and read its reply. The bound (ticket #83) is
-**single ping, then a bounded ~15-minute liveness/progress check — not a
-deadline**: an **empty/error reply, an incoherent reply, or the member's
-very next signal being another idle-without-report** falls straight through
-to the Conservative non-merge rule below, unchanged. A **coherent progress
-reply** (a plausible in-progress state, not gibberish or empty) means the
-member is *provisionally* still legitimately working — no second ping
-follows it, and it is **not** added to the confirmed-done set — but it no
-longer buys unbounded silence. It stays eligible only for one bounded
-~15-minute wait, after which three liveness probes decide alive-vs-wedged:
-(1) **process alive — via B2-match, self-excluded**: reuse the named
-**B2-match** primitive (see the Teardown coupling section below) — never a
-second, restated matcher — to get the worktree's survivor PID set; B2-match
-excludes the orchestrator's own self/ancestor/descendant PID set by walking
-each candidate's own parent-PID chain (`ParentProcessId`/`ppid`) upward
-**per candidate, at match time** — never a set precomputed once before the
-match runs and subtracted afterward, which would miss a subshell/helper the
-matcher's own pipeline forks after that earlier snapshot (e.g. the
-`pgrep`-enumerating command substitution itself) — so the orchestrator's own
-session can never self-match on the worktree-path substring and read back
-as "alive"; (2) it
-is making **CPU progress** (a positive CPU-time delta sampled over ~25s,
-via this round's own two intra-round samples, so a first round has no
-dependency on prior history); (3) **work is advancing** (`git -C
-<worktree_path> diff --stat` growth versus the previous check). **Probe 1
-never counts un-corroborated**: it counts toward the verdict only when
-B2-match's survivor set is non-empty **and PID-stable** across checks (the
-same PID(s) persisting, at least one carried over from the previous round,
-or a new PID whose `ParentProcessId`/`ppid` equals the previously-seen PID
-— a legitimate re-exec/child-handoff that corroborates exactly like a
-persisted PID; only an unrelated PID that is neither the previous PID nor
-a child of it is an actual churn) — an empty survivor set, or one that
-churned/drifted with no such parent-child link, is a **self-match
-signal**, not liveness, and never counts toward alive. **Verdict:**
-**alive-and-progressing** iff probe 3 shows growth, **OR** (probe 1 counts
-per the corroboration rule **AND** probe 2 shows a positive delta); it then
-stays eligible, unconfirmed, unmerged, exactly as the plain coherent-reply
-case did before — it simply re-enters this path later. **Wedged** (neither
-condition above holds) authorizes exactly two actions in order: **kill**
-the wedged process for that worktree via the named **B2-kill** primitive
-(the same one already used for teardown — cross-referenced, never a second
-kill recipe; because it consumes B2-match's already self-excluded survivor
-set, it can never target the orchestrator's own session), then fall
-through to the Conservative non-merge rule below. **There is no automatic
-re-dispatch** — re-running into a worktree holding a partial commit and a
-possibly-stale `.process-ticket-result.json` is exactly the scenario B6
-exists to guard against. The bounded wait itself is implemented via the
-same `nohup … &` +
-in-turn `Monitor`-with-until-condition pattern mandated for the sub-agents
-(see the Long-lived process guardrail section below) — **never** a
-foreground `sleep`/`Start-Sleep`, since the Bash tool blocks foreground
-sleeps and a ~15-minute foreground call would hit the same ~10-minute tool
-cliff this ticket fixes; the orchestrator eats its own dog food rather than
-exempting itself from the rule it enforces on `developer`/`reviewer`.
-Judging "coherent" stays the orchestrator's own read of the reply content,
-not a new automated check — only the bounded-wait probes are automated —
-and none of this relaxes any of the #64 git-state criteria; it only adds a
-disambiguation gate in front of disqualification. This description must
-stay consistent with Phase C step 2's ping sub-step and the Hard Rules B6
-bullet in `skills/orchestrate-tickets/SKILL.md`.
-
-**Accepted tradeoff — probe 3 alone needs no live-process corroboration.**
-The verdict formula makes probe 3 (`diff --stat` growth) sufficient on its
-own to call a member alive-and-progressing, with no live-PID requirement.
-A worker that dies immediately after its last file write can therefore
-read as alive for one bounded ~15-minute wait cycle — but it is
-self-correcting: probe 3 requires growth versus the *previous* check's own
-snapshot, so a genuinely dead process cannot produce further growth on the
-*following* check and the member then correctly falls to wedged. Not an
-indefinite mask. This is the user's explicit, already-approved
-corroboration-rule design from planning, not a gap — accepted as-is.
-
-**Accepted tradeoff (out of scope for #86).** B2-match's survivor set is
-intentionally broad — it matches any process referencing the worktree
-path, not only the wave member's own worker process (e.g. a user's editor
-or shell left open on that folder). Because probe 1 consumes that same
-broad set, an unrelated, coincidentally PID-stable, CPU-active process
-could in principle satisfy probes 1 and 2 and mask a genuinely wedged
-worker. This is a pre-existing property of the broad-matching design, not
-a regression introduced by ticket #86's self-match fix, and is accepted
-as-is.
-
-**Conservative non-merge rule:** a member that can't be
-confirmed this way — HEAD not ahead of the branch point, marker missing/
-unreadable, marker `ticket` not matching this member's actual ticket number,
-marker `verdict` not `APPROVE`, or marker `test` not `PASS` — is not merged;
-it rolls into a later wave, exactly like a `CHANGES_REQUESTED`/red member
-today. Checking `verdict` alone is not sufficient: the ordinary
-(non-fallback) merge criterion is `APPROVE` **with a green test run**, so the
-fallback path must disqualify on `test` too, or it would be silently weaker
-than the normal path. Symmetrically, once a member is confirmed-done — its
-report carried the explicit **`final: true`** terminal marker (see
-`skills/process-ticket/SKILL.md`'s Final step 7 — the report's field, not
-the `.process-ticket-result.json` marker *file*), or the fallback validated
-its git state and marker — any further idle pings from it are **idempotent**
-no-op set-membership checks, not a repeated B6 evaluation — the mirror of
-the idle-without-report trigger, and scoped so it cannot weaken B6.
-
-**Shared-primitive invariant (ticket #86 — B2-match/B2-kill).** B2 (the
-Teardown kill sweep) and B6 (this liveness probe) share exactly **one**
-process-matching primitive, **B2-match**, split from the kill-only
-**B2-kill** — see the Teardown coupling section below. `B2-match` must be
-changed in exactly one place for both consumers: a self/ancestor/
-descendant PID-exclusion change, or a path-indirection change (the
-`AAD_WORKTREE` env var), must **never** be applied to only one of B2/B6 —
-doing so would let the two recipes drift apart again, which is exactly how
-this ticket's incident happened (B6's probe restated its own
-"reusing B2's path-matching shape" inline instead of cross-referencing the
-primitive by name). B6's probe 1 additionally **never counts
-un-corroborated**: an un-excluded or PID-unstable/churned survivor set is a
-self-match signal, not liveness, regardless of what B2-match itself
-returns — this corroboration rule lives in B6's verdict logic, not in
-B2-match, and must not be weakened into B2-match's own contract.
-
-**Cross-file consistency invariant.** The literal filename
-`.process-ticket-result.json` must stay identical in both
-`skills/process-ticket/SKILL.md` (the writer) and
-`skills/orchestrate-tickets/SKILL.md` (the reader) — a rename in one without
-the other silently breaks the B6 fallback. The same applies to the report
-message's terminal-marker field, `final: true`: it must stay identical
-between `skills/process-ticket/SKILL.md`'s Final step 7 (the writer) and
-`skills/orchestrate-tickets/SKILL.md`'s Phase C confirmed-done set (the
-reader) — a rename or field-value change in one without the other would
-silently break the confirmed-done-set keying.
+mode caused the planner-spawn deadlock originally fixed in #58/#60. A live
+incident (ticket #88) found this causing repeated silent report loss at the
+wave-member level in one run: duplicate developer instances racing
+concurrently in the same worktree, a report arriving at the wrong parent,
+and — separately — a developer ending its turn without ever starting its
+mandated test run. The self-healing apparatus that used to live here
+(git-state plus result-marker-file verification, a status-check
+`SendMessage` ping, bounded liveness probes, wedged-process detection)
+compensated for that report loss after the fact, discovered only by manual
+follow-up. Ticket #88 instead eliminates the precondition for it rather than
+compensating further: Phase C now drives wave members **sequentially**, one
+fresh synchronous unnamed spawn at a time — the same pattern
+`process-ticket`'s own Phase 2-4 already use for the planner/developer/
+reviewer — so there is never more than one open dispatch, never an
+ambiguous report recipient, and never a reason to `SendMessage` a running
+dispatch instead of waiting for its one synchronous reply. A member is
+merged when its own synchronous report shows `APPROVE` and `PASS` — read
+directly off that reply; no git-state/marker-file cross-check is needed or
+performed any more. `process-ticket` also now posts a short status comment
+to the ticket after Phase 3 (test result) and Phase 4 (review verdict), in
+addition to its existing Phase 2 plan comment, so a ticket carries a durable
+trail of how far a run got even if the session driving the pipeline dies
+mid-run — see `skills/process-ticket/SKILL.md`'s Phase 3/4 notes. The
+result-marker file (`.process-ticket-result.json`) and its report's
+`final: true` field are unaffected by this change — `process-ticket` still
+writes both unconditionally, in both modes (see "Target-repo `.gitignore`"
+below) — only the `orchestrate-tickets`-side *reader* that used to consume
+them for the report-loss fallback is gone.
 
 **Target-repo `.gitignore`, not this plugin's (finding from ticket #64 round
 2; ordering corrected in round 3).** `process-ticket` always runs against an
@@ -300,17 +160,24 @@ happens after the commit, unchanged — only the `.gitignore` check/append
 moved earlier. One more consequence of the corrected ordering: because the
 marker is gitignored *before* it's written, `git status --porcelain` in the
 worktree shows **no entry at all** for it (a gitignored untracked file
-produces no `??` line) — see `skills/orchestrate-tickets/SKILL.md`'s Phase C
-fallback, which relies on this.
+produces no `??` line) — harmless either way, since nothing in
+`orchestrate-tickets` reads worktree `status --porcelain` output looking for
+this marker any more (see the wave-member dispatch note above).
 
 **B5 — developer working-directory/Serena-project safeguard (distinct from
-B4).** Under wave-based parallel processing, several `developer` subagents can
-run concurrently across different worktrees; `agents/developer.md` documents
-a **B5** safeguard — verifying the working directory (`git -C <worktree>
-rev-parse --show-toplevel`) and the active Serena project match the intended
-worktree, both before the first edit and again immediately before handing off
-for commit — so a silent context mismatch can't ship a commit built in the
-wrong tree. **B5 is deliberately a different label from B4** (this file's and
+B4).** `agents/developer.md` documents a **B5** safeguard — verifying the
+working directory (`git -C <worktree> rev-parse --show-toplevel`) and the
+active Serena project match the intended worktree, both before the first
+edit and again immediately before handing off for commit — so a silent
+context mismatch can't ship a commit built in the wrong tree. This is
+defense-in-depth against a stray session/cwd drift (a session reused across
+an earlier ticket's worktree, or a background shell whose cwd silently
+settled somewhere other than the worktree it was handed) — not a
+simultaneous-access risk: ticket #88 made `orchestrate-tickets`' wave-member
+dispatch sequential, one fresh spawn at a time, so `developer` subagents for
+different wave members no longer run at the same time across different
+worktrees under the wave model. **B5 is
+deliberately a different label from B4** (this file's and
 `skills/orchestrate-tickets/SKILL.md`'s wave-loop clean-checkout gate, above)
 to avoid a naming collision between two unrelated safeguards that happen to
 live in adjacent files.
@@ -327,14 +194,13 @@ to date." with no error, risking a combined PR that silently omits a ticket's
 changes. Reproduced in a live run, not hypothetical.
 
 Fix: every git invocation in `skills/orchestrate-tickets/SKILL.md` uses `git -C
-<repo_root> …` — the same form the file already used for Phase C's
-branch-point capture and (with `<worktree_path>` instead) the idle-fallback
-protocol. `repo_root` is bootstrapped once, via a single ambient `git
-rev-parse --show-toplevel` call at the very top of Preconditions, before
-Precondition 0's own guard runs (itself now `-C <repo_root>`-pinned). That one
-bootstrap call is the sole intentional exception — you cannot `-C` into a root
-you haven't discovered yet — and a wrong resolution there is caught
-immediately by the guard it precedes. The one non-git, cwd-dependent step (the
+<repo_root> …` — the same form Precondition 0's own guard already uses for its
+`--git-dir`/`--git-common-dir` check. `repo_root` is bootstrapped once, via a
+single ambient `git rev-parse --show-toplevel` call at the very top of
+Preconditions, before Precondition 0's own guard runs (itself now `-C
+<repo_root>`-pinned). That one bootstrap call is the sole intentional
+exception — you cannot `-C` into a root you haven't discovered yet — and a
+wrong resolution there is caught immediately by the guard it precedes. The one non-git, cwd-dependent step (the
 Phase C integration-gate test run) is not a git command, so it instead opens
 with an explicit `Set-Location <repo_root>` / `cd <repo_root>` as its first
 statement — not a strategy mix, just the one place a location change is the
@@ -343,10 +209,13 @@ only option.
 **Invariant for contributors:** any new git command added to
 `orchestrate-tickets` (Preconditions, Phase C, Phase D, or Teardown) must be
 written as `git -C <repo_root> …` from the start, never a bare/ambient form.
-The only two standing exceptions are the single bootstrap `git rev-parse
---show-toplevel` call, and the idle-fallback protocol's `git -C
-<worktree_path> …` commands (which intentionally target a *different*
-directory, not the main checkout).
+The single standing exception is the bootstrap `git rev-parse
+--show-toplevel` call above. (Historical note: an earlier draft of this
+section also carved out an exception for an "idle-fallback protocol"'s own
+`git -C <worktree_path> …` commands — ticket #88 removed that protocol
+entirely, along with every `-C <worktree_path>` git invocation in
+`skills/orchestrate-tickets/SKILL.md`, so no such exception exists any
+more.)
 
 ## Why the project id is always a parameter
 
@@ -487,10 +356,9 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   and is out of scope for this ticket.
   **B2-match / B2-kill split, self-exclusion, path indirection (ticket #86).**
   The matching logic itself is now a named, shared primitive, **B2-match**,
-  split from the kill-only **B2-kill** — B6's liveness probe (Phase C step
-  2 of `skills/orchestrate-tickets/SKILL.md`) reuses B2-match by name rather
-  than restating a second matcher, so the two can never silently drift
-  apart. B2-match now excludes the orchestrator's own PID plus its full
+  split from the kill-only **B2-kill**, so the matching logic lives in
+  exactly one place rather than being restated inline. B2-match now excludes
+  the orchestrator's own PID plus its full
   ancestor and descendant lineage from the match result *before* anything
   is killed or counted toward liveness — without this, a probe/sweep whose
   own invocation embeds the literal worktree path as a substring could
@@ -515,7 +383,8 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   An earlier version of this note claimed it was; that overstated it. When
   the assignment and the match are issued as **one single shell invocation**
   (a single `-Command`/`-c` string — the pattern this plugin uses elsewhere,
-  e.g. the `nohup <probe-loop> > <log> 2>&1 &` dispatch), the *wrapping*
+  e.g. the `nohup <detected-test-cmd> > <log> 2>&1 &` dispatch used by Phase
+  C step 5's integration-gate run), the *wrapping*
   process's own command line is the entire script text, which still carries
   the literal worktree path baked into the assignment statement — a naive
   command-line substring/wildcard scan would still match that wrapping
@@ -561,9 +430,7 @@ agent runs an **extra** Codex correctness pass and folds Codex's blocking findin
   metacharacters via
   `[System.Management.Automation.WildcardPattern]::Escape()` before
   building the `-like` pattern. See `skills/orchestrate-tickets/SKILL.md`'s
-  Teardown B2-match section for the exact recipes. See "Shared-primitive
-  invariant (ticket #86 — B2-match/B2-kill)"
-  above for the cross-consumer invariant this split protects.
+  Teardown B2-match section for the exact recipes.
   **Self-cwd-lock terminal case (#67).** When B2's sweep finds zero processes and
   `worktree_remove` still reports the dir locked/`Permission denied`, the holder isn't a
   foreign PID at all — it's the orchestrator's own background-job shell whose cwd silently
@@ -607,9 +474,9 @@ judgment call to make — while **targeted runs during a red→green loop** (a s
 `-x`, `-k`, a single package/spec) **may remain plain foreground `Bash` calls**. A later edit
 must not quietly narrow this boundary: widening "always" to exempt slow-looking suites, or
 narrowing the targeted-run carve-out, would reopen the ~10-minute tool-cliff stall this
-ticket closes. `skills/orchestrate-tickets/SKILL.md`'s own bounded liveness wait (see the B6
-section above) and its Phase C step 5 integration gate dog-food this same nohup+Monitor
-pattern rather than exempting the orchestrator from its own rule.
+ticket closes. `skills/orchestrate-tickets/SKILL.md`'s own Phase C step 5 integration
+gate dog-foods this same nohup+Monitor pattern rather than exempting the orchestrator
+from its own rule.
 
 ## Why ticket-slicing knowledge lives in the orchestrator, not a standalone skill
 

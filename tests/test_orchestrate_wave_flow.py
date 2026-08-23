@@ -37,6 +37,10 @@ def _read(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text)
+
+
 def _extract_body(text: str) -> str:
     fm_end = re.search(r"^---\n.*?\n---\n", text, re.DOTALL | re.MULTILINE)
     assert fm_end is not None, "Could not find closing '---' of frontmatter"
@@ -46,6 +50,14 @@ def _extract_body(text: str) -> str:
 def _extract_teardown(body: str) -> str:
     m = re.search(r"## Teardown.*?(?=\n## Hard rules)", body, re.DOTALL)
     assert m, "SKILL.md must contain a '## Teardown' section"
+    return m.group(0)
+
+
+def _extract_phase_c_step5(body: str) -> str:
+    m = re.search(
+        r"5\. \*\*Integration gate.*?(?=\n## Phase D)", body, re.DOTALL
+    )
+    assert m, "SKILL.md must contain Phase C step 5 (integration gate)"
     return m.group(0)
 
 
@@ -521,20 +533,36 @@ def test_fit_section_high_ticket_count_signal_not_pr_overhead():
 
 
 # ---------------------------------------------------------------------------
-# Group 14 — ticket #64: idle-triggered git-state + marker fallback when a
-# wave member's Final-step report never arrives
+# Group 14 — ticket #88: sequential/unnamed wave-member dispatch replaces
+# the former B6 report-loss fallback
 # ---------------------------------------------------------------------------
 #
-# Root cause: parallel wave members are necessarily background/named `Agent`
-# spawns (required to run concurrently) — the same delivery mechanism whose
-# failure mode caused the planner-spawn deadlock fixed in #58/#60. A member
-# can finish all its real work (local commit, reviewer APPROVE) and still go
-# idle without ever sending its mandated report back, making an otherwise-
-# successful run look stalled. There was no documented fallback for this.
+# Root cause: tickets #64/#68/#69/#71/#83/#86 built up an elaborate
+# self-healing apparatus (git-state + result-marker verification, a
+# status-check SendMessage ping, bounded liveness probes, wedged-process
+# detection) to COMPENSATE for wave members necessarily being
+# background/named `Agent` spawns (the only mechanism that runs
+# concurrently) whose report-back could silently drop. A live incident
+# (ticket #88) found that apparatus was compensating for an avoidable
+# problem: driving members in parallel is what forced the background/named
+# spawn in the first place, and produced repeated silent report loss in one
+# run (duplicate developer instances racing in the same worktree, a report
+# arriving at the wrong parent, a developer skipping its mandated test run).
 #
-# Red -> green: these tests fail against the pre-#64 SKILL.md (no fallback
-# documented at all) and pass once Phase C documents the idle-triggered
-# git-state + result-marker fallback and the conservative non-merge rule.
+# Fix: Phase C now drives wave members SEQUENTIALLY, one fresh synchronous
+# unnamed spawn at a time — eliminating the precondition for report loss
+# rather than adding another detection layer. The entire B6 apparatus
+# (git-state fallback, result-marker reading for merge decisions,
+# status-check ping, liveness probes, confirmed-done set, "wedged" verdict)
+# is removed from both SKILL.md and AGENTS.md, not merely narrowed.
+#
+# Red -> green: BR1's tests fail against the pre-#88 SKILL.md (which
+# explicitly says "Drive `process-ticket` per member, in parallel" and
+# documents named/background spawns) and pass once Phase C documents
+# sequential, unnamed dispatch instead. BR2's tests fail against the
+# pre-#88 SKILL.md/AGENTS.md (which carry the full B6 apparatus, complete
+# with the literal phrases "status-check ping", "confirmed-done", "wedged")
+# and pass once that apparatus is gone from both files.
 
 
 def _extract_phase_c(body: str) -> str:
@@ -543,293 +571,141 @@ def _extract_phase_c(body: str) -> str:
     return phase_c_m.group(0)
 
 
-def test_phase_c_git_state_fallback_when_report_missing():
-    """The required regression test: Phase C must document verifying a
-    member's completion via `git -C <worktree_path>` directly, rather than
-    relying solely on the worker's own self-report."""
+# ---------------------------------------------------------------------------
+# BR1 — Phase C dispatches wave members sequentially, one fresh
+# synchronous unnamed spawn at a time, never parallel/named spawns
+# ---------------------------------------------------------------------------
+
+
+def test_phase_c_dispatches_wave_members_sequentially_unnamed():
+    """BR1 driving test: Phase C step 2 must document sequential, unnamed
+    process-ticket dispatch, not parallel/named spawns."""
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
     phase_c = _extract_phase_c(body)
-    assert re.search(r"git\s+-C\s+<worktree_path>\s+log", phase_c), (
-        "Phase C must document 'git -C <worktree_path> log' as part of a "
-        "fallback that verifies a member's completion directly"
+    assert not re.search(
+        r"Drive\s+`process-ticket`\s+per\s+member,\s+in\s+parallel", phase_c,
+        re.IGNORECASE,
+    ), (
+        "Phase C step 2 must no longer say wave members are driven 'in "
+        "parallel' — ticket #88 made this sequential"
     )
-    assert re.search(r"git\s+-C\s+<worktree_path>\s+status\s+--porcelain", phase_c), (
-        "Phase C must document 'git -C <worktree_path> status --porcelain' "
-        "as part of the fallback"
+    assert re.search(r"SEQUENTIALLY", phase_c), (
+        "Phase C step 2 must document driving process-ticket per member "
+        "SEQUENTIALLY"
     )
-    assert re.search(r"self-report", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly say the fallback does not rely solely on "
-        "the worker's self-report"
+    assert re.search(r"one\s+at\s+a\s+time", phase_c, re.IGNORECASE), (
+        "Phase C step 2 must say members are dispatched one at a time"
+    )
+    assert re.search(r"fresh,?\s+synchronous,?\s+unnamed", phase_c, re.IGNORECASE), (
+        "Phase C step 2 must describe each member's dispatch as a fresh, "
+        "synchronous, unnamed spawn"
     )
 
 
-def test_fallback_is_idle_triggered():
+def test_phase_c_no_longer_describes_members_as_necessarily_background_named():
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
     phase_c = _extract_phase_c(body)
-    assert re.search(r"idle", phase_c, re.IGNORECASE), (
-        "Phase C must tie the fallback trigger to a member going idle"
-    )
-    assert re.search(r"timer.free|no\s+timer|not\s+.{0,20}timer|without\s+.{0,20}timer", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly say the check is NOT timer-based — the "
-        "orchestrator has no timer"
+    assert not re.search(
+        r"necessarily\s+means\s+each\s+is\s+a\s*\n?\s*background/named",
+        phase_c, re.IGNORECASE,
+    ), (
+        "Phase C must no longer claim wave members are necessarily "
+        "background/named spawns — sequential dispatch means they aren't"
     )
 
 
-def test_fallback_trigger_excludes_already_reported_members():
-    """Regression for ticket #64 review round 1, finding 5: the documented
-    trigger is "idle WITHOUT having sent its Final-step report" — a member
-    that reports first and then goes idle (the fast, successful path) must
-    NOT re-trigger the fallback. The prose must scope the trigger explicitly,
-    not merely say "idle" on its own.
-    """
+def test_hard_rules_no_longer_claim_process_ticket_dispatch_is_parallel():
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"without\*{0,2}\s+having\s+sent\s+its\s+Final-step\s+report", phase_c, re.IGNORECASE), (
-        "Phase C must scope the fallback trigger to idle-WITHOUT-having-sent-"
-        "its-report, not idle alone"
+    hard_rules_m = re.search(r"## Hard rules.*", body, re.DOTALL)
+    assert hard_rules_m, "SKILL.md must contain a '## Hard rules' section"
+    hard_rules = hard_rules_m.group(0)
+    assert "Driving `process-ticket` for each wave member IS parallel" not in hard_rules, (
+        "Hard Rules must no longer claim driving process-ticket per wave "
+        "member IS parallel — ticket #88 made this sequential"
     )
     assert re.search(
-        r"reports?\s+first.{0,80}(then\s+)?goes?\s+idle.{0,80}not.{0,20}(re-)?trigger|"
-        r"not.{0,20}re-trigger.{0,120}reports?\s+first",
-        phase_c, re.DOTALL | re.IGNORECASE,
+        r"process-ticket.{0,120}sequential|sequential.{0,120}process-ticket",
+        hard_rules, re.IGNORECASE | re.DOTALL,
     ), (
-        "Phase C must explicitly say that a member which reports first and "
-        "then goes idle does NOT re-trigger the fallback — the fast/"
-        "successful path must be excluded from the trigger"
+        "Hard Rules must document that process-ticket dispatch is now "
+        "sequential"
     )
 
 
-def test_fallback_uses_path_explicit_git_c():
+def test_root_cause_note_references_ticket_88():
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
     phase_c = _extract_phase_c(body)
-    assert "git -C <worktree_path>" in phase_c, (
-        "Phase C's fallback must use 'git -C <worktree_path>', not a bare "
-        "cwd-relative git command"
+    assert re.search(r"#88", phase_c), (
+        "Phase C must reference ticket #88 as the fix that eliminated "
+        "background/named wave-member spawns"
     )
 
 
-def test_fallback_reads_result_marker_for_verdict():
+# ---------------------------------------------------------------------------
+# BR2 — the B6 self-healing apparatus is removed, not narrowed, from both
+# SKILL.md and AGENTS.md
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrate_skill_no_longer_documents_b6_apparatus():
     text = _read(ORCHESTRATE_MD)
     body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert ".process-ticket-result.json" in phase_c, (
-        "Phase C must document reading '.process-ticket-result.json' to "
-        "recover the reviewer verdict and test result"
-    )
+    for phrase in (
+        "status-check ping",
+        "confirmed-done set",
+        "Conservative non-merge rule",
+        "alive-and-progressing",
+        "wedged",
+        "idle-triggered",
+        "idle_notification",
+    ):
+        assert phrase.lower() not in body.lower(), (
+            f"skills/orchestrate-tickets/SKILL.md must no longer contain "
+            f"the B6-specific phrase {phrase!r} — ticket #88 removed the "
+            "self-healing apparatus, not just narrowed it"
+        )
 
 
-def test_unconfirmed_member_not_merged_rolls_to_later_wave():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"not\s+merged", phase_c, re.IGNORECASE), (
-        "Phase C must document that an unconfirmed member is NOT merged"
-    )
-    assert re.search(r"later\s+wave", phase_c, re.IGNORECASE), (
-        "Phase C must document that an unconfirmed member rolls into a "
-        "later wave"
-    )
-
-
-def test_phase_c_documents_background_spawn_report_can_drop():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"#58|#60", phase_c), (
-        "Phase C must cross-reference the #58/#60 planner-spawn deadlock as "
-        "the root cause of the same class of bug"
-    )
-    assert re.search(r"background|named.{0,20}spawn|mailbox", phase_c, re.IGNORECASE), (
-        "Phase C must document that parallel wave members are necessarily "
-        "background/named Agent spawns whose report can silently drop"
-    )
-
-
-def test_agents_md_documents_b6_report_loss_fallback():
+def test_agents_md_no_longer_documents_b6_apparatus():
     text = _read(AGENTS_MD)
-    assert re.search(r"\bB6\b", text), (
-        "AGENTS.md must document a 'B6' safeguard for the wave-member "
-        "report-loss fallback"
-    )
-    assert ".process-ticket-result.json" in text, (
-        "AGENTS.md must reference the '.process-ticket-result.json' marker "
-        "file in the B6 note"
-    )
-    assert re.search(r"idle", text, re.IGNORECASE), (
-        "AGENTS.md's B6 note must mention the idle-triggered fallback"
-    )
+    for phrase in (
+        "status-check ping",
+        "confirmed-done set",
+        "Conservative non-merge rule",
+        "alive-and-progressing",
+    ):
+        assert phrase.lower() not in text.lower(), (
+            f"AGENTS.md must no longer contain the B6-specific phrase "
+            f"{phrase!r} — ticket #88 removed the self-healing apparatus, "
+            "not just narrowed it"
+        )
 
 
-def test_marker_filename_consistent_across_skills():
-    orchestrate_body = _extract_body(_read(ORCHESTRATE_MD))
-    process_body = _extract_body(_read(PROCESS_MD))
-    assert ".process-ticket-result.json" in orchestrate_body, (
-        "skills/orchestrate-tickets/SKILL.md must reference "
-        "'.process-ticket-result.json'"
-    )
-    assert ".process-ticket-result.json" in process_body, (
-        "skills/process-ticket/SKILL.md must reference "
-        "'.process-ticket-result.json'"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Group 15 — ticket #64 round 2, finding D: dedicated test for the
-# non-merge rule's `test`-field disqualification specifically
-# ---------------------------------------------------------------------------
-#
-# Root cause: round 1's tests only ever asserted generic "not merged"/"later
-# wave" phrasing (test_unconfirmed_member_not_merged_rolls_to_later_wave).
-# None of them pinned down that the Conservative non-merge rule disqualifies
-# on the marker's `test` field specifically, not just `verdict` — a
-# verdict-only fallback (silently weaker than the normal merge path, which
-# requires APPROVE *with* a green test run) would have slipped past every
-# existing assertion undetected.
-#
-# Red -> green: this test fails against a hypothetical verdict-only rewrite
-# of the Conservative non-merge rule (asserted below via a literal
-# "old wording" string that satisfies every *existing* non-merge assertion
-# but not this one) and passes against the current SKILL.md, which
-# explicitly ties disqualification to the marker's `test` field not being
-# `PASS`.
-
-
-def test_conservative_non_merge_rule_checks_test_field_not_just_verdict():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-
-    # A hypothetical verdict-only rewrite of the rule: it says "not merged"
-    # and "later wave" (satisfying the OLD, generic assertions in
-    # test_unconfirmed_member_not_merged_rolls_to_later_wave above) but never
-    # mentions the marker's `test` field at all.
-    verdict_only_wording = (
-        "A member whose ending state cannot be confirmed this way is not "
-        "merged: HEAD not ahead of the branch point, the marker file "
-        "missing or unreadable, or the marker's verdict is not APPROVE — "
-        "any one of these disqualifies the member. A disqualified member "
-        "rolls into a later wave, exactly like today's CHANGES_REQUESTED/"
-        "red members."
-    )
-    assert re.search(r"not\s+merged", verdict_only_wording, re.IGNORECASE)
-    assert re.search(r"later\s+wave", verdict_only_wording, re.IGNORECASE)
-
-    test_field_pattern = r"marker'?s?\s+`test`\s+(is\s+)?not\s+`PASS`"
-
-    # Confirm the test-field pattern genuinely distinguishes the two: the
-    # verdict-only wording must NOT satisfy it (proves this is a real
-    # red->green check, not a tautology that any wording would pass).
-    assert not re.search(test_field_pattern, verdict_only_wording, re.IGNORECASE), (
-        "sanity check failed: the verdict-only wording unexpectedly matched "
-        "the test-field pattern, which would make this test meaningless"
-    )
-
-    # The real SKILL.md must satisfy the stronger, test-field-specific check.
-    assert re.search(test_field_pattern, phase_c, re.IGNORECASE), (
-        "Phase C's Conservative non-merge rule must explicitly disqualify a "
-        "member whose marker `test` field is not `PASS` — checking `verdict` "
-        "alone is not sufficient, since the ordinary (non-fallback) merge "
-        "criterion is APPROVE *with* a green test run, so a verdict-only "
-        "fallback would be silently weaker than the normal merge path"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Group 16 — ticket #64 round 2, finding C: the marker must be validated as
-# belonging to THIS run/member, not blindly trusted
-# ---------------------------------------------------------------------------
-#
-# Root cause: the Phase C fallback read the result-marker file but never
-# checked it actually belongs to *this* run. Since RED waves deliberately
-# keep worktrees intact (no auto-revert), a worktree could be reused or
-# retried, and a stale marker from an earlier attempt could be misread as
-# confirming a retry that produced no real new work.
-#
-# Fix: the marker is only trusted after the HEAD-ahead-of-branch-point check
-# has already proven a genuine new commit landed, AND the marker's `ticket`
-# field must match the wave member's actual ticket number — a mismatch is
-# rejected and treated as unconfirmed, same as a missing marker.
-#
-# Red -> green: fails against the round-1 SKILL.md (marker read immediately
-# after the HEAD-ahead check with no `ticket`-field cross-check at all) and
-# passes once Phase C documents the staleness/ticket-match check.
-
-
-def test_marker_ticket_field_must_match_member_ticket():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"`ticket`\s+field", phase_c, re.IGNORECASE), (
-        "Phase C must document checking the marker's `ticket` field"
-    )
-    assert re.search(
-        r"`ticket`\s+field.{0,200}(match|equal)|"
-        r"(match|equal).{0,200}`ticket`\s+field",
-        phase_c, re.DOTALL | re.IGNORECASE,
-    ), (
-        "Phase C must document that the marker's `ticket` field must match "
-        "this wave member's actual ticket number"
-    )
-    assert re.search(r"stale", phase_c, re.IGNORECASE), (
-        "Phase C must call a ticket-field mismatch a stale marker"
-    )
-
-
-def test_marker_only_trusted_after_head_ahead_check():
-    """The staleness fix must tie marker trust to the already-proven
-    HEAD-ahead-of-branch-point fact, not read the marker unconditionally."""
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    head_ahead_idx = phase_c.find("rev-list")
-    marker_read_idx = phase_c.find("read the result-marker file")
-    assert head_ahead_idx != -1, "Phase C must document the rev-list HEAD-ahead check"
-    assert marker_read_idx != -1, (
-        "Phase C must document reading the result-marker file with the "
-        "phrase 'read the result-marker file' (distinct from the earlier, "
-        "incidental mention of the marker filename in the 'status "
-        "--porcelain' bullet, which merely notes it's expected to be absent "
-        "since the marker is gitignored by the time it's written)"
-    )
-    assert head_ahead_idx < marker_read_idx, (
-        "the HEAD-ahead-of-branch-point check must be documented BEFORE the "
-        "marker file is read, so the marker is only trusted once a genuine "
-        "new commit has already been proven"
-    )
-    assert re.search(r"only.{0,20}after|not\s+trusted\s+on\s+its\s+own", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly say the marker is only read/trusted AFTER "
-        "the HEAD-ahead check, not merely happen to be documented after it"
-    )
-
-
-def test_ticket_mismatch_disqualifies_member_from_merge():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    non_merge_m = re.search(r"\*\*Conservative non-merge rule\.\*\*.*", phase_c, re.DOTALL)
-    assert non_merge_m, "Phase C must contain the 'Conservative non-merge rule'"
-    non_merge_rule = non_merge_m.group(0)
-    assert re.search(r"`ticket`\s+field\s+not\s+matching|not\s+matching.{0,60}`ticket`",
-                      non_merge_rule, re.IGNORECASE), (
-        "the Conservative non-merge rule must list a `ticket`-field mismatch "
-        "as a disqualifying condition, alongside HEAD-not-ahead, missing "
-        "marker, verdict-not-APPROVE, and test-not-PASS"
-    )
-
-
-def test_agents_md_documents_ticket_field_staleness_check():
+def test_agents_md_documents_sequential_dispatch_replaces_b6():
     text = _read(AGENTS_MD)
-    assert re.search(r"`ticket`\s+field", text, re.IGNORECASE), (
-        "AGENTS.md's B6 note must document the marker's `ticket` field "
-        "staleness check"
+    assert re.search(r"#88", text), (
+        "AGENTS.md must reference ticket #88's fix"
     )
-    assert re.search(r"stale", text, re.IGNORECASE), (
-        "AGENTS.md's B6 note must call a mismatched marker a stale marker"
+    assert re.search(r"sequential", text, re.IGNORECASE), (
+        "AGENTS.md must document the sequential wave-member dispatch that "
+        "replaced the former B6 safeguard"
     )
+    assert re.search(r"unnamed", text, re.IGNORECASE), (
+        "AGENTS.md must document that wave members are now unnamed spawns"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 15 — ticket #64, unaffected by #88: target-repo .gitignore fix (the
+# marker file is still written unconditionally by process-ticket, regardless
+# of whether anything in orchestrate-tickets still reads it)
+# ---------------------------------------------------------------------------
+
+
 
 
 def test_agents_md_documents_target_repo_gitignore_fix():
@@ -841,583 +717,11 @@ def test_agents_md_documents_target_repo_gitignore_fix():
 
 
 # ---------------------------------------------------------------------------
-# Group 17 — ticket #64 round 3, finding 2: Phase C must NOT claim the marker
-# shows up as `??` in plain `status --porcelain` output
+# Group 16 — ticket #71, unaffected by #88: process-ticket's Final step 7
+# report format still carries the `final: true` terminal marker in both
+# modes (process-ticket writes it unconditionally regardless of whether
+# orchestrate-tickets reads it)
 # ---------------------------------------------------------------------------
-#
-# Root cause: round 2's Phase C fallback said to expect `status --porcelain`
-# to show `?? .process-ticket-result.json` "even on a fully successful run."
-# But round 3 finding 1 moved the target-repo .gitignore append to BEFORE
-# process-ticket's own commit (see skills/process-ticket/SKILL.md's Final
-# step 1), so by the time the marker file is written it is already
-# gitignored — and a gitignored untracked file produces NO entry at all in
-# plain `git status --porcelain` (verified: empty, not a `??` line). The old
-# "expect `??`" claim is therefore factually wrong under the corrected
-# ordering and must be corrected to "expect it to be absent."
-#
-# Red -> green: this test fails against the round-2 SKILL.md (which asserts
-# the marker shows up as `?? .process-ticket-result.json`) and passes once
-# Phase C instead documents the marker's absence from plain `status
-# --porcelain` output.
-
-
-def test_phase_c_does_not_claim_marker_shows_as_untracked_porcelain_entry():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert not re.search(r"\?\?\s*\.process-ticket-result\.json", phase_c), (
-        "Phase C must NOT claim 'git status --porcelain' shows "
-        "'?? .process-ticket-result.json' — once the target-repo .gitignore "
-        "append runs before the commit (round 3 finding 1), the marker is "
-        "already gitignored when written and produces no 'status "
-        "--porcelain' entry at all, so the old '??' claim is now false"
-    )
-    assert re.search(r"absent|no\s+entry|not\s+(show|appear)", phase_c, re.IGNORECASE), (
-        "Phase C must instead document that the marker is expected to be "
-        "ABSENT from plain 'status --porcelain' output on a successful run"
-    )
-    assert re.search(r"gitignor", phase_c, re.IGNORECASE), (
-        "Phase C must explain the marker's absence from 'status --porcelain' "
-        "in terms of it already being gitignored by the time it's written"
-    )
-
-
-def test_agents_md_does_not_claim_marker_shows_as_untracked_porcelain_entry():
-    """Cross-check AGENTS.md's B6 paragraph for the same now-false claim."""
-    text = _read(AGENTS_MD)
-    assert not re.search(r"\?\?\s*\.process-ticket-result\.json", text), (
-        "AGENTS.md's B6 note must NOT claim the marker shows up as "
-        "'?? .process-ticket-result.json' in 'status --porcelain' output"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Group 18 — ticket #64 round 3, finding 3: the Hard Rules summary bullet
-# must list all 5 disqualifying conditions, including ticket-mismatch
-# ---------------------------------------------------------------------------
-#
-# Root cause: the '## Hard rules' section's "Never merge on self-report
-# alone (B6)" bullet restates the Conservative non-merge rule for quick
-# reference, but only listed 4 conditions (HEAD not ahead, missing/unreadable
-# marker, verdict not APPROVE, test not PASS) — missing the 5th condition
-# (marker `ticket` field not matching the wave member's actual ticket
-# number) that round 2 finding C added to Phase C step 2 and AGENTS.md's B6
-# paragraph. All three restatements must list the same 5 conditions.
-#
-# Red -> green: this test fails against a Hard Rules bullet that lists only
-# 4 conditions and passes once it lists the ticket-mismatch condition too.
-
-
-def _extract_hard_rules(body: str) -> str:
-    hard_rules_m = re.search(r"## Hard rules.*", body, re.DOTALL)
-    assert hard_rules_m, "SKILL.md must contain a '## Hard rules' section"
-    return hard_rules_m.group(0)
-
-
-def test_hard_rules_b6_bullet_lists_all_five_disqualifying_conditions():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    hard_rules = _extract_hard_rules(body)
-    b6_m = re.search(r"\*\*Never merge on self-report alone \(B6\)\.\*\*.*", hard_rules, re.DOTALL)
-    assert b6_m, "Hard rules must contain the 'Never merge on self-report alone (B6)' bullet"
-    b6_bullet = b6_m.group(0)
-    # Stop at the next top-level bullet so we don't accidentally read past
-    # the B6 bullet into unrelated Hard Rules text below it.
-    next_bullet_m = re.search(r"\n- \*\*", b6_bullet)
-    if next_bullet_m:
-        b6_bullet = b6_bullet[: next_bullet_m.start()]
-    assert re.search(r"HEAD\s+not\s+ahead", b6_bullet, re.IGNORECASE), (
-        "the B6 Hard Rules bullet must list 'HEAD not ahead of the branch "
-        "point' as a disqualifying condition"
-    )
-    assert re.search(r"missing.{0,20}unreadable\s+marker|marker.{0,20}missing", b6_bullet, re.IGNORECASE | re.DOTALL), (
-        "the B6 Hard Rules bullet must list the missing/unreadable marker as "
-        "a disqualifying condition"
-    )
-    assert re.search(r"`ticket`\s+not\s+matching|ticket.{0,60}matching", b6_bullet, re.IGNORECASE | re.DOTALL), (
-        "the B6 Hard Rules bullet must list the marker `ticket` field not "
-        "matching this member's actual ticket number as a disqualifying "
-        "condition — this 5th condition was missing in round 2's summary "
-        "bullet even though Phase C step 2 and AGENTS.md's B6 paragraph "
-        "both correctly list it"
-    )
-    assert re.search(r"verdict.{0,20}not\s+`?APPROVE`?", b6_bullet, re.IGNORECASE | re.DOTALL), (
-        "the B6 Hard Rules bullet must list marker `verdict` not `APPROVE` "
-        "as a disqualifying condition"
-    )
-    assert re.search(r"test.{0,20}not\s+`?PASS`?", b6_bullet, re.IGNORECASE | re.DOTALL), (
-        "the B6 Hard Rules bullet must list marker `test` not `PASS` as a "
-        "disqualifying condition"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Group 19 — ticket #69: confirmed-done short-circuit for post-report idle
-# pings
-# ---------------------------------------------------------------------------
-#
-# Root cause: during live orchestrate-tickets runs (named/background Agent
-# spawns per wave member, Phase C), a worker that has already sent its
-# complete Final-step report keeps emitting idle_notification
-# (idleReason: "available") pings afterward. Each ping carries zero new info
-# but costs the orchestrator a message-read + "is this the B6 trigger?"
-# reasoning step. This is not a correctness bug — it's the harmless mirror of
-# #64's idle-without-report case — but it must be documented so the
-# orchestrator can cheaply short-circuit it WITHOUT weakening the #64 B6
-# idle-without-report fallback (which must still fire whenever a member goes
-# idle before its report arrives).
-#
-# Fix: Phase C step 2 documents a confirmed-done set. A member enters it the
-# moment its Final-step report is received, or — via the B6 fallback — the
-# moment its ending state is confirmed (HEAD-ahead check passed and the
-# result-marker validated). Any subsequent idle_notification from a member
-# already in the confirmed-done set is a cheap set-membership no-op —
-# acknowledge and discard it; it is NOT a fresh B6 evaluation. The Hard Rules
-# B6 bullet and AGENTS.md's B6 paragraph both mirror this addition.
-#
-# Red -> green: these tests fail against the pre-#69 SKILL.md/AGENTS.md (no
-# confirmed-done set documented at all) and pass once Phase C, the Hard Rules
-# B6 bullet, and AGENTS.md's B6 paragraph all document the short-circuit.
-
-
-def test_phase_c_documents_confirmed_done_short_circuit_for_post_report_idle():
-    """The required regression test: Phase C must document a confirmed-done
-    set and that a subsequent idle ping from an already-confirmed-done member
-    is a no-op, not a fresh B6 evaluation."""
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"confirmed[- ]done", phase_c, re.IGNORECASE), (
-        "Phase C must document a 'confirmed-done' set that a member enters "
-        "once its Final-step report is received or the B6 fallback confirms "
-        "its ending state"
-    )
-    assert re.search(
-        r"(no-op|set.membership|not\s+a\s+fresh|already.{0,40}confirmed)"
-        r".{0,160}(idle|B6)|"
-        r"idle.{0,160}(no-op|not\s+a\s+fresh\s+B6|set.membership)",
-        phase_c, re.DOTALL | re.IGNORECASE,
-    ), (
-        "Phase C must explicitly say a subsequent idle ping from a "
-        "confirmed-done member is a cheap no-op / set-membership check, not "
-        "a fresh B6 evaluation"
-    )
-
-
-def test_phase_c_short_circuit_does_not_weaken_b6_trigger():
-    """The confirmed-done short-circuit must NOT weaken or replace the #64
-    B6 idle-WITHOUT-report trigger — that phrasing must survive verbatim."""
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"without\*{0,2}\s+having\s+sent\s+its\s+Final-step\s+report", phase_c, re.IGNORECASE), (
-        "Phase C must still scope the B6 fallback trigger to idle-WITHOUT-"
-        "having-sent-its-report — the confirmed-done short-circuit must not "
-        "weaken this"
-    )
-
-
-def test_hard_rules_b6_bullet_mentions_confirmed_done_short_circuit():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    hard_rules = _extract_hard_rules(body)
-    b6_m = re.search(r"\*\*Never merge on self-report alone \(B6\)\.\*\*.*", hard_rules, re.DOTALL)
-    assert b6_m, "Hard rules must contain the 'Never merge on self-report alone (B6)' bullet"
-    b6_bullet = b6_m.group(0)
-    next_bullet_m = re.search(r"\n- \*\*", b6_bullet)
-    if next_bullet_m:
-        b6_bullet = b6_bullet[: next_bullet_m.start()]
-    assert re.search(r"confirmed[- ]done", b6_bullet, re.IGNORECASE), (
-        "the B6 Hard Rules bullet must mention the 'confirmed-done' "
-        "short-circuit for post-report idle pings"
-    )
-    assert re.search(r"no-op|set.membership", b6_bullet, re.IGNORECASE), (
-        "the B6 Hard Rules bullet must say a later idle ping from an "
-        "already-confirmed-done member is a no-op, never a re-triggered B6 "
-        "check"
-    )
-
-
-def test_agents_md_documents_confirmed_done_short_circuit():
-    text = _read(AGENTS_MD)
-    assert re.search(r"confirmed[- ]done", text, re.IGNORECASE), (
-        "AGENTS.md must document the 'confirmed-done' set introduced by "
-        "ticket #69"
-    )
-    assert re.search(
-        r"(no-op|set.membership).{0,160}B6|B6.{0,160}(no-op|set.membership)",
-        text, re.DOTALL | re.IGNORECASE,
-    ), (
-        "AGENTS.md must say further idle pings from a confirmed-done member "
-        "are a no-op set-membership check, not a repeated B6 evaluation"
-    )
-    assert not re.search(r"\?\?\s*\.process-ticket-result\.json", text), (
-        "AGENTS.md must NOT reintroduce the false claim that the marker "
-        "shows up as '?? .process-ticket-result.json' in 'status "
-        "--porcelain' output"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Group 20 — ticket #68: B6 status-check ping disambiguates busy vs. dead
-# before disqualifying
-# ---------------------------------------------------------------------------
-#
-# Root cause: the B6 idle-without-report fallback (#64) made its merge/
-# no-merge decision purely from a git-state snapshot. In a live run this
-# wrongly demoted a healthy wave member that was still mid-pipeline (Phase 4
-# review, waiting on its own nested reviewer sub-agent reply) — the git-state
-# check came back unconfirmed even though the member was legitimately busy,
-# not dead.
-#
-# Fix: before the Conservative non-merge rule disqualifies such a member,
-# Phase C now documents a sanctioned single-ping `SendMessage` status check.
-# It fires only when the member is on the already-narrow B6 trigger AND the
-# git-state check came back unconfirmed. A coherent progress reply keeps the
-# member eligible (not merged, not disqualified, not added to the
-# confirmed-done set); an empty/error/incoherent reply, or the member's very
-# next signal being another idle-without-report, falls through to the
-# existing Conservative non-merge rule unchanged. The bound is single ping,
-# reply-or-next-idle — no wall-clock timeout, no retry count — consistent
-# with the pre-existing timer-free invariant. None of the #64 git-state
-# criteria are relaxed.
-#
-# Red -> green: these tests fail against the pre-#68 SKILL.md/AGENTS.md (no
-# status-check ping documented at all — the git-state snapshot alone decides
-# merge/no-merge) and pass once Phase C, the Hard Rules B6 bullet, and
-# AGENTS.md's B6 subsection all document the ping.
-
-
-def _extract_ping_first_paragraph(phase_c: str) -> str:
-    """Extract just the B6 status-check ping sub-step's opening paragraph
-    (the one stating the firing condition and the git-state-passed/never-
-    pinged outcome) — narrower than the whole Phase C block, so a proximity
-    assertion against this substring can't be satisfied by the two phrases
-    appearing anywhere unrelated in Phase C."""
-    ping_m = re.search(r"\*\*B6 status-check ping.*?(?=\n\n)", phase_c, re.DOTALL)
-    assert ping_m, "Phase C must contain the B6 status-check ping sub-step"
-    return ping_m.group(0)
-
-
-def _extract_ping_substep(phase_c: str) -> str:
-    """Extract the FULL B6 status-check ping sub-step (opening paragraph +
-    Bound/Outcomes text), from '**B6 status-check ping' through (not
-    including) the '**Conservative non-merge rule.**' paragraph — wider than
-    `_extract_ping_first_paragraph` (which stops at the first blank line),
-    needed because the 'Send no second ping' sentence sits in the Outcomes
-    bullet list, a later paragraph of the same sub-step. Still narrower than
-    the whole Phase C block."""
-    ping_m = re.search(
-        r"\*\*B6 status-check ping.*?(?=\n\s*\*\*Conservative non-merge rule)",
-        phase_c, re.DOTALL,
-    )
-    assert ping_m, "Phase C must contain the B6 status-check ping sub-step"
-    return ping_m.group(0)
-
-
-def _extract_b6_section(text: str) -> str:
-    """Extract just the AGENTS.md B6 subsection (from its opening '**B6 —
-    idle-triggered report-loss fallback' heading through the end of the
-    section, immediately before the 'Cross-file consistency invariant'
-    paragraph) — the AGENTS.md analogue of `_extract_phase_c`/
-    `_extract_hard_rules`, so B6-subsection-specific assertions can't be
-    satisfied by a stray/duplicate mention of the same wording elsewhere in
-    the file."""
-    b6_m = re.search(
-        r"\*\*B6.{0,3}idle-triggered report-loss fallback.*?"
-        r"(?=\n\*\*Cross-file consistency invariant)",
-        text, re.DOTALL,
-    )
-    assert b6_m, "AGENTS.md must contain the B6 subsection"
-    return b6_m.group(0)
-
-
-def test_phase_c_documents_status_check_ping_before_conservative_rule():
-    """The required regression test: Phase C must document a single-ping
-    SendMessage status check, positioned BEFORE the Conservative non-merge
-    rule so it has a chance to keep a busy-but-alive member from being
-    wrongly disqualified."""
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    ping_idx = phase_c.find("status-check")
-    non_merge_idx = phase_c.find("**Conservative non-merge rule.**")
-    assert ping_idx != -1, (
-        "Phase C must document a 'status-check' ping sub-step"
-    )
-    assert non_merge_idx != -1, (
-        "Phase C must still contain the Conservative non-merge rule"
-    )
-    assert ping_idx < non_merge_idx, (
-        "the status-check ping sub-step must be documented BEFORE the "
-        "Conservative non-merge rule, so it gets a chance to keep a "
-        "busy-but-alive member eligible before disqualification"
-    )
-    assert re.search(r"`SendMessage`", phase_c), (
-        "Phase C must document the ping as a `SendMessage` call"
-    )
-    assert re.search(r"exactly\s+one", phase_c, re.IGNORECASE), (
-        "Phase C must say the orchestrator sends exactly one status-check "
-        "ping"
-    )
-
-
-def test_status_check_ping_fires_only_when_git_state_unconfirmed():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    ping_para = _extract_ping_first_paragraph(phase_c)
-    assert re.search(r"never\s+pinged", ping_para, re.IGNORECASE), (
-        "Phase C must document that a member whose git-state check PASSED "
-        "is confirmed-done as usual and is never pinged"
-    )
-    # Tightened (ticket #68 review round 1, Codex finding 1): the "never
-    # pinged" outcome must be textually TIED to the unconfirmed-gating
-    # precondition, not merely present somewhere in the same Phase C block.
-    # This single regex requires the "unconfirmed" gating clause to be
-    # immediately followed (within a bounded window, no paragraph break) by
-    # the "git-state check passed -> confirmed-done -> never pinged" clause
-    # — an edit that kept the words "never pinged" but detached them from
-    # the unconfirmed-gating condition (e.g. moved to an unrelated
-    # sentence) would fail this.
-    assert re.search(
-        r"unconfirmed\*{0,2}.{0,260}\*{0,2}passed\*{0,2}\s+is\s+confirmed-done"
-        r".{0,80}\*{0,2}never\s+pinged\*{0,2}",
-        ping_para, re.IGNORECASE | re.DOTALL,
-    ), (
-        "Phase C must tie 'never pinged' directly to the git-state-check-"
-        "passed / confirmed-done outcome, which must itself appear close "
-        "after the unconfirmed-gating precondition within the same "
-        "clause/paragraph window — detaching 'never pinged' from that "
-        "precondition must fail this test"
-    )
-
-
-def test_status_check_ping_is_single_ping_then_bounded_liveness_check():
-    """Superseded by ticket #83: the original single-ping/no-wall-clock-
-    timeout bound let a coherent reply buy a wave member unbounded silence,
-    which the #83 postmortem found let two idle agents wait on each other
-    indefinitely. Phase C now bounds a coherent reply to one ~15-minute
-    liveness-checked wait instead of an unbounded one — see
-    test_orchestrate_liveness_check.py for the full driving-test coverage of
-    that rework. This test only confirms the old unbounded phrasing is gone
-    and the single-ping structure (still exactly one ping) survives."""
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert not re.search(r"no\s+wall-clock\s+timeout", phase_c, re.IGNORECASE), (
-        "Phase C must no longer claim the ping bound has no wall-clock "
-        "timeout (ticket #83 replaced this with a bounded liveness check)"
-    )
-    assert not re.search(r"reply-or-next-idle", phase_c, re.IGNORECASE), (
-        "Phase C must no longer bound the ping as unbounded "
-        "reply-or-next-idle (ticket #83 replaced this with a bounded "
-        "liveness check)"
-    )
-    assert re.search(r"exactly\s+one.{0,40}status-check", phase_c, re.IGNORECASE | re.DOTALL), (
-        "Phase C must still send exactly one status-check ping"
-    )
-    assert re.search(r"~?15[\s-]*minute", phase_c, re.IGNORECASE), (
-        "Phase C must bound the post-ping wait to ~15 minutes"
-    )
-
-
-def test_coherent_reply_keeps_member_eligible_not_merged_not_confirmed_done():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"coherent\s+progress\s+reply", phase_c, re.IGNORECASE), (
-        "Phase C must document the 'coherent progress reply' outcome"
-    )
-    assert re.search(
-        r"do\s+not\s+disqualify.{0,40}do\s+not\s+merge", phase_c,
-        re.IGNORECASE | re.DOTALL,
-    ), (
-        "Phase C must say a coherent reply means: do not disqualify, do "
-        "not merge yet"
-    )
-    assert re.search(
-        r"not\*{0,2}\s+added\s+to\s+the\s+confirmed-done\s+set", phase_c,
-        re.IGNORECASE,
-    ), (
-        "Phase C must explicitly say a coherent-reply member is NOT added "
-        "to the confirmed-done set — it is kept alive, not confirmed"
-    )
-    # Added (ticket #68 review round 1, follow-up finding): the "no second
-    # ping after a coherent reply" invariant is a distinct, load-bearing
-    # part of the plan's bound and was not asserted by any of the original
-    # 9 tests — a future edit could reintroduce re-pinging a coherent-reply
-    # member on its next idle signal and every existing test would stay
-    # green. Scope to the full ping sub-step (the "Send no second ping"
-    # sentence sits in the Outcomes bullet, past the first-paragraph cutoff
-    # `_extract_ping_first_paragraph` uses).
-    ping_substep = _extract_ping_substep(phase_c)
-    assert re.search(r"no\s+second\s+ping", ping_substep, re.IGNORECASE), (
-        "Phase C's coherent-reply outcome must explicitly say 'no second "
-        "ping' is sent in response to a coherent reply"
-    )
-
-
-def test_incoherent_or_next_idle_falls_through_to_conservative_rule():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(
-        r"empty\s+or\s+error\s+reply.{0,120}incoherent\s+reply.{0,160}"
-        r"idle-without-report", phase_c, re.IGNORECASE | re.DOTALL,
-    ), (
-        "Phase C must document that an empty/error reply, an incoherent "
-        "reply, or the member's next idle-without-report signal falls "
-        "through to the Conservative non-merge rule"
-    )
-    assert re.search(r"falls\s+through", phase_c, re.IGNORECASE), (
-        "Phase C must use fall-through language for the disqualifying "
-        "outcomes"
-    )
-
-
-def test_status_check_ping_never_relaxes_git_state_criteria():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(r"never\s+relaxes", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly say the ping never relaxes the existing "
-        "git-state criteria or the Conservative non-merge rule"
-    )
-
-
-def test_hard_rules_b6_bullet_mentions_status_check_ping():
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    hard_rules = _extract_hard_rules(body)
-    b6_m = re.search(r"\*\*Never merge on self-report alone \(B6\)\.\*\*.*", hard_rules, re.DOTALL)
-    assert b6_m, "Hard rules must contain the 'Never merge on self-report alone (B6)' bullet"
-    b6_bullet = b6_m.group(0)
-    next_bullet_m = re.search(r"\n- \*\*", b6_bullet)
-    if next_bullet_m:
-        b6_bullet = b6_bullet[: next_bullet_m.start()]
-    assert re.search(r"status-check", b6_bullet, re.IGNORECASE), (
-        "the B6 Hard Rules bullet must mention the status-check ping "
-        "disambiguation step"
-    )
-    assert re.search(r"`SendMessage`", b6_bullet), (
-        "the B6 Hard Rules bullet must name SendMessage as the ping "
-        "mechanism"
-    )
-    assert re.search(r"never\s+relax", b6_bullet, re.IGNORECASE), (
-        "the B6 Hard Rules bullet must say the ping never relaxes the "
-        "git-state criteria"
-    )
-
-
-def test_agents_md_documents_status_check_ping_before_conservative_rule():
-    text = _read(AGENTS_MD)
-    b6_section = _extract_b6_section(text)
-    # Tightened (ticket #68 review round 1, Codex finding 2): scope every
-    # sub-assertion to the extracted B6 subsection, not the whole file — a
-    # stray/duplicate mention of this wording elsewhere in AGENTS.md must
-    # not be able to satisfy these checks.
-    ping_idx = b6_section.find("Status-check ping")
-    non_merge_idx = b6_section.find("**Conservative non-merge rule:**")
-    assert ping_idx != -1, (
-        "AGENTS.md's B6 subsection must document the status-check ping"
-    )
-    assert non_merge_idx != -1, (
-        "AGENTS.md's B6 subsection must still contain the Conservative "
-        "non-merge rule"
-    )
-    assert ping_idx < non_merge_idx, (
-        "AGENTS.md's B6 subsection must document the status-check ping "
-        "BEFORE the Conservative non-merge rule clause"
-    )
-    assert re.search(r"`SendMessage`", b6_section), (
-        "AGENTS.md's B6 subsection must document the ping as a SendMessage "
-        "call"
-    )
-    # Superseded by ticket #83: the unbounded "reply-or-next-idle, no
-    # wall-clock timeout, no retry-count number" bound let a coherent reply
-    # buy a member indefinite silence. It is now a bounded ~15-minute
-    # liveness/progress check instead — see
-    # test_orchestrate_liveness_check.py for full coverage of that rework.
-    assert not re.search(r"no\s+wall-clock\s+timeout", b6_section, re.IGNORECASE), (
-        "AGENTS.md's B6 subsection must no longer claim the ping bound has "
-        "no wall-clock timeout (ticket #83 replaced this with a bounded "
-        "liveness check)"
-    )
-    assert re.search(r"~?15[\s-]*minute", b6_section, re.IGNORECASE), (
-        "AGENTS.md's B6 subsection must bound the post-ping wait to "
-        "~15 minutes"
-    )
-
-
-def test_agents_md_coherent_reply_not_added_to_confirmed_done_set():
-    text = _read(AGENTS_MD)
-    # Tightened (ticket #68 review round 1, Codex finding 2): scope to the
-    # extracted B6 subsection, not the whole file, so a stray/duplicate
-    # mention elsewhere in AGENTS.md can't satisfy this check.
-    b6_section = _extract_b6_section(text)
-    assert re.search(
-        r"not\*{0,2}\s+added\s+to\s+the\s+confirmed-done\s+set", b6_section,
-        re.IGNORECASE,
-    ), (
-        "AGENTS.md's B6 subsection must say a coherent-reply member is NOT "
-        "added to the confirmed-done set — kept alive, not confirmed"
-    )
-    # Added (ticket #68 review round 1, follow-up finding): AGENTS.md
-    # counterpart of the "no second ping after a coherent reply" invariant
-    # (SKILL.md: "Send no second ping"; AGENTS.md: "no second ping follows
-    # a coherent reply"). Already within `_extract_b6_section`'s scope.
-    assert re.search(r"no\s+second\s+ping", b6_section, re.IGNORECASE), (
-        "AGENTS.md's B6 subsection must explicitly say no second ping is "
-        "sent following a coherent reply"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Group 21 — ticket #71: explicit `final: true` terminal marker keys the
-# confirmed-done set (replaces inferred "report received" correlation)
-# ---------------------------------------------------------------------------
-#
-# Root cause: ticket #69 introduced a confirmed-done set that a member enters
-# "the moment its Final-step report is received" — an inferred correlation,
-# not a marker the orchestrator can check directly. Because members are known
-# to ping idle more than once after reporting, and the entry condition was
-# never pinned to an explicit field in the report, repeated post-report idle
-# pings risked being re-evaluated rather than cheaply short-circuited.
-#
-# Fix: process-ticket's Final step 7 report format now carries an explicit
-# terminal-marker field, `final: true`, in BOTH `solo` and `integration`
-# mode. orchestrate-tickets' Phase C confirmed-done set is re-keyed on the
-# PRESENCE of that marker in the received report, and documents that
-# repeated/consecutive idle pings from an already-confirmed-done member are
-# all idempotent no-ops — zero B6 evaluations, not one per ping. AGENTS.md's
-# B6 paragraph and Cross-file consistency invariant are updated to match.
-#
-# Red -> green: these tests fail against the pre-#71 SKILL.md/AGENTS.md (no
-# `final: true` terminal marker anywhere, no "zero B6 evaluation(s)" phrasing)
-# and pass once process-ticket's Final step 7, orchestrate-tickets' Phase C,
-# its Hard Rules B6 bullet, and AGENTS.md's B6 section all document the
-# terminal-marker keying and idempotency guarantee.
-
-
-def test_phase_c_two_consecutive_idle_pings_from_confirmed_done_member_zero_b6_evals():
-    """The required regression test: Phase C must document that two
-    consecutive / repeated idle pings from one already-confirmed-done member
-    are all no-ops that resolve to zero B6 evaluations in total."""
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
-    assert re.search(
-        r"(idempotent|consecutive|repeated).{0,200}(idempotent|consecutive|repeated)?",
-        phase_c, re.DOTALL | re.IGNORECASE,
-    ) and re.search(r"idempotent", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly describe the confirmed-done short-circuit "
-        "as idempotent for repeated/consecutive idle pings"
-    )
-    assert re.search(r"zero\s+B6\s+evaluations?", phase_c, re.IGNORECASE), (
-        "Phase C must explicitly say repeated idle pings from a "
-        "confirmed-done member cost zero B6 evaluations, not one each"
-    )
 
 
 def test_process_ticket_report_carries_terminal_marker_both_modes():
@@ -1464,53 +768,205 @@ def test_process_ticket_report_carries_terminal_marker_both_modes():
     )
 
 
-def test_phase_c_confirmed_done_keyed_on_terminal_marker():
-    """Phase C must re-key confirmed-done set entry on the presence of the
-    explicit `final: true` terminal marker, directly tied to the 'enters it'
-    set-entry sentence — not an inferred correlation, and not merely a
-    marker mention somewhere else in Phase C."""
-    text = _read(ORCHESTRATE_MD)
-    body = _extract_body(text)
-    phase_c = _extract_phase_c(body)
+# ---------------------------------------------------------------------------
+# Group 17 — reviewer fix round on ticket #88: process-ticket's Final step 6
+# and 7 must no longer describe the removed B6 apparatus as still active.
+# ---------------------------------------------------------------------------
+#
+# Root cause (review finding): Final step 6/7's prose still said the
+# result-marker file exists so a caller can recover state "e.g. a parallel
+# `orchestrate-tickets` wave-member spawn that goes idle without replying --
+# see AGENTS.md's B6 note and skills/orchestrate-tickets/SKILL.md's Phase C
+# fallback, which reads this exact file" and that a caller "keys its
+# confirmed-done-set entry on (see AGENTS.md's B6 note)". Both claims are
+# false post-#88: Phase C no longer dispatches in parallel, no longer reads
+# .process-ticket-result.json at all, and there is no confirmed-done-set any
+# more. The marker file itself is still written unconditionally, every run,
+# as a harmless diagnostic artifact -- only the claim that something reads it
+# is what must be removed.
+#
+# Red -> green: these tests fail against the pre-fix SKILL.md (Final step
+# 6/7 still describe the removed B6 mechanism as active) and pass once that
+# prose is rewritten to match AGENTS.md's own post-#88 framing.
 
-    # (b) the marker must appear directly adjacent to the set-entry
-    # ("enters it") sentence, not just anywhere in Phase C.
-    adjacency_m = re.search(
-        r"enters it the moment its report carries[\s\S]{0,80}?final:\s*true",
-        phase_c,
-    )
-    assert adjacency_m, (
-        "Phase C's confirmed-done set-entry sentence ('a member enters it "
-        "the moment ...') must be directly tied to the explicit `final: "
-        "true` terminal marker within that same sentence — a marker "
-        "mention elsewhere in Phase C is not sufficient"
+
+def _extract_final_step(body: str) -> str:
+    m = re.search(r"## Final step.*?(?=\n## Hard rules)", body, re.DOTALL)
+    assert m, "process-ticket SKILL.md must contain a '## Final step' section"
+    return m.group(0)
+
+
+def test_final_step_no_longer_claims_parallel_wave_member_spawn():
+    """Final step must not describe a wave-member spawn as parallel --
+    ticket #88 made orchestrate-tickets' wave-member dispatch sequential."""
+    process_body = _extract_body(_read(PROCESS_MD))
+    final_step = _extract_final_step(process_body)
+    assert not re.search(r"\bparallel\b", final_step, re.IGNORECASE), (
+        "process-ticket SKILL.md's Final step must not contain the word "
+        "'parallel' -- ticket #88 made orchestrate-tickets' wave-member "
+        "dispatch sequential, so a 'parallel orchestrate-tickets wave-member "
+        "spawn' is no longer a real scenario"
     )
 
-    # (a) the old inferred-correlation phrasing (set entry keyed on "a
-    # report arrived", with no marker qualifier) must be gone.
+
+def test_final_step_no_longer_claims_phase_c_reads_the_marker_file():
+    """Final step must not claim orchestrate-tickets' Phase C fallback reads
+    the result-marker file -- that fallback was removed by ticket #88."""
+    process_body = _extract_body(_read(PROCESS_MD))
+    final_step = _extract_final_step(process_body)
+    assert not re.search(r"reads\s+this\s+exact\s+file", final_step, re.IGNORECASE), (
+        "process-ticket SKILL.md's Final step must not claim "
+        "orchestrate-tickets' Phase C fallback 'reads this exact file' -- "
+        "ticket #88 removed that fallback entirely; nothing in "
+        "orchestrate-tickets reads the marker file any more"
+    )
+    assert "orchestrate-tickets" not in final_step or not re.search(
+        r"Phase\s+C\s+fallback", final_step, re.IGNORECASE
+    ), (
+        "process-ticket SKILL.md's Final step must not reference an "
+        "orchestrate-tickets 'Phase C fallback' -- ticket #88 removed it"
+    )
+
+
+def test_final_step_no_longer_claims_confirmed_done_set():
+    """Final step must not reference a confirmed-done-set -- ticket #88
+    removed the concept along with the rest of the B6 apparatus."""
+    process_body = _extract_body(_read(PROCESS_MD))
+    final_step = _extract_final_step(process_body)
+    assert "confirmed-done" not in final_step.lower(), (
+        "process-ticket SKILL.md's Final step must not reference a "
+        "confirmed-done set -- ticket #88 removed the B6 apparatus that used "
+        "one, and orchestrate-tickets no longer tracks one"
+    )
+
+
+def test_final_step_no_longer_names_b6_by_label():
+    """Final step must not reference the retired 'B6' safeguard by name --
+    it should instead reference ticket #88's own framing of the change."""
+    process_body = _extract_body(_read(PROCESS_MD))
+    final_step = _extract_final_step(process_body)
+    assert not re.search(r"\bB6\b", final_step), (
+        "process-ticket SKILL.md's Final step must no longer name the "
+        "retired 'B6' safeguard -- reference ticket #88 instead, matching "
+        "AGENTS.md's own post-#88 framing"
+    )
+    assert re.search(r"#88", final_step), (
+        "process-ticket SKILL.md's Final step should still reference ticket "
+        "#88 when explaining why the marker file's readers changed"
+    )
+
+
+def test_final_step_marker_still_written_unconditionally_as_diagnostic():
+    """The marker file's write itself is unaffected by #88 -- it must still
+    be described as unconditional, every run, now framed as a harmless
+    diagnostic artifact rather than a report-loss fallback input."""
+    process_body = _extract_body(_read(PROCESS_MD))
+    final_step = _extract_final_step(process_body)
+    step6_m = re.search(
+        r"6\.\s+\*\*Write a result-marker file.*?(?=\n7\.\s+\*\*Report back)",
+        final_step, re.DOTALL,
+    )
+    assert step6_m, "Final step must contain step 6 ('Write a result-marker file')"
+    step6 = step6_m.group(0)
+    assert re.search(r"unconditional", step6, re.IGNORECASE), (
+        "Final step 6 must still say the marker write is unconditional"
+    )
+    assert re.search(r"diagnostic", step6, re.IGNORECASE), (
+        "Final step 6 must now frame the marker as a harmless diagnostic "
+        "artifact, since nothing reads it as a report-loss fallback input "
+        "any more"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 18 — reviewer fix round on ticket #88 (round 2, finding 5): step 7's
+# `final: true` paragraph must not claim orchestrate-tickets' Phase C reads
+# that field. orchestrate-tickets/SKILL.md never mentions or reads
+# `final: true` anywhere -- its documented merge criterion only checks
+# `VERDICT: APPROVE` and test `PASS`/`FAIL`. `final: true` is simply unread
+# by anything now, same as the marker file itself.
+# ---------------------------------------------------------------------------
+
+
+def test_final_true_paragraph_does_not_claim_phase_c_reads_it():
+    process_body = _extract_body(_read(PROCESS_MD))
+    final_step = _extract_final_step(process_body)
+
     assert not re.search(
-        r"enters it the moment its Final-step report is received\b",
-        phase_c,
+        r"reads\s+this\s+field\s+straight\s+off", final_step, re.IGNORECASE
     ), (
-        "Phase C must not retain the old inferred-correlation phrasing "
-        "('enters it the moment its Final-step report is received') that "
-        "keys set entry on report arrival alone, without the explicit "
-        "terminal marker"
+        "process-ticket SKILL.md's Final step 7 `final: true` paragraph "
+        "must not claim orchestrate-tickets' Phase C 'reads this field "
+        "straight off' the process-ticket report -- Phase C never reads "
+        "`final: true` at all"
     )
 
 
-def test_agents_md_b6_documents_terminal_marker_keying():
-    """AGENTS.md's B6 section must mention the `final: true` terminal marker
-    and the idempotency guarantee for repeated post-report idle pings."""
-    text = _read(AGENTS_MD)
-    b6_section = _extract_b6_section(text)
-    assert re.search(r"final:\s*true", b6_section) or re.search(
-        r"terminal\s+marker", b6_section, re.IGNORECASE
-    ), (
-        "AGENTS.md's B6 section must mention the `final: true` terminal "
-        "marker"
+def test_orchestrate_md_never_mentions_final_true():
+    """Cross-file check backing the finding: orchestrate-tickets/SKILL.md
+    must not mention `final: true` anywhere -- it is not part of Phase C's
+    merge criterion (VERDICT: APPROVE + test PASS/FAIL only)."""
+    orchestrate_body = _extract_body(_read(ORCHESTRATE_MD))
+    assert "final: true" not in orchestrate_body, (
+        "orchestrate-tickets/SKILL.md must not mention 'final: true' -- "
+        "nothing in Phase C reads that field"
     )
-    assert re.search(r"idempotent", b6_section, re.IGNORECASE), (
-        "AGENTS.md's B6 section must document the idempotency guarantee for "
-        "repeated post-report idle pings"
+
+
+# ---------------------------------------------------------------------------
+# Group 19 (ticket #88, reviewer fix round 2, finding 6) — recovered from the
+# wholesale-deleted tests/test_orchestrate_liveness_check.py. That file was
+# deleted in round 1 of this ticket's fix loop because most of its coverage
+# was specific to the removed B6 apparatus, but it also carried coverage for
+# invariants ticket #88 did NOT remove: Phase C step 5's (the integration
+# gate, still live/unchanged) documented nohup+Monitor backgrounded pattern,
+# and the B1 push-before-next-wave / RED-no-auto-revert ordering scoped
+# specifically to that step. These two are recovered here, adapted to no
+# longer reference the removed B6 mechanism. (Group 7/8/9 above already give
+# body-wide coverage of the full-suite/B1/RED substance; these add scoped,
+# step-5-specific coverage matching the original test's precision, so a
+# future edit that moves this substance out of step 5 specifically -- while
+# leaving stray mentions elsewhere in the file -- is still caught.)
+# ---------------------------------------------------------------------------
+
+
+def test_phase_c_step5_documents_nohup_monitor_backgrounded_pattern():
+    body = _read(ORCHESTRATE_MD)
+    step5 = _normalize(_extract_phase_c_step5(_extract_body(body)))
+
+    assert "nohup" in step5 and "Monitor" in step5, (
+        "Phase C step 5's integration gate must document the backgrounded "
+        "nohup + Monitor pattern"
+    )
+    assert "Set-Location <repo_root>" in step5 or "cd <repo_root>" in step5, (
+        "Phase C step 5 must keep its Set-Location/cd <repo_root> first "
+        "statement, since the test runner is the one non-git, "
+        "cwd-dependent step in this skill"
+    )
+    assert re.search(r"~?10-minute", step5, re.IGNORECASE), (
+        "Phase C step 5 must explain the backgrounded form via the "
+        "~10-minute foreground tool-timeout it avoids"
+    )
+
+
+def test_phase_c_step5_b1_push_and_red_no_auto_revert_ordering():
+    body = _read(ORCHESTRATE_MD)
+    step5 = _normalize(_extract_phase_c_step5(_extract_body(body)))
+
+    assert "push origin" in step5 and "before the next wave".lower() in step5.lower(), (
+        "Phase C step 5 must document pushing the integration branch as a "
+        "hard precondition (B1) before the next wave creates any worktree"
+    )
+    assert re.search(r"no automatic revert|no auto[- ]revert", step5, re.IGNORECASE), (
+        "Phase C step 5 must document that a RED integration gate STOPs "
+        "with no automatic revert"
+    )
+    # Ordering: the GREEN (push-before-next-wave) branch must be documented
+    # before the RED (no-auto-revert) branch, matching the original
+    # narrative order.
+    green_idx = step5.lower().index("on green")
+    red_idx = step5.lower().index("on red")
+    assert green_idx < red_idx, (
+        "Phase C step 5 must document the GREEN branch before the RED "
+        "branch"
     )

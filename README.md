@@ -4,7 +4,7 @@
 
 A Claude Code **skill + agents** plugin that turns [agent-project-issues](https://github.com/Seretos/agent-project-issues)
 tickets into draft pull requests for projects in **any language** — single tickets end-to-end, or a
-whole backlog dispatched in parallel across isolated git worktrees.
+whole backlog dispatched across isolated git worktrees, wave by wave.
 
 Ships **only skill/agent content** — no binaries, no MCP server of its own. It drives two
 other plugins' MCP servers (see [Dependencies](#dependencies)).
@@ -33,8 +33,8 @@ drive by hand — it runs the whole fleet to completion:
    or synthesizes a single one-member wave for a single ticket.
 3. For each wave, **sequentially**: creates that wave's worktrees off the integration branch's
    **current head** (not the default branch — only the integration branch itself branches off
-   that), then runs `process-ticket(mode=integration)` **in parallel** across the wave's
-   members.
+   that), then runs `process-ticket(mode=integration)` **sequentially**, one fresh spawn at a
+   time, across the wave's members.
 4. Merges every approved-and-green member into the integration branch with `git merge --no-ff`,
    then runs the project's **full test suite** on the integration branch as a cross-wave
    integration gate.
