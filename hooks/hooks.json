@@ -1,5 +1,5 @@
 {
-  "description": "Abort the pipeline when agent-project-issues MCP is unavailable during context extraction.",
+  "description": "Abort the pipeline when agent-project-issues MCP is unavailable during context extraction; block the developer subagent from ending its turn with an unresolved backgrounded command (ticket #93).",
   "hooks": {
     "SubagentStop": [
       {
@@ -8,6 +8,16 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/check-mcp-availability.mjs\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "developer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/check-developer-background-wait.mjs\"",
             "timeout": 10
           }
         ]

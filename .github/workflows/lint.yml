@@ -1,8 +1,6 @@
 name: lint
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
 
 permissions:
@@ -37,3 +35,19 @@ jobs:
               print(f"{path}: OK")
           sys.exit(0 if ok else 1)
           EOF
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run pytest
+        run: python -m pytest -q

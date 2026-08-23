@@ -8,7 +8,15 @@ version = "0.0.0"
 requires-python = ">=3.9"
 
 [project.optional-dependencies]
-test = ["pytest>=7", "pytest-timeout>=2.1"]
+test = ["pytest>=7", "pytest-timeout>=2.1", "pyyaml>=6"]
+
+[tool.setuptools.packages.find]
+# The repo root also holds plugin content directories (hooks/, agents/,
+# assets/, skills/, scripts/) that are not Python packages — setuptools'
+# flat-layout auto-discovery can't tell them apart from `tools/` (the one
+# real importable package `tests/` depends on) and refuses to guess.
+# Scope discovery to just `tools` so `pip install -e ".[test]"` succeeds.
+include = ["tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
