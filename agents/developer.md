@@ -110,16 +110,35 @@ report, never guessed and never asked interactively.
    `npm install`), then re-run. Iterate on real failures until green or you hit a
    genuine blocker you cannot resolve.
 
-   **The full-suite run always uses the backgrounded `nohup` + `Monitor`
-   pattern — regardless of how long the suite is expected to take.** There is
-   no duration estimate to weigh and no judgment call to make: start the
-   detected test command detached, `nohup <detected-test-cmd> > <log> 2>&1 &`
+   **If the project's own `AGENTS.md` prescribes a suite procedure, that
+   wins.** Some repos here carry a measured *Running the suite* section —
+   typically a set of timed chunks to be run one after another, synchronously,
+   because their maintainers measured the real numbers on the real platform.
+   Those numbers beat the generic rule below, which exists for projects that
+   have not measured. Read the project's `AGENTS.md` before you start the
+   suite; follow it exactly if it has such a section, and commit at whatever
+   boundaries it names.
+
+   **Otherwise the full-suite run always uses the backgrounded `nohup` +
+   `Monitor` pattern — regardless of how long the suite is expected to take.**
+   There is no duration estimate to weigh and no judgment call to make: start
+   the detected test command detached, `nohup <detected-test-cmd> > <log> 2>&1 &`
    (write `<log>` inside the worktree or the scratchpad), then use the
    `Monitor` tool with an until-condition on that log file to wait **inside
    the current turn**. A plain foreground `Bash` call for the full suite is
    subject to the tool's ~10-minute timeout, which the suite's real runtime
    reliably exceeds — never end the turn to "wait" for it instead (see the
-   Hard Rules below). For example, in a Python project:
+   Hard Rules below).
+
+   **Set `Monitor`'s `timeout_ms` to cover the suite — its default is 300 000
+   (5 minutes), which is shorter than the suites this pattern exists for.** A
+   monitor that expires leaves you with a dead watch and a still-running suite,
+   which is the same hole by another route. Pass `persistent: true` when you
+   cannot bound the runtime, or an explicit `timeout_ms` with generous margin
+   over the measured runtime when you can. Never leave it at the default for a
+   full-suite run.
+
+   For example, in a Python project:
    `nohup python -m pytest --timeout=90 --timeout-method=thread > <log> 2>&1 &`
    — the `--timeout`/`--timeout-method` flags are only an illustrative
    example and depend on the target project having `pytest-timeout`

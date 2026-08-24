@@ -355,3 +355,40 @@ def test_shared_lib_ships_with_the_hooks():
         "release.yml's hooks staging must be a recursive copy (`cp -a hooks/.`) "
         "so hooks/lib/ comes along."
     )
+
+
+# ---------------------------------------------------------------------------
+# The developer agent's suite-run instructions must not contradict a project's
+# own measured procedure, and must not leave Monitor at its 300s default.
+# ---------------------------------------------------------------------------
+
+
+def test_developer_defers_to_the_project_suite_procedure():
+    """`lib-python-worktree`'s AGENTS.md prescribes timed chunks run
+    synchronously; this agent's generic rule says "always background +
+    Monitor". Without an explicit precedence rule the agent reads both and
+    picks one at random."""
+    developer = _read(REPO_ROOT / "agents" / "developer.md")
+    assert "AGENTS.md" in developer, (
+        "agents/developer.md must tell the developer to read the project's own "
+        "AGENTS.md before running the suite."
+    )
+    assert "wins" in developer, (
+        "agents/developer.md must state which of the two procedures takes "
+        "precedence when a project documents its own."
+    )
+
+
+def test_developer_names_the_monitor_timeout():
+    """Monitor's timeout_ms defaults to 300000 (5 min) — shorter than the
+    suites the background+Monitor pattern exists for. An expired monitor is
+    the same hole by another route."""
+    developer = _read(REPO_ROOT / "agents" / "developer.md")
+    assert "timeout_ms" in developer, (
+        "agents/developer.md mandates Monitor for the full suite but never "
+        "names timeout_ms, whose 300s default is shorter than those suites."
+    )
+    assert "persistent" in developer, (
+        "agents/developer.md should name persistent: true as the option for an "
+        "unbounded suite runtime."
+    )
