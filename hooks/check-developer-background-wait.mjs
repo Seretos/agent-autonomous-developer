@@ -19,6 +19,12 @@
  * blocks the stop so the subagent is forced to actually wait (Monitor) or
  * report a real PASS/FAIL instead.
  *
+ * The same mistake one level up — the top-level `process-ticket` session
+ * ending its turn with an outstanding background command, which in headless
+ * `claude -p` ends the whole process — is caught by the Stop hook
+ * hooks/check-session-turn-end.mjs (ticket #23). The transcript walk both
+ * hooks need lives in lib/turn-end-scan.mjs.
+ *
  * Decision logic:
  *   - Only activates for the "developer" agent (agent_type check).
  *   - Reads the JSONL transcript and walks it in order, tracking whether
@@ -35,8 +41,14 @@
  * Pass: exit 0 with no stdout.
  */
 
-import { readFileSync } from "node:fs";
 import process from "node:process";
+
+import {
+  agentNameOf,
+  block,
+  readTranscriptLines,
+  unresolvedBackgroundCommand,
+} from "./lib/turn-end-scan.mjs";
 
 async function main() {
   // --- 1. Read and parse stdin as the hook payload ---
@@ -58,89 +70,33 @@ async function main() {
   // here: this plugin's own id is "agent-autonomous-developer", so every
   // agent_type in this plugin ("agent-autonomous-developer:reviewer",
   // "...:planner", "...:context-extractor", ...) contains "developer" as a
-  // substring of the *plugin* name, not the agent name. Match the agent-name
-  // segment (after the last ":", or the whole string when unprefixed)
-  // exactly instead.
-  const agentType = String(payload.agent_type ?? "");
-  const agentName = agentType.includes(":")
-    ? agentType.slice(agentType.lastIndexOf(":") + 1)
-    : agentType;
-  if (agentName !== "developer") {
+  // substring of the *plugin* name, not the agent name. agentNameOf matches
+  // the agent-name segment exactly instead.
+  if (agentNameOf(payload.agent_type) !== "developer") {
     process.exit(0);
   }
 
-  // --- 3. Resolve the transcript path ---
-  const transcriptPath =
-    payload.agent_transcript_path ?? payload.transcript_path ?? null;
-  if (!transcriptPath) {
-    process.exit(0);
-  }
+  // --- 3. Read and scan the JSONL transcript ---
+  const lines = readTranscriptLines(
+    payload.agent_transcript_path ?? payload.transcript_path,
+  );
+  const unresolvedBgCommand = unresolvedBackgroundCommand(lines);
 
-  // --- 4. Read and scan the JSONL transcript ---
-  let lines;
-  try {
-    const content = readFileSync(transcriptPath, "utf8");
-    lines = content.split(/\r?\n/);
-  } catch {
-    // Unreadable transcript — fail-safe, do not block.
-    process.exit(0);
-  }
-
-  // Walk the transcript in order. A backgrounded Bash call opens an
-  // "unresolved" window; a subsequent Monitor call closes it. Only the
-  // *last* backgrounded Bash call matters — anything resolved earlier in
-  // the transcript is not the failure this hook exists to catch.
-  let unresolvedBgCommand = null;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      // Skip malformed JSONL lines.
-      continue;
-    }
-
-    if (!Array.isArray(parsed.content)) continue;
-
-    for (const item of parsed.content) {
-      if (!item || item.type !== "tool_use") continue;
-
-      if (
-        item.name === "Bash" &&
-        item.input &&
-        item.input.run_in_background === true
-      ) {
-        unresolvedBgCommand = String(item.input.command ?? "(unknown command)");
-        continue;
-      }
-
-      if (item.name === "Monitor") {
-        unresolvedBgCommand = null;
-        continue;
-      }
-    }
-  }
-
-  // --- 5. Decision ---
+  // --- 4. Decision ---
   if (unresolvedBgCommand) {
-    const reason =
+    block(
       "developer: turn is ending with a backgrounded command still " +
-      `unresolved (${unresolvedBgCommand}). This is the ticket #93 ` +
-      "anti-pattern: a subagent's turn ending TERMINATES it, it is never " +
-      "suspended and resumed, so the backgrounded process is about to be " +
-      "killed and any \"I'll resume once it completes\" expectation cannot " +
-      "be honored — the caller will only see a hollow success with no real " +
-      "verification result. Continue this turn and either (a) wait for the " +
-      "command inside this same turn with the Monitor tool — the mandatory " +
-      "pattern for the full-suite verification run (agents/developer.md " +
-      "step 4) — or (b) finish the change report with an explicit PASS/FAIL " +
-      "result instead of leaving a background run outstanding.";
-    process.stdout.write(JSON.stringify({ decision: "block", reason }));
-    process.exit(0);
+        `unresolved (${unresolvedBgCommand}). This is the ticket #93 ` +
+        "anti-pattern: a subagent's turn ending TERMINATES it, it is never " +
+        "suspended and resumed, so the backgrounded process is about to be " +
+        'killed and any "I\'ll resume once it completes" expectation cannot ' +
+        "be honored — the caller will only see a hollow success with no real " +
+        "verification result. Continue this turn and either (a) wait for the " +
+        "command inside this same turn with the Monitor tool — the mandatory " +
+        "pattern for the full-suite verification run (agents/developer.md " +
+        "step 4) — or (b) finish the change report with an explicit PASS/FAIL " +
+        "result instead of leaving a background run outstanding.",
+    );
   }
 
   process.exit(0);
