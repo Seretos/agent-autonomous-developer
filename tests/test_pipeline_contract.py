@@ -96,6 +96,51 @@ def test_skill_never_moves_board_or_asks_human():
         assert any(w in ctx for w in ("disallowed", "does not exist", "never", "no human")), ctx
 
 
+def test_event_vocabulary_is_still_closed():
+    """Adding an event is a contract change (agent-plugin-dev#26's repair
+    lane must reuse the existing twelve names, never invent a thirteenth)."""
+    text = _read(SKILL)
+    m = re.search(r"Event names, exhaustively:\s*\n\n(.+?)\n\n", text, re.DOTALL)
+    assert m, "could not find the event vocabulary paragraph"
+    found = set(re.findall(r"`([a-z-]+)`", m.group(1)))
+    assert found == set(EVENTS)
+
+
+def test_skill_documents_orientation_and_repair_phases():
+    text = _read(SKILL)
+    assert "Phase 0" in text and "Phase R" in text
+    assert "merge-base --is-ancestor" in text
+    assert "origin/<base_branch>..HEAD" in text
+    assert "list_pipeline_runs" in text  # used by Phase 0's `finished` check too
+
+
+def test_skill_reuses_an_open_pr_instead_of_creating_a_second():
+    text = _read(SKILL)
+    assert "list_prs" in text and "update_pr" in text
+    # both tools must be declared in the Hard-rules allowlist, not just prose
+    m = re.search(r"Delegate everything.*?Nothing else", text, re.DOTALL)
+    assert m and "list_prs" in m.group(0) and "update_pr" in m.group(0)
+    # `get_pr`/`merge_pr` must never be *offered* as callable tools — the
+    # allowlist sentence enumerates them comma-separated in backticks; the
+    # skill is allowed to *say*, in prose, that it deliberately excludes them
+    allowlist_sentence = re.search(r"and these MCP calls:.*?\. Nothing else", m.group(0), re.DOTALL)
+    assert allowlist_sentence
+    enumerated = re.findall(r"`([a-z_]+)`", allowlist_sentence.group(0))
+    assert "get_pr" not in enumerated and "merge_pr" not in enumerated
+
+
+def test_skill_never_bare_force_pushes():
+    text = _read(SKILL)
+    assert "--force-with-lease" in text
+    assert not re.search(r"push\s+(-\S+\s+)*--force(?!-with-lease)", text)
+
+
+def test_rebase_rounds_gate_is_documented():
+    text = _read(SKILL)
+    assert "rebase=" in text
+    assert re.search(r"rebase\s*\|\s*3", text)
+
+
 def test_skill_forbids_named_dispatch_and_sendmessage():
     text = _read(SKILL)
     assert "run_in_background: false" in text

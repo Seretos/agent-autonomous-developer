@@ -21,12 +21,14 @@ One skill, not model-invocable — the caller invokes it by slash command from a
 
 | Phase | Agent | Result |
 |---|---|---|
+| 0 | the skill itself | **orient on the branch**: a fresh branch falls straight through; a branch with an open PR that is already CI-green on its exact HEAD but sits behind a moved base skips 1–4 and goes straight to Phase R instead |
+| R | `developer` (conflict-scoped) | *repair-only lane*: rebase onto the current base, resolve conflicts narrowly, re-verify, re-review only if the diff shape changed |
 | 1 | `context-extractor` | distilled context + a **verbatim transcript** of the package (for the critics) |
 | 2 | `planner` → `plan-critic` | a code-grounded plan, judged by three isolated critics (missed / misread / untestable) |
 | 3a | `developer` (`phase=tests`) → `test-critic` | driving tests proven RED, judged by an isolated critic ("which wrong implementation still passes?") |
 | 3b | `developer` (`phase=implement`) | GREEN, full suite locally (a pre-filter, not a verdict) |
 | 4 | `reviewer` (+ Codex pass when available) | `APPROVE` / `CHANGES_REQUESTED`, full re-review per fix round |
-| 5 | the skill itself | commit, push, PR with one `Closes #n` per ticket |
+| 5 | the skill itself | commit, push (reusing an already-open PR for this head instead of opening a second) |
 | 6 | the skill itself | **CI gate**: poll the pipeline, repair red runs, up to three rounds |
 
 Every phase posts an `adev:event` comment on the package ticket (`started`, `plan-committed`,
@@ -41,6 +43,11 @@ State lives in the ticket, never in the session.
   with the question, options, a recommendation, and what was already checked.
 - **No board, no ticket selection, no worktrees.** The caller — in the Seretos ecosystem
   `agent-ticket-orchestrator` — owns those. This plugin sees one package and one worktree.
+- **No mergeability check, no merge.** This plugin never calls `get_pr` or `merge_pr` — CI
+  conclusion is its own verdict; whether the PR is actually mergeable is entirely the caller's
+  concern. A retry it is asked to run may reuse an already-open PR (Phase 0/5), but it never
+  decides *when* to retry — that decision, including "the merge failed on a conflict, retry",
+  is made by the caller.
 - **No "not included" lists.** A package is done when all of it is done; otherwise it is
   `blocked` or `failed`.
 

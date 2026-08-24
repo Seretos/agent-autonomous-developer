@@ -20,6 +20,41 @@ A headless dispatch returns "process ended" plus text. That channel is structura
 - Exactly **one terminal event** per run (`ci-green`, `blocked`, `failed`), posted last, then the turn ends. A run that keeps working after a terminal event makes the caller act on a stale state.
 - The `rounds:` line must distinguish findings rounds (`f`) from infrastructure rounds (`i`). A human who reads a `failed` event has to be able to tell "three real critiques" from "three crashes" — they are different problems with different fixes.
 
+## Phase 0 orients on the branch instead of taking a parameter
+
+A retry can arrive on a branch in two different states — one where the previous
+attempt crashed mid-pipeline, and one where the previous attempt finished, got
+reviewed, opened a PR and went CI-green, but the merge failed because the base
+moved underneath it. Those two need opposite treatment: the first needs the
+whole pipeline again, the second needs only a rebase. `process-ticket` tells
+them apart itself, from facts, in `skills/process-ticket/SKILL.md`'s Phase 0 —
+**deliberately not from a parameter the caller sets.** The caller (this
+ecosystem's `agent-ticket-orchestrator`) cannot reliably distinguish "crashed"
+from "finished but conflicted" without duplicating this skill's own state
+machine; the discriminator this skill actually has is cheap and exact: *an
+open PR for this branch's head, with every CI run on the exact current HEAD
+green,* since this pipeline never opens a PR before Phase 4 (review) approves.
+Anything less finished than that is a resumed crash, not a resumed conflict,
+and gets the full pipeline. This also means `agent-ticket-orchestrator`'s
+retry dispatch is byte-identical whether it is retrying a crash or retrying a
+conflict — see its `AGENTS.md`, "Merge outcomes are classified, and a conflict
+is a retry".
+
+No new event exists for the repair path (Phase R). The vocabulary stays
+**closed** — Phase R posts the same events Phases 1–6 could always post, just
+fewer of them, and advances a new `rebase=` sub-field on the existing
+`rounds:` line rather than inventing a sixth gate name. A caller that ignores
+the sub-field loses nothing; it is opaque prose exactly like the rest of
+`rounds:`.
+
+**One branch has at most one open PR, ever.** Phase 0 looks up any existing
+open PR for its head before doing anything else, and Phase 5 reuses it
+(`update_pr`) instead of calling `create_pr` a second time. This was a latent
+bug independent of the conflict-retry feature: before this change, a second
+attempt on the same branch called `create_pr` unconditionally and would have
+either duplicated the PR or errored, silently, the first time any retry
+reached Phase 5 with a PR already open.
+
 ## There is no human in this process, by construction
 
 The dispatching CLI passes `--disallowedTools AskUserQuestion`, and no agent definition here grants it. A question is a **`blocked` event** and the end of the run. Before posting one, `process-ticket` must have tried to answer from the package transcript (epic body, sibling tickets, prior comments, the code the planner cites) and must say in the event what it checked and why that was not enough — escalating is not forwarding. The human is asked for a **decision**, never for a **retry**: anything whose answer would be "try again" is covered by the round caps. A `blocked` event whose only sensible reaction is "kick it again" is a bug in this plugin.

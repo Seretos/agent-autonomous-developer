@@ -1,7 +1,7 @@
 ---
 name: process-ticket
 disable-model-invocation: true
-description: Takes ONE work package (a ticket id or an epic id = all its child tickets) from a prepared worktree on a feature branch all the way to a pull request with a GREEN CI pipeline — planner, isolated plan critique, test-first developer, isolated test critique, reviewer (+ optional Codex pass), push, PR, CI gate with self-repair, every step reported as a machine-readable ticket comment. Never asks a human; escalates by writing a `blocked` event and ending. Invoked as "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>". Never creates worktrees or branches, never touches board columns, never selects tickets — the caller owns those.
+description: Takes ONE work package (a ticket id or an epic id = all its child tickets) from a prepared worktree on a feature branch all the way to a pull request with a GREEN CI pipeline — orients on the branch first (a fresh branch runs the full pipeline; a branch that already has an open, CI-green PR and a moved base runs a rebase-and-repair pass instead), planner, isolated plan critique, test-first developer, isolated test critique, reviewer (+ optional Codex pass), push (reusing an existing open PR for its head rather than opening a second), CI gate with self-repair, every step reported as a machine-readable ticket comment. Never asks a human; escalates by writing a `blocked` event and ending. Invoked as "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>". Never creates worktrees or branches, never touches board columns, never selects tickets — the caller owns those.
 ---
 
 # process-ticket — one work package → one green PR
@@ -48,7 +48,11 @@ ci_run: <id or empty>
 
 `f` counts rounds that ended with real findings/failures, `i` rounds lost to
 infrastructure (crash, timeout, unparseable output). **Both count toward the
-cap.** Event names, exhaustively:
+cap.** The `rounds:` line carries a fifth gate, `rebase=<u>/3(<f>f,<i>i)`,
+that only Phase R (see below) ever advances; a session that never enters
+Phase R reports it as `0/3`. The event **vocabulary itself stays closed** —
+a repair session posts nothing but the twelve names below, in the order
+Phase 0/R would produce them. Event names, exhaustively:
 
 `started` · `plan-committed` · `plan-critic-verdict` · `tests-red` ·
 `test-critic-verdict` · `tests-green` · `review-verdict` · `pr-opened` ·
@@ -95,10 +99,14 @@ than trying to end the turn again.
 | test-critic | 3 | this skill |
 | review | 3 | this skill |
 | CI | 3 | this skill |
+| rebase | 3 | this skill (Phase R only) |
 
 Package ceiling: 9 gate rounds in total, CI excluded. An infrastructure-failed
 round counts. When a cap is hit with a `critical` finding, a `CHANGES_REQUESTED`
-verdict, or a red pipeline still open → `failed`, never "proceed anyway".
+verdict, or a red pipeline still open → `failed`, never "proceed anyway". A
+session that runs Phase R has its own, smaller ceiling: **3 rebase rounds + 3
+review rounds**, CI excluded — Phases 1–3 do not run, so their caps do not
+apply.
 
 ## Preconditions
 
@@ -117,6 +125,80 @@ verdict, or a red pipeline still open → `failed`, never "proceed anyway".
    done **before** the first commit so the append lands in this package's own
    commit).
 5. Post `started`.
+
+## Phase 0 — orient on the branch
+
+The caller hands you a worktree, not a promise about its state. A retry after
+a crash, and a retry after a merge conflict, both arrive here on a branch that
+already carries work. Find out which one you are in — from facts, not from a
+parameter the caller might not have set. Nothing about the invocation changes;
+a fresh branch on `attempt=1` runs this in a few seconds and falls straight
+through to Phase 1, exactly as before this phase existed.
+
+1. `branch = git -C <worktree_path> rev-parse --abbrev-ref HEAD`.
+2. `git -C <worktree_path> fetch origin <base_branch>`.
+3. `open_pr = list_prs(project_id, head=<branch>, status="open", limit=5,
+   omit_body=True)`. More than one open PR for this head is not a state this
+   pipeline creates → `failed`.
+4. `ahead = git -C <worktree_path> log --oneline origin/<base_branch>..HEAD`
+   (empty output = a fresh branch with nothing of its own yet).
+5. `base_moved`: `git -C <worktree_path> merge-base --is-ancestor
+   origin/<base_branch> HEAD` **fails** (the branch does not contain the
+   current base).
+6. `finished`: there is an `open_pr` **and** `ahead` is non-empty **and**
+   `list_pipeline_runs(project_id, commit_sha=<HEAD sha>, limit=20)` returns at
+   least one completed run and every completed run has
+   `conclusion == "success"`. This is the discriminator between a resumed
+   crash and a resumed conflict: this pipeline only opens a PR after the
+   reviewer approves (Phase 4), so *an open PR plus green CI on this exact
+   HEAD* means the work is done and only the base moved underneath it.
+   Anything less finished means the previous attempt did not get that far.
+
+| `finished` | `base_moved` | lane |
+|---|---|---|
+| yes | yes | **Phase R** — repair only. Phases 1–4 do not run. |
+| yes | no | Nothing to repair: the branch already contains the current base, so whatever made the caller re-dispatch was not a conflict. Post `failed` saying exactly that, and end — one command's worth of checking here saves a whole wasted session. |
+| no | yes | **Phase R steps 1–2 first** (put the existing work on the current base before continuing), then the full pipeline starting at Phase 1. |
+| no | no | The full pipeline starting at Phase 1 — today's behaviour, unchanged. |
+
+## Phase R — rebase and repair
+
+Entered only from the table above. No new event exists for this phase — it
+posts the same terminal and intermediate events Phases 1–6 always could
+(`tests-green`, `review-verdict`, `pr-opened`, `ci-red`, and exactly one of
+`ci-green`/`blocked`/`failed`), just fewer of them, and it advances the
+`rebase=` sub-field on the `rounds:` line instead of the others.
+
+1. `git -C <worktree_path> rebase origin/<base_branch>`.
+   - Clean → the diff shape is unchanged from before the rebase; go to step 4.
+   - Stopped on a conflict → step 2.
+   - Any other failure → `git -C <worktree_path> rebase --abort`, post
+     `failed` with the git output.
+2. **Resolve — one round per stop it makes, cap 3.** Collect
+   `git -C <worktree_path> diff --name-only --diff-filter=U`. Dispatch
+   `developer` (fresh, unnamed, `phase=implement`) with `worktree_path`,
+   `base_branch`, the conflicted file list, and the package's intent — the
+   newest `<worktree_path>/.adev/*/plan.md` if one survived from an earlier
+   attempt, otherwise a fresh `context-extractor` dispatch's
+   `context_summary`. State the mandate narrowly in the prompt: **resolve the
+   conflict markers so both sides' intent survives; do not redesign, do not
+   add scope, do not touch files that are not conflicted.** When it returns,
+   `git -C <worktree_path> add -A`, then `git -C <worktree_path> rebase
+   --continue` — **you** do the history mutation, never the developer; it
+   only stages resolved files. A further stop is the next round.
+3. Three rounds without a finished rebase, or the developer reporting the two
+   sides as a genuine, incompatible design decision rather than a mechanical
+   conflict → `git -C <worktree_path> rebase --abort`, then post `blocked`
+   (the question, 2–4 options, a recommendation, what you checked) or
+   `failed`, whichever fits what happened.
+4. **Re-verify.** Dispatch `developer` (fresh, `phase=implement`): "the change
+   is already made; run the full suite and fix only what the rebase broke."
+   Post `tests-green` ("local pre-filter only — CI decides").
+5. **Review only if step 1 did not go clean.** A conflict changed the diff, so
+   it earns Phase 4 unchanged (its own 3-round cap). After a clean rebase
+   nothing but the base moved — skip the reviewer entirely.
+6. Continue at **Phase 5** (push + PR) and then **Phase 6** (CI gate), both
+   unchanged.
 
 ## Phase 1 — context-extractor (read-only)
 
@@ -227,12 +309,27 @@ folded in when available). Post `review-verdict`.
    (#<ticket>)"`. Multi-line: Write the message to `<rundir>/commit-msg.txt`,
    `git -C <worktree_path> commit -F <rundir>/commit-msg.txt`. Never a
    PowerShell here-string through the Bash tool.
-3. `git -C <worktree_path> push -u origin <branch>`.
-4. `create_pr(project_id, title=<from plan>, head=<branch>, base=<base_branch>,
-   draft=False, body=<summary + plan recap + review verdict + one
-   "Closes #<n>" line per ticket in the package>)`. Not a draft: the caller
-   merges on `ci-green`; a human never has to finalize it.
-5. Post `pr-opened` with `pr:` filled.
+3. `git -C <worktree_path> push -u origin <branch>`. If it is rejected as
+   non-fast-forward *and* you rewrote this branch's history in this session
+   (Phase R ran a rebase), retry **once** with `--force-with-lease`. **Never
+   bare `--force`.** A `--force-with-lease` rejection means somebody else
+   pushed to this branch while you worked — post `failed` saying so; do not
+   overwrite them.
+4. **Open or reuse the PR.** Use `open_pr` from Phase 0 if you have it fresh;
+   otherwise re-read `list_prs(project_id, head=<branch>, status="open",
+   limit=5, omit_body=True)`.
+   - **No open PR** → `create_pr(project_id, title=<from plan>, head=<branch>,
+     base=<base_branch>, draft=False, body=<summary + plan recap + review
+     verdict + one "Closes #<n>" line per ticket in the package>)`. Not a
+     draft: the caller merges on `ci-green`; a human never has to finalize it.
+   - **Exactly one open PR** → it is yours (this branch is named for this
+     package and nothing else pushes to it): **reuse it**, never open a
+     second. `update_pr(project_id, pr_id=<n>, title=…, body=…)` with the
+     same content `create_pr` would have received, plus one extra line when
+     Phase R rebased: `Rebased onto <base_branch> at <sha>.`
+   - **More than one open PR** → this cannot happen (Phase 0 already checked
+     and would have failed); if you reach this branch anyway, post `failed`.
+5. Post `pr-opened` with `pr:` filled — the reused number when you reused one.
 
 ## Phase 6 — CI gate (the only verdict)
 
@@ -268,8 +365,10 @@ A local PASS was a pre-filter. The pipeline decides.
   `run_in_background: false`, always a fresh call — never `name`, never
   `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git
   and `sleep` calls named above, and these MCP calls: `list_projects`,
-  `add_comment`, `create_pr`, `list_pipeline_runs`, `get_pipeline_run`,
-  `get_pipeline_step_log`. Nothing else.
+  `add_comment`, `create_pr`, `list_prs`, `update_pr`, `list_pipeline_runs`,
+  `get_pipeline_run`, `get_pipeline_step_log`. Nothing else — in particular no
+  `get_pr` and no `merge_pr`: mergeability and merging are the caller's
+  concern, not this skill's.
 - **No human in the loop.** `AskUserQuestion` does not exist for you. A
   question is a `blocked` event. A retry is never a question.
 - **Every return trip is a fresh dispatch with everything inlined.** Subagents
