@@ -58,8 +58,34 @@ Terminal events: **`ci-green`** (the only success), **`blocked`** (needs a human
 *decision*: the text carries the question, 2–4 options, a recommendation, and
 what you already checked), **`failed`** (a cap was exhausted or infrastructure
 broke — the text says which rounds were findings and which were infrastructure,
-so the reader can decide instead of just retrying). Post exactly one terminal
-event, then end your turn.
+so the reader can decide instead of just retrying). Secure the work first (see
+*Turn-end discipline*), then post exactly one terminal event, then end your
+turn.
+
+## Turn-end discipline
+
+You run headless (`claude -p`). There is no loop that wakes you after your turn
+ends, so **ending your turn ends this process**. Two rules follow, and a
+mechanical `Stop` hook enforces both — if it blocks you, do what it says rather
+than trying to end the turn again.
+
+1. **Never end your turn waiting for something.** Anything long — the CI poll,
+   a suite run you started yourself — runs *inside* the turn: a blocking
+   `Bash("sleep 60")`, or `Bash(run_in_background: true)` followed by an in-turn
+   `Monitor` wait. Backgrounding a command and ending the turn "to be resumed
+   when it finishes" does not suspend you, it kills you and the command with
+   you. This is not tunable: `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` only sets
+   how long the process loiters before it is killed — measured at 600 s, at `0`
+   and at 2 h, all three died the same way (ticket #23).
+2. **Never end your turn with work no remote has.** Before *every* ending —
+   `ci-green`, `blocked`, `failed`, and any point at which you are about to
+   stop for any other reason — `git -C <worktree_path> add -A`, commit, and
+   `git -C <worktree_path> push -u origin <branch>`. The caller removes this
+   worktree after a failed second attempt, so uncommitted work is destroyed and
+   the retry re-pays for context, planning and critique; a retry that finds
+   committed work continues from it instead. Commit even work you do not rate:
+   a discarded commit costs nothing, a lost implementation costs the whole
+   attempt. If the push itself fails, say so in the terminal event's text.
 
 ## Round caps
 
@@ -215,9 +241,11 @@ A local PASS was a pre-filter. The pipeline decides.
 1. `head = git -C <worktree_path> rev-parse HEAD`.
 2. Poll **in this turn**: `list_pipeline_runs(project_id, commit_sha=head,
    limit=20)`; if no run exists yet or any run has `status != "completed"`,
-   `Bash("sleep 60")` and poll again. Cap 45 minutes per round; a cap hit is an
-   `i` round. Never poll from inside a subagent — a subagent's background
-   processes die with its turn; yours do not.
+   `Bash("sleep 60")` — blocking, in the foreground — and poll again. Cap 45
+   minutes per round; a cap hit is an `i` round. Never poll from inside a
+   subagent (its background processes die with its turn), and never poll by
+   backgrounding something and ending your own turn either — see *Turn-end
+   discipline*: ending your turn ends this process.
 3. All runs `conclusion == "success"` → post **`ci-green`** with `ci_run:` and
    end. Done.
 4. Any failure → post `ci-red` (`f`), then for the failing run:
@@ -250,6 +278,8 @@ A local PASS was a pre-filter. The pipeline decides.
 - **Never move a board column.** The caller owns the board.
 - **One terminal event, then stop.** Do not keep working after `ci-green`,
   `blocked`, or `failed`.
+- **Commit and push before every turn end, and never end a turn to wait.**
+  See *Turn-end discipline*; a `Stop` hook enforces both.
 - **No "not included" lists.** A package is done when all of it is done. If
   part of it cannot be done, that is `blocked` or `failed`, not a PR with a
   caveat.
