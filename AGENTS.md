@@ -111,6 +111,12 @@ The invoking session's cwd is not pinned to the worktree (`#66`). `process-ticke
 
 `release.yml` stages `skills/`, `agents/`, `scripts/` (recursively, so `scripts/critic/` rides along), `hooks/`, `assets/`, `description.md`; `tools/check_plugin_payload.py` scans `skills/**/*.md` and `agents/*.md` for `${CLAUDE_PLUGIN_ROOT}/...` references and fails the build if a referenced file is not staged. The critic runners, schemas, prompts and constraints are referenced from `agents/plan-critic.md` / `agents/test-critic.md` — keep them under `scripts/`.
 
+## The marketplace dispatch payload carries a `changelog` field (ticket #97)
+
+The same notes body `--generate-notes` already produced for the GitHub Release, one step earlier — read back via `gh release view <tag> --json body`, never recomputed a second time so the two can't drift. `agent-marketplace#235` renders it into the opened PR under `## Changelog`; omitted or unrecognised, the field is simply ignored on that side. The whole payload (including the pre-existing `tags` array) is built with `jq -n` rather than spliced into the old unquoted `curl -d @- <<EOF` heredoc — a multi-line changelog containing backticks, quotes or newlines would break that pattern and silently drop the entire dispatch, the same class of bug that already hit this repo's own `tags` field once (`agent-marketplace@89aa850`). There is no `dispatch.yml` in this repo to mirror the change into.
+
+A failed release is never "fixed" in place — "Fail if tag already exists" refuses to reuse a version number, so a failure's only way forward is the next version number. Nothing here tries to detect or special-case a retry, and nothing should.
+
 ## Optional Codex review augmentation lives in the reviewer
 
 When the Codex plugin is installed and ready, `agents/reviewer.md` runs `scripts/codex-review.mjs` (read-only, never `--write`) and folds blocking findings into its verdict; every failure degrades silently to the reviewer's own review with a visible `[nit]` so the orchestrator can see the pass did not run. Codex is therefore recommended, **not** declared under `dependencies`. The pass runs on every review round, including re-reviews.

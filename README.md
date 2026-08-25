@@ -125,4 +125,6 @@ Actions → release → Run workflow → version=X.Y.Z
 
 Stamps the version into `plugin.json` (CI only — never hand-bump it), pushes the orphan
 `release` branch, tags `agent-autonomous-developer--vX.Y.Z`, and dispatches to
-`Seretos/agent-marketplace` (category `skill`) via `MARKETPLACE_DISPATCH_TOKEN`.
+`Seretos/agent-marketplace` (category `skill`) via `MARKETPLACE_DISPATCH_TOKEN` — the dispatch
+payload includes a `changelog` field (the release's own generated notes, read back rather than
+recomputed) that `agent-marketplace` renders into the registry PR body.

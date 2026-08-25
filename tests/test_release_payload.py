@@ -3,9 +3,14 @@ Regression test for ticket #12: the `repository_dispatch` client_payload sent
 to agent-marketplace must contain a `tags` field equal to
 ["git", "organisation", "ticket", "automation"].
 
-The test reads the raw YAML, extracts the heredoc JSON block that is passed to
-`curl -d @- <<EOF`, substitutes placeholder values for every shell variable so
-the block becomes valid JSON, parses it, and asserts the expected structure.
+Ticket #97 rebuilt the dispatch payload's construction from an unquoted
+`curl -d @- <<EOF` heredoc (fragile against a multi-line changelog with
+backticks/quotes/newlines) to a `jq -n '<filter>'` call. This test reads the
+raw YAML, extracts that jq filter, converts its jq-specific syntax (bare
+object keys, `$name`-style variable references) into valid JSON by
+substituting placeholders, parses it, and asserts the expected structure —
+the same regression this file always guarded, just reading a jq filter now
+instead of a heredoc.
 """
 
 import json
@@ -22,41 +27,32 @@ WORKFLOW_PATH = (
 EXPECTED_TAGS = ["git", "organisation", "ticket", "automation"]
 
 
-def _extract_heredoc_json(text: str) -> str:
-    """Return the text between the ``<<EOF`` marker and the closing ``EOF``.
-
-    In the YAML file the heredoc is indented, so the closing token looks like
-    ``          EOF`` (leading spaces).  The regex strips leading whitespace
-    from each content line so the block is parseable as plain JSON.
-    """
-    # Capture everything from after <<EOF up to a line that is just (optional
-    # whitespace +) EOF.
-    match = re.search(r"<<EOF\s*\n(.*?)\n[ \t]*EOF", text, re.DOTALL)
+def _extract_jq_filter(text: str) -> str:
+    """Return the jq filter object passed to `jq -n ... '<filter>'` for the
+    marketplace dispatch payload."""
+    dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
+    match = re.search(r"jq -n.*?'(\{.*?\}\})'", dispatch_step, re.DOTALL)
     if match is None:
-        raise ValueError("Could not locate <<EOF ... EOF block in release.yml")
-    raw_block = match.group(1)
-    # Strip the common leading indentation so the JSON parses cleanly.
-    lines = raw_block.splitlines()
-    # Find minimum indentation of non-empty lines.
-    indents = [len(line) - len(line.lstrip()) for line in lines if line.strip()]
-    strip = min(indents) if indents else 0
-    dedented = "\n".join(line[strip:] if len(line) >= strip else line for line in lines)
-    return dedented
+        raise ValueError("Could not locate the jq filter for the dispatch payload")
+    return match.group(1)
 
 
-def _substitute_shell_vars(text: str) -> str:
+def _jq_filter_to_json(filter_text: str) -> dict:
+    """Turn the jq object-construction filter into parseable JSON.
+
+    Only handles the two jq-specific constructs this filter actually uses:
+    a bare (unquoted) object key, and a `$name` variable reference used as a
+    value. Both are deterministically distinguishable from real JSON syntax
+    here, so a placeholder substitution is enough — no real jq evaluation.
     """
-    Replace every shell variable reference with a safe placeholder string so
-    that the block becomes parseable JSON.  We handle:
-      - ${VAR}
-      - ${{ github.repository }} / ${{ inputs.version }} / ${{ steps.*.outputs.* }}
-    """
-    # GitHub Actions expressions: ${{ ... }}
-    text = re.sub(r"\$\{\{[^}]*\}\}", "PLACEHOLDER", text)
-    # Regular shell variables: ${VAR} or $VAR
-    text = re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", "PLACEHOLDER", text)
-    text = re.sub(r"\$[A-Za-z_][A-Za-z0-9_]+", "PLACEHOLDER", text)
-    return text
+    text = re.sub(r"\$[A-Za-z_][A-Za-z0-9_]*", '"PLACEHOLDER"', filter_text)
+    text = re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)", r'\1"\2"\3', text)
+    return json.loads(text)
+
+
+def _payload() -> dict:
+    raw = WORKFLOW_PATH.read_text(encoding="utf-8")
+    return _jq_filter_to_json(_extract_jq_filter(raw))
 
 
 def test_tags_field_present_and_correct():
@@ -64,18 +60,7 @@ def test_tags_field_present_and_correct():
     Regression test: client_payload must contain
     tags == ["git", "organisation", "ticket", "automation"].
     """
-    raw = WORKFLOW_PATH.read_text(encoding="utf-8")
-    heredoc = _extract_heredoc_json(raw)
-    substituted = _substitute_shell_vars(heredoc)
-
-    try:
-        payload = json.loads(substituted)
-    except json.JSONDecodeError as exc:
-        raise AssertionError(
-            f"client_payload heredoc is not valid JSON after variable substitution.\n"
-            f"Substituted text:\n{substituted}\nError: {exc}"
-        ) from exc
-
+    payload = _payload()
     client_payload = payload.get("client_payload", {})
     assert "tags" in client_payload, (
         "'tags' key is missing from client_payload in .github/workflows/release.yml"
@@ -87,11 +72,7 @@ def test_tags_field_present_and_correct():
 
 def test_tags_british_spelling():
     """'organisation' must use British spelling (not 'organization')."""
-    raw = WORKFLOW_PATH.read_text(encoding="utf-8")
-    heredoc = _extract_heredoc_json(raw)
-    substituted = _substitute_shell_vars(heredoc)
-    payload = json.loads(substituted)
-    tags = payload["client_payload"]["tags"]
+    tags = _payload()["client_payload"]["tags"]
     assert "organisation" in tags, (
         "Expected 'organisation' (British spelling) in tags, got: " + repr(tags)
     )
@@ -101,12 +82,8 @@ def test_tags_british_spelling():
 
 
 def test_payload_json_is_valid():
-    """The heredoc block must parse as valid JSON (no trailing/misplaced commas)."""
-    raw = WORKFLOW_PATH.read_text(encoding="utf-8")
-    heredoc = _extract_heredoc_json(raw)
-    substituted = _substitute_shell_vars(heredoc)
-    # json.loads raises if invalid; the assertion is implicit in the absence of an exception
-    payload = json.loads(substituted)
+    """The jq filter must be a well-formed object with the two top-level keys."""
+    payload = _payload()
     assert isinstance(payload, dict)
     assert "event_type" in payload
     assert "client_payload" in payload
@@ -114,9 +91,11 @@ def test_payload_json_is_valid():
 
 def test_exactly_four_tags():
     """tags must have exactly four elements."""
-    raw = WORKFLOW_PATH.read_text(encoding="utf-8")
-    heredoc = _extract_heredoc_json(raw)
-    substituted = _substitute_shell_vars(heredoc)
-    payload = json.loads(substituted)
-    tags = payload["client_payload"]["tags"]
+    tags = _payload()["client_payload"]["tags"]
     assert len(tags) == 4, f"Expected 4 tags, got {len(tags)}: {tags!r}"
+
+
+def test_changelog_field_present():
+    """Ticket #97: client_payload must carry a changelog field."""
+    client_payload = _payload()["client_payload"]
+    assert "changelog" in client_payload

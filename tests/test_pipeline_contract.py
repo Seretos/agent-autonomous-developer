@@ -14,6 +14,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKILL = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
 AGENTS = REPO_ROOT / "agents"
 CRITIC = REPO_ROOT / "scripts" / "critic"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 EVENTS = [
     "started", "plan-committed", "plan-critic-verdict", "tests-red",
@@ -304,3 +305,27 @@ def test_plugin_json_depends_only_on_project_issues():
     d = json.loads(_read(REPO_ROOT / ".claude-plugin" / "plugin.json"))
     deps = [x["name"] for x in d["dependencies"]]
     assert deps == ["agent-project-issues"]
+
+
+# --- release changelog dispatch (#97) ---------------------------------------
+
+def test_release_workflow_sends_a_changelog_field():
+    text = _read(RELEASE_WORKFLOW)
+    assert "changelog" in text
+    assert "gh release view" in text  # reads back the notes already generated, never a second computation
+
+
+def test_release_workflow_builds_the_dispatch_payload_with_jq_not_a_bare_heredoc():
+    text = _read(RELEASE_WORKFLOW)
+    assert "jq -n" in text
+    dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
+    # a real heredoc use is an unindented `<<EOF` starting a shell line, not
+    # this pattern mentioned in an explanatory comment (`# ... <<EOF ...`)
+    assert not re.search(r"^\s*[^#\n]*<<EOF", dispatch_step, re.MULTILINE)
+    assert '-d "$PAYLOAD"' in dispatch_step
+
+
+def test_release_workflow_still_sends_the_tags_array():
+    text = _read(RELEASE_WORKFLOW)
+    dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
+    assert '"git"' in dispatch_step and '"organisation"' in dispatch_step
