@@ -14,11 +14,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKILL = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
 AGENTS = REPO_ROOT / "agents"
 CRITIC = REPO_ROOT / "scripts" / "critic"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 EVENTS = [
     "started", "plan-committed", "plan-critic-verdict", "tests-red",
     "test-critic-verdict", "tests-green", "review-verdict", "pr-opened",
-    "ci-red", "ci-green", "blocked", "failed",
+    "ci-red", "replan-triggered", "ci-green", "blocked", "failed",
 ]
 AGENT_NAMES = ["context-extractor", "planner", "plan-critic", "developer",
                "test-critic", "reviewer"]
@@ -98,12 +99,26 @@ def test_skill_never_moves_board_or_asks_human():
 
 def test_event_vocabulary_is_still_closed():
     """Adding an event is a contract change (agent-plugin-dev#26's repair
-    lane must reuse the existing twelve names, never invent a thirteenth)."""
+    lane must reuse the existing names; `replan-triggered` was the one
+    deliberate 2026-08-25 addition, documented as such — never a fourteenth,
+    silent one)."""
     text = _read(SKILL)
     m = re.search(r"Event names, exhaustively:\s*\n\n(.+?)\n\n", text, re.DOTALL)
     assert m, "could not find the event vocabulary paragraph"
     found = set(re.findall(r"`([a-z-]+)`", m.group(1)))
     assert found == set(EVENTS)
+
+
+def test_replan_triggered_is_documented_as_non_terminal():
+    text = _read(SKILL)
+    m = re.search(r"`replan-triggered`[^.]*\bis\b[^.]*not terminal", text)
+    assert m, "replan-triggered must be explicitly documented as non-terminal"
+
+
+def test_generation_field_is_in_the_event_block_and_capped_at_two():
+    text = _read(SKILL)
+    assert "generation:" in text
+    assert "generation < 2" in text or "generation` reaching 2" in text
 
 
 def test_skill_documents_orientation_and_repair_phases():
@@ -234,6 +249,55 @@ def test_no_unity_in_critic_material():
         assert "unity" not in _read(p).lower(), p.name
 
 
+# --- stagnation / replan (2026-08-25) ---------------------------------------
+
+def test_stagnation_check_script_exists_and_is_model_free():
+    script = CRITIC / "stagnation-check.py"
+    assert script.is_file()
+    text = _read(script)
+    code = text.split('"""', 2)[-1]
+    code = "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("#"))
+    for token in ("subprocess", "claude", "anthropic", "requests", "urllib"):
+        assert token not in code.lower(), \
+            f"stagnation-check.py must not invoke a model ({token})"
+
+
+def test_stagnation_check_supports_all_three_gates():
+    text = _read(CRITIC / "stagnation-check.py")
+    for gate in ("plan-critic", "test-critic", "review"):
+        assert f'"{gate}"' in text or f"'{gate}'" in text
+
+
+def test_skill_invokes_stagnation_check_at_the_soft_cap():
+    text = _read(SKILL)
+    assert "stagnation-check.py" in text
+    assert "RESULT: progress" in text
+    assert "RESULT: stagnation" in text
+
+
+def test_ci_and_rebase_caps_are_unaffected_by_stagnation_logic():
+    text = _read(SKILL)
+    m = re.search(r"## Round caps\n\n(.+?)\n\n#", text, re.DOTALL)
+    assert m
+    assert "6" in m.group(1)  # the new hard cap for plan-critic/test-critic/review
+    # CI and rebase must still read as capped at 3, unchanged
+    assert re.search(r"CI\s*\|\s*3\s*\|\s*3", m.group(1))
+    assert re.search(r"rebase\s*\|\s*3\s*\|\s*3", m.group(1))
+
+
+def test_reviewer_returns_a_structured_findings_block():
+    text = _read(AGENTS / "reviewer.md")
+    assert '"findings"' in text
+    assert '"kind"' in text and '"severity"' in text
+    assert '"codex"' in text  # Codex findings get their own kind
+
+
+def test_stagnation_check_is_in_the_skills_own_bash_allowlist():
+    text = _read(SKILL)
+    m = re.search(r"Delegate everything.*?Nothing else", text, re.DOTALL)
+    assert m and "stagnation-check.py" in m.group(0)
+
+
 # --- manifest ---------------------------------------------------------------
 
 def test_plugin_json_depends_only_on_project_issues():
@@ -241,3 +305,27 @@ def test_plugin_json_depends_only_on_project_issues():
     d = json.loads(_read(REPO_ROOT / ".claude-plugin" / "plugin.json"))
     deps = [x["name"] for x in d["dependencies"]]
     assert deps == ["agent-project-issues"]
+
+
+# --- release changelog dispatch (#97) ---------------------------------------
+
+def test_release_workflow_sends_a_changelog_field():
+    text = _read(RELEASE_WORKFLOW)
+    assert "changelog" in text
+    assert "gh release view" in text  # reads back the notes already generated, never a second computation
+
+
+def test_release_workflow_builds_the_dispatch_payload_with_jq_not_a_bare_heredoc():
+    text = _read(RELEASE_WORKFLOW)
+    assert "jq -n" in text
+    dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
+    # a real heredoc use is an unindented `<<EOF` starting a shell line, not
+    # this pattern mentioned in an explanatory comment (`# ... <<EOF ...`)
+    assert not re.search(r"^\s*[^#\n]*<<EOF", dispatch_step, re.MULTILINE)
+    assert '-d "$PAYLOAD"' in dispatch_step
+
+
+def test_release_workflow_still_sends_the_tags_array():
+    text = _read(RELEASE_WORKFLOW)
+    dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
+    assert '"git"' in dispatch_step and '"organisation"' in dispatch_step

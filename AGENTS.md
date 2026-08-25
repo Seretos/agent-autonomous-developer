@@ -16,9 +16,9 @@ This plugin has exactly one skill, `process-ticket`, and it is not model-invocab
 
 A headless dispatch returns "process ended" plus text. That channel is structurally too poor to carry state, and a caller that reconstructs state from prose is a bug waiting to happen. So `process-ticket` owes the caller a **fixed set of comment events** on the package ticket (`<!-- adev:event v1 … -->`, names and fields in `skills/process-ticket/SKILL.md` → "Events"). The caller derives everything from the latest event. Three invariants follow:
 
-- The event vocabulary is **closed**. Adding an event is a contract change; tell the caller's maintainers (`agent-ticket-orchestrator/AGENTS.md` carries the same table).
-- Exactly **one terminal event** per run (`ci-green`, `blocked`, `failed`), posted last, then the turn ends. A run that keeps working after a terminal event makes the caller act on a stale state.
-- The `rounds:` line must distinguish findings rounds (`f`) from infrastructure rounds (`i`). A human who reads a `failed` event has to be able to tell "three real critiques" from "three crashes" — they are different problems with different fixes.
+- The event vocabulary is **closed**. Adding an event is a contract change; tell the caller's maintainers (`agent-ticket-orchestrator/AGENTS.md` carries the same table). `replan-triggered` (2026-08-25) is the one addition since the vocabulary was fixed — additive and non-terminal, see "Round caps are progress-based, not just round-counted" below.
+- Exactly **one terminal event** per run (`ci-green`, `blocked`, `failed`), posted last, then the turn ends. A run that keeps working after a terminal event makes the caller act on a stale state. `replan-triggered` is the deliberate exception: it is non-terminal by design, and more work in the same turn is expected to follow it.
+- The `rounds:` line must distinguish findings rounds (`f`) from infrastructure rounds (`i`). A human who reads a `failed` event has to be able to tell "three real critiques" from "three crashes" — they are different problems with different fixes. It also now carries `generation:` alongside it (see below).
 
 ## Phase 0 orients on the branch instead of taking a parameter
 
@@ -81,9 +81,15 @@ A critic has no repository access. Its claims about existing code are `unverifie
 
 Ported from the `sothis` project's gates (2026-08); the flag set is identical across both runners on purpose, and `check-critic-isolation.sh` refuses to run if one runner drops a flag the other keeps.
 
-## Three-round caps: one rule, four applications
+## Round caps are progress-based, not just round-counted (2026-08-25)
 
-plan-critic, test-critic, review, and CI each cap at three rounds, with a package ceiling of nine gate rounds (CI excluded). `process-ticket` counts; a critic never counts its own rounds. An infrastructure-failed round counts — exempting it would turn the cap into an unbounded retry loop. The reviewer formerly had one fix cycle and no defined path for "still blocking after it"; that gap is closed by the same cap and `failed`.
+plan-critic, test-critic, and review each have a **soft** cap of three rounds and a **hard** cap of six; CI and rebase keep their original hard cap of three, unchanged. `process-ticket` counts; a critic never counts its own rounds. An infrastructure-failed round still counts toward the soft cap — exempting it would turn the cap into an unbounded retry loop.
+
+The reason for the split: a fixed round count cannot tell "the same objection dwelling at round 3" from "three genuinely different objections, one per round" — and only the first of those is actually a decision-shaped problem. `agent-ticket-orchestrator#7`/`#8` diagnosed the same confusion one layer up (a retry burned on a case a retry cannot fix); `agent-plugin-dev#21` Problem 2 worked out the fix for this layer, and a live incident (`#99`, `agent-chrome-wrapper` package #42/PR #43 needing 5 review rounds, each with a genuinely new finding) confirmed the diagnosis before this was built.
+
+At the soft cap, `scripts/critic/stagnation-check.py` (deterministic, no model — same philosophy as `plan-critic-merge.py`) compares this round's findings against a per-generation fingerprint history: `(kind, violated_criterion)` for plan-critic/test-critic, `(kind, file, what[:80])` for review (the reviewer has no requirement IDs to quote, see `agents/reviewer.md`'s additive structured findings block). A genuinely new fingerprint is progress — keep going, up to the hard cap of six. Only fingerprints already seen this generation is stagnation — and stagnation on plan-critic/test-critic/review (never CI, never rebase) triggers **one replan**: a fresh `planner` dispatch with the full findings history inlined, all four gate counters reset, `generation` incremented (capped at 2). Stagnating again at generation 2 is `failed`, with every recurring fingerprint quoted verbatim in the text — full mechanism in `skills/process-ticket/SKILL.md`, "Round caps: progress or stagnation" and "Replan".
+
+The reviewer formerly had one fix cycle and no defined path for "still blocking after it"; that gap is closed by the same progress/stagnation logic, not by a bare cap-and-`failed` any more.
 
 ## Test-first is two developer dispatches with a gate between them
 
@@ -104,6 +110,12 @@ The invoking session's cwd is not pinned to the worktree (`#66`). `process-ticke
 ## Release payload must ship every `${CLAUDE_PLUGIN_ROOT}`-referenced file (ticket #81)
 
 `release.yml` stages `skills/`, `agents/`, `scripts/` (recursively, so `scripts/critic/` rides along), `hooks/`, `assets/`, `description.md`; `tools/check_plugin_payload.py` scans `skills/**/*.md` and `agents/*.md` for `${CLAUDE_PLUGIN_ROOT}/...` references and fails the build if a referenced file is not staged. The critic runners, schemas, prompts and constraints are referenced from `agents/plan-critic.md` / `agents/test-critic.md` — keep them under `scripts/`.
+
+## The marketplace dispatch payload carries a `changelog` field (ticket #97)
+
+The same notes body `--generate-notes` already produced for the GitHub Release, one step earlier — read back via `gh release view <tag> --json body`, never recomputed a second time so the two can't drift. `agent-marketplace#235` renders it into the opened PR under `## Changelog`; omitted or unrecognised, the field is simply ignored on that side. The whole payload (including the pre-existing `tags` array) is built with `jq -n` rather than spliced into the old unquoted `curl -d @- <<EOF` heredoc — a multi-line changelog containing backticks, quotes or newlines would break that pattern and silently drop the entire dispatch, the same class of bug that already hit this repo's own `tags` field once (`agent-marketplace@89aa850`). There is no `dispatch.yml` in this repo to mirror the change into.
+
+A failed release is never "fixed" in place — "Fail if tag already exists" refuses to reuse a version number, so a failure's only way forward is the next version number. Nothing here tries to detect or special-case a retry, and nothing should.
 
 ## Optional Codex review augmentation lives in the reviewer
 

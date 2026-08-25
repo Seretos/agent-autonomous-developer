@@ -33,8 +33,16 @@ One skill, not model-invocable — the caller invokes it by slash command from a
 
 Every phase posts an `adev:event` comment on the package ticket (`started`, `plan-committed`,
 `plan-critic-verdict`, `tests-red`, `test-critic-verdict`, `tests-green`, `review-verdict`,
-`pr-opened`, `ci-red`, `ci-green`, `blocked`, `failed`). The only success event is `ci-green`.
-State lives in the ticket, never in the session.
+`pr-opened`, `ci-red`, `replan-triggered`, `ci-green`, `blocked`, `failed`). The only success
+event is `ci-green`. State lives in the ticket, never in the session.
+
+**Round caps are progress-based, not just round-counted.** Phases 2, 3a and 4 have a soft cap of
+three rounds and a hard cap of six: a round that finds something genuinely new (a deterministic
+fingerprint check, no model) keeps the loop going past round 3; a round that only repeats an
+earlier finding triggers one **replan** (a fresh `planner` dispatch with the full findings
+history folded in, round counters reset) before falling through to `failed`. CI and the Phase R
+rebase keep their original hard cap of three, unchanged — see `AGENTS.md`, "Round caps are
+progress-based, not just round-counted".
 
 ### What it deliberately does not do
 
@@ -117,4 +125,6 @@ Actions → release → Run workflow → version=X.Y.Z
 
 Stamps the version into `plugin.json` (CI only — never hand-bump it), pushes the orphan
 `release` branch, tags `agent-autonomous-developer--vX.Y.Z`, and dispatches to
-`Seretos/agent-marketplace` (category `skill`) via `MARKETPLACE_DISPATCH_TOKEN`.
+`Seretos/agent-marketplace` (category `skill`) via `MARKETPLACE_DISPATCH_TOKEN` — the dispatch
+payload includes a `changelog` field (the release's own generated notes, read back rather than
+recomputed) that `agent-marketplace` renders into the registry PR body.

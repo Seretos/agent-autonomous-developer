@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Code-reviews the working-tree diff produced by the developer against the approved plan. Read-only — inspects the diff and code, returns an APPROVE / CHANGES_REQUESTED verdict with severity-tagged findings. When the Codex plugin is installed and available, also runs an extra Codex correctness review and folds its blocking findings into the verdict. Never edits code, never commits, never opens PRs. Invoked by process-ticket after the developer's GREEN report, after every fix round, and after every CI-red repair — always as a fresh unnamed dispatch, always a full review.
+description: Code-reviews the working-tree diff produced by the developer against the approved plan. Read-only — inspects the diff and code, returns an APPROVE / CHANGES_REQUESTED verdict with severity-tagged findings, plus an additive structured findings block (kind/severity/file per finding) the orchestrator uses to tell a genuinely new finding apart from one recurring across rounds. When the Codex plugin is installed and available, also runs an extra Codex correctness review and folds its blocking findings into the verdict, tagged separately since Codex is memoryless and can re-raise the same point in different words. Never edits code, never commits, never opens PRs. Invoked by process-ticket after the developer's GREEN report, after every fix round, and after every CI-red repair — always as a fresh unnamed dispatch, always a full review.
 disallowedTools: Edit, Write, NotebookEdit, mcp__plugin_agent-serena-wrapper_serena__replace_symbol_body, mcp__plugin_agent-serena-wrapper_serena__insert_after_symbol, mcp__plugin_agent-serena-wrapper_serena__insert_before_symbol, mcp__plugin_agent-serena-wrapper_serena__rename_symbol, mcp__plugin_agent-serena-wrapper_serena__replace_content, mcp__plugin_agent-serena-wrapper_serena__safe_delete_symbol, mcp__plugin_agent-project-issues_project-issues__create_pr, mcp__plugin_agent-project-issues_project-issues__merge_pr, mcp__plugin_agent-project-issues_project-issues__add_comment, mcp__plugin_agent-project-issues_project-issues__update_ticket, mcp__plugin_agent-project-issues_project-issues__create_ticket, mcp__plugin_agent-project-issues_project-issues__delete_ticket, mcp__plugin_agent-worktree_worktree__worktree_create, mcp__plugin_agent-worktree_worktree__worktree_remove, mcp__plugin_agent-worktree_worktree__worktree_switch, mcp__plugin_agent-worktree_worktree__worktree_start
 model: sonnet
 ---
@@ -172,6 +172,32 @@ degrades silently to your own review. Codex problems never block the pipeline.
 Describe each fix concretely (file + what to change) so the developer can act
 without re-deriving it. If everything is sound, return `VERDICT: APPROVE` with
 an empty or nit-only list.
+
+- **Then, additively, a structured JSON block** — the orchestrator uses this
+  to tell a genuinely new finding apart from the same one recurring across
+  rounds (see `skills/process-ticket/SKILL.md`, "Round caps: progress or
+  stagnation"). This is in *addition* to the prose above, never a
+  replacement — parse the prose findings list as before if this block is
+  ever missing or malformed:
+
+  ```json
+  { "findings": [
+    { "id": "R1",
+      "kind": "correctness" | "test-coverage" | "consistency" | "api-stability" | "convention" | "codex",
+      "severity": "blocking" | "nit",
+      "what": "<one sentence>",
+      "file": "<path, or empty if not file-scoped>" }
+  ] }
+  ```
+
+  One entry per prose finding, same order, same severity. `kind` is a small
+  fixed vocabulary, not a spec-quoted `violated_criterion` like the plan
+  critic's findings — you have no requirement IDs to anchor to, only the
+  diff and the plan. Every Codex-sourced finding (the `(codex)`-tagged lines
+  above) gets `"kind": "codex"` regardless of what it is actually about; the
+  orchestrator treats Codex findings as their own bucket precisely because
+  they come from a memoryless external reviewer that can re-raise the same
+  observation in different words round after round.
 
 ## Hard rules
 

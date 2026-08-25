@@ -1,7 +1,7 @@
 ---
 name: process-ticket
 disable-model-invocation: true
-description: Takes ONE work package (a ticket id or an epic id = all its child tickets) from a prepared worktree on a feature branch all the way to a pull request with a GREEN CI pipeline — orients on the branch first (a fresh branch runs the full pipeline; a branch that already has an open, CI-green PR and a moved base runs a rebase-and-repair pass instead), planner, isolated plan critique, test-first developer, isolated test critique, reviewer (+ optional Codex pass), push (reusing an existing open PR for its head rather than opening a second), CI gate with self-repair, every step reported as a machine-readable ticket comment. Never asks a human; escalates by writing a `blocked` event and ending. Invoked as "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>". Never creates worktrees or branches, never touches board columns, never selects tickets — the caller owns those.
+description: Takes ONE work package (a ticket id or an epic id = all its child tickets) from a prepared worktree on a feature branch all the way to a pull request with a GREEN CI pipeline — orients on the branch first (a fresh branch runs the full pipeline; a branch that already has an open, CI-green PR and a moved base runs a rebase-and-repair pass instead), planner, isolated plan critique, test-first developer, isolated test critique, reviewer (+ optional Codex pass), push (reusing an existing open PR for its head rather than opening a second), CI gate with self-repair, every step reported as a machine-readable ticket comment. The plan-critic/test-critic/review gates keep going past their nominal 3-round cap as long as each round surfaces a genuinely new finding (fingerprinted, deterministic check); once a gate only repeats findings already seen this generation, it either triggers one replan (a fresh planner dispatch with the full findings history folded in, round counters reset) or, past generation 2, fails. Never asks a human; escalates by writing a `blocked` event and ending. Invoked as "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>". Never creates worktrees or branches, never touches board columns, never selects tickets — the caller owns those.
 ---
 
 # process-ticket — one work package → one green PR
@@ -40,6 +40,7 @@ starts with a machine block, then one short human-readable paragraph:
 event: <name>
 package: <id>
 attempt: <n>
+generation: <g>/2
 rounds: plan-critic=<u>/3(<f>f,<i>i) test-critic=<u>/3(<f>f,<i>i) review=<u>/3(<f>f,<i>i) ci=<u>/3(<f>f,<i>i)
 pr: <number or empty>
 ci_run: <id or empty>
@@ -48,15 +49,25 @@ ci_run: <id or empty>
 
 `f` counts rounds that ended with real findings/failures, `i` rounds lost to
 infrastructure (crash, timeout, unparseable output). **Both count toward the
-cap.** The `rounds:` line carries a fifth gate, `rebase=<u>/3(<f>f,<i>i)`,
+cap.** The `rounds:` line carries a sixth gate, `rebase=<u>/3(<f>f,<i>i)`,
 that only Phase R (see below) ever advances; a session that never enters
-Phase R reports it as `0/3`. The event **vocabulary itself stays closed** —
-a repair session posts nothing but the twelve names below, in the order
-Phase 0/R would produce them. Event names, exhaustively:
+Phase R reports it as `0/3`. `generation` is new (see "Round caps: progress
+or stagnation" below) — `1/2` on every session that never replans, `2/2` once
+a replan has happened. Both fields are additive to the contract: a caller
+that does not parse them loses nothing, the terminal events and their
+meaning are unchanged. The event **vocabulary itself stays closed except for
+this one addition** — a repair session posts nothing but the thirteen names
+below, in the order Phase 0/R would produce them. Event names, exhaustively:
 
 `started` · `plan-committed` · `plan-critic-verdict` · `tests-red` ·
 `test-critic-verdict` · `tests-green` · `review-verdict` · `pr-opened` ·
-`ci-red` · `ci-green` · `blocked` · `failed`
+`ci-red` · `replan-triggered` · `ci-green` · `blocked` · `failed`
+
+`replan-triggered` is **not terminal** — the pipeline continues in the same
+turn, at Phase 2, against a freshly re-planned `plan.md`. It exists purely so
+the ticket's event history shows *why* a package that looked stuck kept
+going instead of stopping, and *why* round numbers reset. See "Round caps:
+progress or stagnation" and "Replan" below.
 
 Terminal events: **`ci-green`** (the only success), **`blocked`** (needs a human
 *decision*: the text carries the question, 2–4 options, a recommendation, and
@@ -93,20 +104,107 @@ than trying to end the turn again.
 
 ## Round caps
 
-| gate | cap | counted by |
-|---|---|---|
-| plan-critic | 3 | this skill |
-| test-critic | 3 | this skill |
-| review | 3 | this skill |
-| CI | 3 | this skill |
-| rebase | 3 | this skill (Phase R only) |
+| gate | soft cap | hard cap | counted by |
+|---|---|---|---|
+| plan-critic | 3 | 6 | this skill |
+| test-critic | 3 | 6 | this skill |
+| review | 3 | 6 | this skill |
+| CI | 3 | 3 (unchanged) | this skill |
+| rebase | 3 | 3 (unchanged) | this skill (Phase R only) |
 
-Package ceiling: 9 gate rounds in total, CI excluded. An infrastructure-failed
-round counts. When a cap is hit with a `critical` finding, a `CHANGES_REQUESTED`
-verdict, or a red pipeline still open → `failed`, never "proceed anyway". A
-session that runs Phase R has its own, smaller ceiling: **3 rebase rounds + 3
-review rounds**, CI excluded — Phases 1–3 do not run, so their caps do not
-apply.
+Package ceiling **per generation**: 9 gate rounds in total (plan-critic +
+test-critic + review), CI excluded. A new generation (see "Replan" below)
+resets this ceiling along with the per-gate counters — it is a fresh plan,
+and deserves a fresh budget.
+
+CI and rebase are unchanged from before this section existed: three rounds,
+hard, no exceptions, `failed`/`blocked` on the third round's outcome — CI
+findings are almost always implementation slips, not plan defects, and a
+rebase either resolves mechanically or it does not (see Phase R). Neither
+gate ever triggers a replan.
+
+A session that runs **Phase R** has its own, smaller ceiling: 3 rebase rounds
++ 3 review rounds, CI excluded — Phases 1–3 do not run, so their caps do not
+apply, and Phase R's own use of Phase 4 (step 5, "review only if step 1 did
+not go clean") stays a plain 3-round cap too, **not** subject to the
+progress/stagnation check below. A repair session earns a review of the
+(small) diff a conflict resolution produced; it does not earn a replan of a
+plan Phase R never even re-reads.
+
+### Round caps: progress or stagnation
+
+plan-critic, test-critic, and review no longer stop unconditionally at their
+soft cap of 3. Instead, **on reaching the soft cap**, run
+`scripts/critic/stagnation-check.py <gate> <this round's findings JSON>
+<rundir>/generation-<g>-<gate>-history.json` (the script creates the history
+file on first use; see its header for the exact fingerprint rule per gate).
+
+- **`RESULT: progress`** — this round surfaced at least one finding the
+  history has not seen before in this generation. Keep going exactly as
+  before the cap existed: another critic/developer round, another review.
+  Re-check at every subsequent round, same history file, until either the
+  gate goes clean, `RESULT: stagnation` is returned, or the **hard cap of 6**
+  rounds for this gate is reached in this generation (then treat it as
+  stagnation regardless of what the last check said — six genuinely
+  different findings on the same package is itself a sign this needs a
+  human, not six more chances).
+- **`RESULT: stagnation`** — every finding this round already appeared in an
+  earlier round of this generation. For **plan-critic** and **test-critic**,
+  and for **review**: this is where a plan-level problem is distinguished
+  from an implementation slip — see "Replan" below. This is the *only* new
+  branch; a gate that goes clean before ever reaching stagnation behaves
+  exactly as it always did.
+
+This directly closes ticket `#99` (`agent-chrome-wrapper` package #42, PR
+#43): a review that keeps finding *new*, real problems round after round is
+not a system failing to cap itself — under the old contract, staying past
+round 3 needed a judgment call the reviewer was never supposed to make on
+its own; under this one it is what the mechanism is built to allow, exactly
+because the check is on the findings, not on a round count.
+
+### Replan
+
+Triggered by `stagnation` on **plan-critic**, **test-critic**, or **review**
+(never CI, never rebase — see above), and only while **generation < 2**:
+
+1. Dispatch `planner` (fresh, unnamed) with the **full** accumulated findings
+   history of this generation across all three gates — not only the gate
+   that stagnated — inlined verbatim, plus the current `plan.md` and
+   `context_summary`. The prompt frames this explicitly as a replan: the
+   existing plan has been tried and kept hitting the same objections; design
+   a plan that avoids them, not a patch on the old one.
+2. The result is a new `plan.md` (write it to `<rundir>`, alongside — never
+   over — the previous one, which stays as `<rundir>/plan-generation-<g>.md`
+   for the record).
+3. **Reset all four gate counters to 0** (plan-critic, test-critic, review,
+   CI — CI too, since it will run against genuinely different code) for the
+   new generation. **Do not** reset the rebase counter — Phase R is
+   orthogonal to generations. Start a **fresh** fingerprint history per gate
+   for the new generation (a new plan earns a clean stagnation comparison;
+   do not carry the old plan's findings forward as if they still applied).
+4. **Increment `generation`** (1 → 2) and post the non-terminal
+   `replan-triggered` event: which gate stagnated, the fingerprints that
+   recurred (kind + the quoted key, not just the kind — a human reading a
+   later `failed` needs to see *what* kept recurring, not just that
+   something did), and the new `generation` value.
+5. Continue the pipeline at **Phase 2** (plan-critic against the new plan) in
+   the **same turn** — this is not a new dispatch of `process-ticket`, it is
+   this session continuing. If the process dies mid-replan, the latest event
+   is `replan-triggered`, which is non-terminal — the caller's existing
+   "no terminal event" handling applies unchanged (see the caller's own
+   `AGENTS.md`, "Waiting on CI is not a decision, and neither is a `blocked`
+   event nobody tried to answer" for its side of this).
+
+**`generation` reaching 2 and stagnating again → `failed`.** The terminal
+event's text must name every fingerprint that recurred across **both**
+generations, verbatim, not just its kind — the whole point of carrying the
+generation history is that whoever reads the `failed` event can tell "the
+plan genuinely cannot satisfy this" from "the fingerprinting mis-matched two
+findings that were actually different," and only the quoted text lets them
+tell the difference.
+
+A cap hit on **CI** or **rebase** is unchanged: `failed`/`blocked` as before,
+never a replan — see the table above.
 
 ## Preconditions
 
@@ -246,7 +344,10 @@ severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
   see it.
 
 Post `plan-critic-verdict` after every round (counts + one line per critical/
-major). A critical still open after round 3 → `failed`.
+major). A critical still open at the soft cap (round 3) → run the
+progress-or-stagnation check ("Round caps: progress or stagnation", above)
+before deciding anything: `progress` keeps this loop going past round 3;
+`stagnation` triggers a replan (or `failed`, at `generation` 2).
 
 ## Phase 3 — developer, test-first, with the test critique between RED and GREEN
 
@@ -264,7 +365,10 @@ unnamed) with `plan_file`, `tests_file=<rundir>/tests.diff`,
 
 - `INFRA_FAILURE` → `i`, re-dispatch; three → `failed`.
 - `critical` → `f`; re-dispatch the developer `phase=tests` with the findings
-  (it rewrites only the assertions named), critique again. Three → `failed`.
+  (it rewrites only the assertions named), critique again. At the soft cap
+  (round 3) with a `critical` still open, run the progress-or-stagnation
+  check as in Phase 2 — `progress` continues, `stagnation` replans (or
+  `failed` at `generation` 2).
 - `major`/`minor` → forward to 3b as notes; proceed.
 
 Post `test-critic-verdict` per round. Non-behavioural packages (docs, config,
@@ -297,8 +401,11 @@ folded in when available). Post `review-verdict`.
 
 - `CHANGES_REQUESTED` → `f`; fresh developer dispatch (`phase=implement`, plan +
   findings appended, prior change report inlined), then a fresh **full**
-  re-review — never narrowed to "were the findings fixed". Three rounds with
-  blocking findings still open → `failed`.
+  re-review — never narrowed to "were the findings fixed". At the soft cap
+  (round 3) with blocking findings still open, run the progress-or-stagnation
+  check against the reviewer's structured findings block (`agents/reviewer.md`,
+  "What you return") — `progress` continues past round 3 (this is exactly
+  ticket `#99`'s case), `stagnation` replans (or `failed` at `generation` 2).
 - `APPROVE` → Phase 5.
 
 ## Phase 5 — commit, push, PR
@@ -364,7 +471,9 @@ A local PASS was a pre-filter. The pipeline decides.
 - **Delegate everything.** Your own tools: `Agent` (always unnamed, always
   `run_in_background: false`, always a fresh call — never `name`, never
   `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git
-  and `sleep` calls named above, and these MCP calls: `list_projects`,
+  and `sleep` calls named above and for invoking
+  `scripts/critic/stagnation-check.py` (deterministic, no model — see "Round
+  caps: progress or stagnation"), and these MCP calls: `list_projects`,
   `add_comment`, `create_pr`, `list_prs`, `update_pr`, `list_pipeline_runs`,
   `get_pipeline_run`, `get_pipeline_step_log`. Nothing else — in particular no
   `get_pr` and no `merge_pr`: mergeability and merging are the caller's
@@ -376,7 +485,9 @@ A local PASS was a pre-filter. The pipeline decides.
 - **Never on main, never create the branch/worktree, never `-C`-less git.**
 - **Never move a board column.** The caller owns the board.
 - **One terminal event, then stop.** Do not keep working after `ci-green`,
-  `blocked`, or `failed`.
+  `blocked`, or `failed`. `replan-triggered` is the one non-terminal event
+  that is *expected* to be followed by more work in the same turn — see
+  "Replan".
 - **Commit and push before every turn end, and never end a turn to wait.**
   See *Turn-end discipline*; a `Stop` hook enforces both.
 - **No "not included" lists.** A package is done when all of it is done. If
