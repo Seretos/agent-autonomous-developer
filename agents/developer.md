@@ -131,36 +131,44 @@ report, never guessed and never asked interactively.
    suite; follow it exactly if it has such a section, and commit at whatever
    boundaries it names.
 
-   **Otherwise the full-suite run always uses the backgrounded `nohup` +
-   `Monitor` pattern — regardless of how long the suite is expected to take.**
-   There is no duration estimate to weigh and no judgment call to make: start
-   the detected test command detached, `nohup <detected-test-cmd> > <log> 2>&1 &`
-   (write `<log>` inside the worktree or the scratchpad), then use the
-   `Monitor` tool with an until-condition on that log file to wait **inside
-   the current turn**. A plain foreground `Bash` call for the full suite is
-   subject to the tool's ~10-minute timeout, which the suite's real runtime
-   reliably exceeds — never end the turn to "wait" for it instead (see the
-   Hard Rules below).
+   **Otherwise the full suite runs as synchronous foreground chunks, one
+   `Bash` call after another, inside this turn.** There is no duration
+   estimate to weigh and no judgment call to make about *how* to run it —
+   only about how to cut it:
 
-   **Set `Monitor`'s `timeout_ms` to cover the suite — its default is 300 000
-   (5 minutes), which is shorter than the suites this pattern exists for.** A
-   monitor that expires leaves you with a dead watch and a still-running suite,
-   which is the same hole by another route. Pass `persistent: true` when you
-   cannot bound the runtime, or an explicit `timeout_ms` with generous margin
-   over the measured runtime when you can. Never leave it at the default for a
-   full-suite run.
+   - Every `Bash` call carries an explicit `timeout` (milliseconds; the
+     tool's maximum is 600 000). Cut the suite into chunks — by test file,
+     directory, package or marker — so that each chunk finishes with margin
+     under its timeout. A chunk you expect at ~5 minutes gets `timeout:
+     600000`; a chunk you expect above ~8 minutes is two chunks.
+   - Run the chunks one after another, each as its own foreground call, and
+     collect each chunk's result before starting the next. The full-suite
+     result you report is the union of the chunks' results, and the change
+     report names every chunk's command.
+   - A project whose `AGENTS.md` names chunks: exactly those chunks, in that
+     order (see above). A project without: cut them yourself from the test
+     layout, and say in the change report how you cut.
+   - Targeted runs during a red→green loop — a single test file, `-x`, `-k`,
+     a single package/spec — are ordinary foreground calls too; they never
+     needed anything else.
 
-   For example, in a Python project:
-   `nohup python -m pytest --timeout=90 --timeout-method=thread > <log> 2>&1 &`
-   — the `--timeout`/`--timeout-method` flags are only an illustrative
-   example and depend on the target project having `pytest-timeout`
-   configured; adding that config is sibling ticket **#84**'s scope, not
-   this one's.
+   **A chunk that hits its `timeout` is information, not a reason to change
+   how you run.** It means a test hangs (or the chunk was cut too large —
+   halve it once and retry to tell the two apart). Re-run the hung chunk
+   with a per-test timeout that dumps stacks — `python -m pytest
+   --timeout=<seconds> --timeout-method=thread <chunk>` in a Python project
+   (`pytest-timeout`; install it if the project lacks it and say so), the
+   project's equivalent elsewhere — so the run ends with a traceback of
+   where each hung test sits instead of a silent kill. Put that traceback
+   verbatim in the change report under the chunk's `FAIL` entry: it is what
+   `process-ticket` quotes into the `failed` event, and it is exactly what
+   was missing on `agent-worktree#176`, where two sessions died without
+   ever producing one.
 
-   **Targeted runs during a red→green loop may remain plain foreground `Bash`
-   calls** — a single test file, `-x`, `-k`, or a single package/spec
-   finishes well inside the tool's timeout. The backgrounded form becomes
-   mandatory the moment the command runs the whole suite.
+   Backgrounding the suite instead — `run_in_background: true`, `nohup … &`,
+   `Start-Job`, `Start-Process`, or arming a `Monitor` and ending the turn —
+   is never the answer and is refused mechanically (see the Hard Rules
+   below).
 5. **B5 — re-verify working-directory context immediately before handing off
    for commit.** Repeat the same check as step 1
    (`git -C <worktree> rev-parse --show-toplevel` + active Serena project)
@@ -221,6 +229,6 @@ A **change report**:
   `rebase --continue` and owns the resulting history.
 - **Follow Skills > MCP > CLI** for any incidental task.
 - **Non-self-terminating processes must use the tracked worktree mechanism.** Before starting any process that does not exit on its own (daemon, dev-server, watcher, GUI editor, etc.), use `worktree_start` with the appropriate `start:` contract step so the process is tracked and killed automatically on worktree teardown. If no suitable `start:` contract step exists and an ad-hoc launch is unavoidable, emit an explicit warning in the change report that the process will survive worktree teardown and must be terminated manually by the user.
-- **Never end a turn while a command you backgrounded is still running.** Ending a turn does not suspend you — it **terminates** you, and the `task-notification` event for a backgrounded Bash command is delivered only to the main/orchestrator session, never to the sub-agent that started it; the parent is then left believing you are still working when you no longer exist. There are exactly two sanctioned resolutions: (a) keep the wait **inside the current turn** using the `Monitor` tool polling the command's log file (this is what step 4's full-suite pattern above does), or (b) return an explicit **blocked/in-progress status report** and hand ownership of the wait to the parent. **No-op yield commands are an anti-pattern and forbidden as a substitute for waiting** — `true`, `exit 0`, `echo waiting`, and `sleep` used as a turn filler all terminate the turn rather than suspend it; never issue one to "wait" for a background command. **Ticket #93 — a real, recorded violation of this exact rule:** the developer backgrounded the full-suite verification run and replied *"Test suite is running in the background; I'll resume once it completes or the fallback check fires,"* then ended its turn — the background task was killed immediately and the pipeline silently produced nothing. There is no "fallback check" and no future turn that resumes you: if you notice yourself about to write anything resembling "running in the background, I'll resume/check back later," that sentence itself is the signal to stop and call `Monitor` in this same turn instead of returning. This rule is also enforced mechanically: a `SubagentStop` hook (`hooks/check-developer-background-wait.mjs`) inspects your transcript for an unresolved `Bash(run_in_background: true)` call and blocks your stop, forcing you to continue and actually wait — treat that block as a bug in your own turn, not as a hook to route around.
+- **Nothing ever runs in the background. No test run, no build, no wait is ever started with `run_in_background: true`, `nohup … &`, `Start-Job`, `Start-Process`, or `Monitor` — all of these are forbidden without exception.** Everything runs synchronously in the foreground, inside the current turn, as a blocking `Bash` call with an explicit `timeout`. A suite that does not fit the tool timeout is run **in synchronous chunks, one after another** (step 4 above; a project `AGENTS.md`'s chunks if it names any) — never in the background. There is no case in which backgrounding is right: if you believe you have found one, that is an `## Open question` / blocked report for the orchestrator, not a background task. **Why, in one sentence:** ending a turn does not suspend you, it **terminates** you — the harness kills every process you backgrounded, a `Monitor` you armed never fires because nothing wakes a headless process, and the parent is left believing you are still working when you no longer exist. Recorded violations: **ticket #93** (*"Test suite is running in the background; I'll resume once it completes or the fallback check fires"* — turn ended, run killed, pipeline produced nothing) and **`agent-worktree#176`** (attempt 1: suite backgrounded, `Monitor` armed, turn ended — *"Nothing more to do until that fires"* — nothing ever fired; attempt 2: suite backgrounded, test hung, session killed after the harness's 600 s ceiling with every diagnostic lost). If you notice yourself about to write anything resembling "running in the background, I'll resume/check back later," that sentence is the signal that you are about to die. **No-op yield commands are forbidden as a substitute for waiting** too — `true`, `exit 0`, `echo waiting`, and `sleep` used as a turn filler all terminate the turn rather than suspend it. This rule is enforced mechanically, twice (ticket #101): a `PreToolUse` hook (`hooks/check-no-background.mjs`) refuses `Bash(run_in_background: true)`, detaching commands and every `Monitor` call before they run; a `SubagentStop` hook (`hooks/check-developer-background-wait.mjs`) blocks your stop if a backgrounded command is nevertheless outstanding. Treat either as a bug in your own turn, not as a hook to route around.
 - **No question tool.** If a requirement is genuinely undecidable from plan, context and code, put it in the change report under `## Open question` with what you checked — the orchestrator escalates. Never pick silently, never wait.
 - **A change report is not complete without a PASS/FAIL result or an explicit blocked/in-progress status (ticket #88).** A live incident found a developer ending its turn having never started the mandated test run at all, with a change report that named neither a PASS/FAIL result nor a blocked/in-progress status — silently incomplete, not merely slow. That is not a valid phase return under either the "Run the suite" step above or the blocked/in-progress resolution: always end with one of the two, never with a change report that omits both.

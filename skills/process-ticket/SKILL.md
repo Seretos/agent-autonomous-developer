@@ -84,14 +84,28 @@ ends, so **ending your turn ends this process**. Two rules follow, and a
 mechanical `Stop` hook enforces both — if it blocks you, do what it says rather
 than trying to end the turn again.
 
-1. **Never end your turn waiting for something.** Anything long — the CI poll,
-   a suite run you started yourself — runs *inside* the turn: a blocking
-   `Bash("sleep 60")`, or `Bash(run_in_background: true)` followed by an in-turn
-   `Monitor` wait. Backgrounding a command and ending the turn "to be resumed
-   when it finishes" does not suspend you, it kills you and the command with
-   you. This is not tunable: `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` only sets
-   how long the process loiters before it is killed — measured at 600 s, at `0`
-   and at 2 h, all three died the same way (ticket #23).
+1. **Nothing ever runs in the background — never end your turn waiting for
+   something.** No test run, no build, no wait is ever started with
+   `run_in_background: true`, `nohup … &`, `Start-Job`, `Start-Process`, or
+   `Monitor`; all of these are forbidden without exception, for you and for
+   every subagent you dispatch (ticket #101). Anything long — the CI poll, a
+   suite run — runs *inside* the turn as a blocking foreground `Bash` call
+   with an explicit `timeout`: `Bash("sleep 60")` for the poll, synchronous
+   chunks one after another for a suite (`agents/developer.md` step 4). A
+   command that does not fit one call is cut into shorter calls, never
+   detached. There is no case in which backgrounding is right — a case that
+   seems to need it is a `blocked` event, not a background task. Backgrounding
+   a command and ending the turn "to be resumed when it finishes" does not
+   suspend you, it kills you and the command with you; arming a `Monitor`
+   first changes nothing, nothing wakes a headless process
+   (`agent-worktree#176`: one session ended its turn with a `Monitor` armed and
+   was never woken, the other was killed with a hung suite in the background
+   and every diagnostic died with it). This is not tunable:
+   `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` only sets how long the process
+   loiters before it is killed — measured at 600 s, at `0` and at 2 h, all
+   three died the same way (ticket #23). A `PreToolUse` hook
+   (`hooks/check-no-background.mjs`) refuses these calls mechanically inside a
+   run; a refusal is a bug in your own turn, not a hook to route around.
 2. **Never end your turn with work no remote has.** Before *every* ending —
    `ci-green`, `blocked`, `failed`, and any point at which you are about to
    stop for any other reason — `git -C <worktree_path> add -A`, commit, and
@@ -378,19 +392,28 @@ text saying why.
 
 **3b — implementation (`phase=implement`).** Dispatch `developer` with `plan`,
 `context_summary`, `worktree_path`, `phase=implement`, the test-critic notes.
-It implements to GREEN and runs the **full suite** locally, backgrounded with an
-in-turn `Monitor` wait. It returns the change report with GREEN evidence and the
+It implements to GREEN and runs the **full suite** locally as synchronous
+foreground chunks inside its own turn (never backgrounded — see *Turn-end
+discipline*). It returns the change report with GREEN evidence and the
 full-suite result.
 
 - `PASS` → post `tests-green` (text: "local pre-filter only — CI decides").
 - `FAIL` with a named blocker the developer could not resolve → one fresh
   re-dispatch with the failure tail; still `FAIL` → `failed` (infra or findings,
   say which).
-- A report without PASS/FAIL **and** without an explicit `blocked/in-progress`
-  status is incomplete: one fresh re-dispatch noting that the previous attempt
-  returned without running the suite; twice → `failed`.
-- `blocked/in-progress` → the developer handed you a wait it could not finish
-  inside its turn. Re-dispatch fresh with the log path; never `SendMessage`.
+- `FAIL` because a chunk **hung** (hit its `timeout`) → the developer's report
+  carries the stack dump from the per-test-timeout re-run
+  (`agents/developer.md` step 4). One fresh re-dispatch with that dump inlined;
+  still hanging → `failed`, and the event text **quotes the stack dump
+  verbatim** — that traceback is the diagnosis a human needs, and it is
+  precisely what two dead sessions on `agent-worktree#176` never delivered. A
+  report that says "hung" without a dump is incomplete (next bullet).
+- A report without PASS/FAIL **and** without an explicit `blocked` status is
+  incomplete: one fresh re-dispatch noting that the previous attempt returned
+  without running the suite; twice → `failed`.
+- `blocked` → the developer names something it could not decide or finish
+  inside its turn. Re-dispatch fresh with what it reported; if the blocker is
+  a decision, escalate as `blocked`; never `SendMessage`.
 
 ## Phase 4 — reviewer
 
