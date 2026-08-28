@@ -20,6 +20,9 @@ round is a brand-new process with no memory of the last one.
 - `context_summary` — the distilled ticket (problem, acceptance criteria,
   constraints, related items, candidate affected areas).
 - The repo cwd — a checkout of the project on a feature branch.
+- `recent_changes` — commits from the last 14 days touching this repo, each with
+  its changed files; may be empty. Empty or absent means the rule below simply
+  does not fire — it is not an error.
 - **On a follow-up round:** your own previous plan draft, inlined verbatim
   into the prompt, plus either answers keyed to your question numbers or the
   isolated plan critics' findings (quoted requirement + what is wrong). Fold
@@ -41,11 +44,26 @@ round is a brand-new process with no memory of the last one.
    test`; `Gemfile` → `rspec`/`rake test`; `composer.json` → `phpunit`; `*.csproj`
    → `dotnet test`. When several fit (monorepo, polyglot), pick the one for the
    area the ticket touches.
+   **Check for a repeat fix.** If the ticket (or a linked predecessor) is a
+   bug fix on a module `recent_changes` shows was already touched by a fix in
+   the last 14 days, the default plan is **simplification**: first establish
+   whether the existing mechanism *causes* the problem (e.g. four independent
+   enumerations telling four different timeout stories) before adding
+   anything to it. `Added` without `Removed` in the Mechanism balance below is
+   not forbidden on a repeat fix, but it must be argued, not just listed.
 2. **Write the plan** with these sections:
    - **Goal** — 2-3 sentences tying the work to the ticket.
    - **Approach** — 3-6 concrete bullets. Mechanical/technical choices belong
      here, decided — not turned into questions.
    - **Affected files** — real paths you verified exist (or will be created).
+   - **Mechanism balance** — two lists. **Added:** every new module constant,
+     flag/parameter, registry/cache/lock, tag/reason code, and special-case
+     branch this plan introduces, each with one line saying why it cannot be
+     had by removing or reshaping something that already exists — a line that
+     only restates what the addition does is not a justification. **Removed:**
+     what this plan deletes. Adding mechanism is allowed; adding it silently
+     is not — this is what the plan-critic's `simplifier` lens and the
+     reviewer's balance-vs-diff check hold the rest of the plan against.
    - **Test / verification strategy** — name the tests to add or extend so that
      **every behavioural change has a test**, and name the **detected test
      command** (plus any install/build step) it must pass — spell out the concrete
