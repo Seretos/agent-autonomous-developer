@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Merges the critiques of the three plan-critic lenses into one report.
+Merges the critiques of the plan-critic lenses into one report.
 
 This step is deliberately mechanical: it reads JSON, concatenates, and applies one exact-match
 dedup rule. There is no `claude` invocation here and no model in the loop, by design. An LLM

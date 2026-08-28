@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Runs the plan critique as three isolated critics and merges their findings.
+# Runs the plan critique as several isolated critics and merges their findings.
 #
 # ISOLATION
 #
@@ -17,33 +17,34 @@
 # working directory. Until 2026-08-14 this comment claimed the opposite about that last point. The
 # claim was wrong; it understated the exposure rather than weakening the gate, since the flags do
 # exclude all of it. Dropping `--setting-sources ""` silently re-contaminates the critic.
-# Do not "simplify" this invocation. The guarantee applies per process, so all three runs get the
-# identical flag set and each writes its own provenance record — three isolated runs, not one run
-# whose isolation is assumed to cover the others.
+# Do not "simplify" this invocation. The guarantee applies per process, so every run gets the
+# identical flag set and each writes its own provenance record — independently isolated runs, not
+# one run whose isolation is assumed to cover the others.
 #
 # The static half of check-critic-isolation.sh runs below, on every invocation of this script, so
 # this comment is not the only thing standing between a CLI change and a silently contaminated run.
 # The expensive --live measurement stays a deliberate act.
 #
-# THREE LENSES
+# THE LENSES
 #
 # One critic reading for everything at once reads for nothing in particular: it finds whichever
-# weakness is most conspicuous and stops. The three runs are identical — same package, same system
+# weakness is most conspicuous and stops. The runs are identical — same package, same system
 # prompt, same isolation — except for a fixed focus block, so each stumbles over a different class
-# of defect: requirements the plan never addresses, requirements it addresses but misreads, and
-# behaviour stated too vaguely for a failing test to be derived from it. The lens texts are fixed
-# in plan-critic-package.sh; nothing here or above it chooses them.
+# of defect: requirements the plan never addresses, requirements it addresses but misreads,
+# behaviour stated too vaguely for a failing test to be derived from it, and mechanism the plan
+# adds without a justification that holds. The lens texts are fixed in plan-critic-package.sh;
+# nothing here or above it chooses them.
 #
 # The runs are independent by construction and are therefore started in parallel: they never see
-# each other's output, which is what keeps the three results three data points rather than one
-# opinion agreed to three times.
+# each other's output, which is what keeps the results independent data points rather than one
+# opinion agreed to by everyone.
 #
 # MERGE
 #
 # The findings are merged by plan-critic-merge.py — plain deterministic code, no model. See that
-# file for why that matters. This script's exit code is 0 only if all three critics returned a
-# usable critique; a partial run is written out but reported as a failure, because a 2-of-3 gate
-# that looks complete is worse than one that says it is not.
+# file for why that matters. This script's exit code is 0 only if every critic returned a usable
+# critique; a partial run is written out but reported as a failure, because a gate that looks
+# complete on a partial result is worse than one that says it is not.
 #
 # Usage: plan-critic-run.sh <spec-file> <scope-file> <plan-file> <output-dir>
 #   spec-file    the ticket package (title, body, comments; for an epic: plus all children), verbatim
