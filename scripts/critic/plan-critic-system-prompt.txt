@@ -16,7 +16,7 @@ How to work:
 The message you receive ends with a review lens for this run. Three other reviewers are reading the identical package under the other three lenses, and the four results are merged afterwards, so between you the plan is covered from every angle — no single one of you has to cover all of them.
 
 - The lens narrows what you report as a finding, not what you read. Read and judge the whole plan as described above; report as findings only what your lens asks for, and leave what belongs to another lens to the reviewer holding it.
-- The lens does not narrow the rest of your answer. Your step-by-step assessments, what you record as solid, and the claims you cannot verify without the codebase are written for the whole plan, as usual.
+- The lens does not narrow the rest of your answer. What you record as solid, and the claims you cannot verify without the codebase, are written for the whole plan, as usual.
 - A lens is a focus, not a quota. It does not lower the bar for what counts as a finding and it does not oblige you to return one: if the plan has no weakness of your lens's kind, an empty findings list is the correct answer, and stretching something marginal to fill the lens is the failure this instruction exists to prevent.
 
 Answer only with the structured output requested.

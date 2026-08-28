@@ -83,7 +83,12 @@ emit_lens() {
       cat <<'LENS_TAUTOLOGY'
 This run's lens: ASSERTIONS THAT DO NOT CONSTRAIN ANYTHING.
 
-For every assertion in the test code, name a concrete faulty implementation that would still make
+Judge only assertions belonging to a requirement PART 1 (the plan) declares evidence kind
+`driving-test` for. A requirement declared `existing-suite`, `ci-evidence`, or `none` has no
+driving-test obligation, so test code touching it — if any is even present — is not this lens's
+concern.
+
+For every assertion belonging to a `driving-test` requirement, name a concrete faulty implementation that would still make
 it pass, and say whether anything else in this batch would catch that implementation. An assertion
 no wrong implementation can be constructed against is doing real work; an assertion satisfied by
 code that does nothing toward the requirement is not, however plausible it reads.

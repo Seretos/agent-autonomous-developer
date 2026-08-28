@@ -90,8 +90,9 @@ than trying to end the turn again.
    `Monitor`; all of these are forbidden without exception, for you and for
    every subagent you dispatch (ticket #101). Anything long — the CI poll, a
    suite run — runs *inside* the turn as a blocking foreground `Bash` call
-   with an explicit `timeout`: `Bash("sleep 60")` for the poll, synchronous
-   chunks one after another for a suite (`agents/developer.md` step 4). A
+   with an explicit `timeout`: `Bash("sleep <n>")` for the poll (escalating
+   30/60/120/300 s, see Phase 6), synchronous chunks one after another for a
+   suite (`agents/developer.md` step 4). A
    command that does not fit one call is cut into shorter calls, never
    detached. There is no case in which backgrounding is right — a case that
    seems to need it is a `blocked` event, not a background task. Backgrounding
@@ -125,6 +126,19 @@ than trying to end the turn again.
 | review | 3 | 6 | this skill |
 | CI | 3 | 3 (unchanged) | this skill |
 | rebase | 3 | 3 (unchanged) | this skill (Phase R only) |
+
+**Acceptance threshold, not zero findings (ticket #105).** Not every plan-critic
+finding is a reason for another round. Only the `missed` and `misread` lenses
+can produce a **blocking** finding; `untestable` and `simplifier` findings are
+always **notes**, forwarded to the developer, never a reason to re-dispatch the
+planner. The merged critique carries this as `finding_class` per finding
+(`plan-critic-merge.py`, derived from which lens raised it — never declared by
+a critic, never second-guessed by you) and as `blocking_severity_counts`
+alongside the plain `severity_counts`. **Every cap, threshold and stagnation
+check in this document reads `blocking_severity_counts`, never
+`severity_counts`.** At the soft cap (round 3) with `blocking critical == 0`,
+accept the plan rather than continuing toward the hard cap — see Phase 2's
+routing rules below for exactly how.
 
 Package ceiling **per generation**: 9 gate rounds in total (plan-critic +
 test-critic + review), CI excluded. A new generation (see "Replan" below)
@@ -189,7 +203,14 @@ Triggered by `stagnation` on **plan-critic**, **test-critic**, or **review**
    a plan that avoids them, not a patch on the old one.
 2. The result is a new `plan.md` (write it to `<rundir>`, alongside — never
    over — the previous one, which stays as `<rundir>/plan-generation-<g>.md`
-   for the record).
+   for the record). **Generation 2's plan must not exceed 50% of generation
+   1's final size** (ticket #105): measure `wc -c <rundir>/plan-generation-1.md`
+   against the new `plan.md`'s byte count. Over budget → one re-dispatch of
+   the planner with both measured numbers inlined and the instruction to cut,
+   not to trim wording around the same content; still over after that →
+   accept it anyway and note the overage in `replan-triggered`'s text rather
+   than looping on a size check alone. A replan that reproduces generation 1's
+   bulk under a new structure has not actually replanned.
 3. **Reset all four gate counters to 0** (plan-critic, test-critic, review,
    CI — CI too, since it will run against genuinely different code) for the
    new generation. **Do not** reset the rebase counter — Phase R is
@@ -325,12 +346,16 @@ If the extractor reports the MCP unavailable, end as in precondition 3.
 
 ## Phase 2 — planner → plan-critic (question-free)
 
-Before the first planner dispatch, run
-`git -C <worktree_path> log --since=14.days --name-only --format='%H %ad %s'`
-(foreground, in this skill's own turn — see the Bash allowlist in Hard rules)
-and inline its output as `recent_changes` on every planner dispatch this round
-and every re-dispatch, including replans. A failed or empty command is not an
-error: pass `recent_changes` empty and continue.
+**Once per session**, before the first planner dispatch, run
+`git -C <worktree_path> log --since=14.days --name-only --format='%H %ad %s'
+--max-count=40` (foreground, in this skill's own turn — see the Bash allowlist
+in Hard rules), and if the result exceeds ~8000 bytes, truncate it to that
+bound and note the truncation. Capture the result once and reuse it verbatim
+as `recent_changes` on every planner dispatch this round and every re-dispatch,
+**including replans** — do not re-run the command each time (ticket #105: an
+unbounded `--name-only` log re-run and re-inlined on every dispatch is paid
+for repeatedly for information that does not change mid-session). A failed or
+empty command is not an error: pass `recent_changes` empty and continue.
 
 Dispatch `planner` synchronously and unnamed with `context_summary`,
 `worktree_path`, `recent_changes`. It ends with `STATUS: PLAN_FINAL` or
@@ -355,24 +380,41 @@ severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
 
 - `INFRA_FAILURE` → the round counts as `i`; re-dispatch. Three infra rounds →
   `failed`.
-- Any `critical` → the round counts as `f`; re-dispatch the **planner** (fresh)
+- A **blocking** `critical` (`finding_class: blocking`, i.e. `missed` or
+  `misread`) → the round counts as `f`; re-dispatch the **planner** (fresh)
   with the plan verbatim plus the critical findings, then critique again.
-- `major` → your call: route it to the planner if it concerns the package's
-  scope, else note it in the plan comment as accepted with one line of reason
-  — **except** a `major` whose `violated_criterion` quotes the mechanism
-  balance sentence (the `simplifier` lens): that one always goes back to the
-  planner, never accepted-with-a-note.
-- `minor` → proceed.
+- A **blocking** `major` → your call: route it to the planner if it concerns
+  the package's scope, else note it in the plan comment as accepted with one
+  line of reason.
+- A **note**-class finding (`untestable` or `simplifier`, any severity,
+  including `critical`) → **never** a reason for another round. Collect it and
+  forward it verbatim into the Phase 3 developer dispatch (3a and 3b) as a note
+  to answer against real code — that is cheaper and better-grounded than
+  another blind round against the document. This is a deliberate reversal of
+  the pre-#105 rule that a `simplifier` major always routed back to the
+  planner; see `AGENTS.md` for why.
+- `minor` (of either class) → proceed; note-class minors are forwarded like
+  their majors.
 - Findings of kind `unverified-assumption` and the `unverifiable_…` list are
   **not** defects. The critics have no repository access; the planner grounded
   the plan in code and you do not second-guess that with a critic that could not
   see it.
 
-Post `plan-critic-verdict` after every round (counts + one line per critical/
-major). A critical still open at the soft cap (round 3) → run the
-progress-or-stagnation check ("Round caps: progress or stagnation", above)
+Post `plan-critic-verdict` after every round (counts + one line per
+blocking-critical/blocking-major, plus a one-line list of note-class findings
+forwarded). A blocking `critical` still open at the soft cap (round 3) → run
+the progress-or-stagnation check ("Round caps: progress or stagnation", above)
 before deciding anything: `progress` keeps this loop going past round 3;
 `stagnation` triggers a replan (or `failed`, at `generation` 2).
+
+**Acceptance at the soft cap.** At round 3 (or any round) with
+`blocking_severity_counts.critical == 0`: accept the plan. Post
+`plan-critic-verdict` listing every still-open major/minor (blocking or note)
+as a note forwarded to the developer, and proceed to Phase 3. This is not a
+consolation prize for hitting a cap — a plan with no blocking critical open has
+met the bar; grinding it against `untestable`/`simplifier` noise to round 6
+bought nothing on `lib-python-worktree#154` and is exactly what this threshold
+exists to stop.
 
 ## Phase 3 — developer, test-first, with the test critique between RED and GREEN
 
@@ -396,10 +438,16 @@ unnamed) with `plan_file`, `tests_file=<rundir>/tests.diff`,
   `failed` at `generation` 2).
 - `major`/`minor` → forward to 3b as notes; proceed.
 
-Post `test-critic-verdict` per round. Non-behavioural packages (docs, config,
-pure refactor) have no driving test: the developer says so in 3a, 3b keeps the
-suite green, and the test critique is skipped with one line in `tests-red`'s
-text saying why.
+Post `test-critic-verdict` per round. The test critique judges only
+`driving-test`-declared requirements (see `agents/planner.md`'s evidence
+kinds). A package where **every** requirement is declared
+`existing-suite`/`ci-evidence`/`none` — docs, config, pure refactor — is the
+special case with no driving test at all: the developer says so in 3a, 3b
+keeps the suite green, and the test critique is skipped with one line in
+`tests-red`'s text saying why. A **mixed** package (some `driving-test`
+requirements, some not) runs 3a and the test critique normally, scoped to the
+`driving-test` subset — it is not exempt just because part of it is
+non-behavioural.
 
 **3b — implementation (`phase=implement`).** Dispatch `developer` with `plan`,
 `context_summary`, `worktree_path`, `phase=implement`, the test-critic notes.
@@ -429,17 +477,26 @@ full-suite result.
 ## Phase 4 — reviewer
 
 Dispatch `reviewer` (fresh, unnamed) with `plan`, `change_report`,
-`worktree_path`, `base_branch`. It returns `VERDICT: APPROVE` or
-`VERDICT: CHANGES_REQUESTED` with `[blocking]`/`[nit]` findings (Codex pass
-folded in when available). Post `review-verdict`.
+`worktree_path`, `base_branch`, `rundir`. Round 1 of a generation reviews the
+whole diff; round 2+ reviews the open findings plus the **delta diff since the
+last-reviewed sha** (ticket #105 — a full re-review every round re-reads the
+whole diff and the whole change report on every one of up to six rounds, for
+no return once the findings from round 1 are already fixed). Track and pass
+the last-reviewed sha yourself; the reviewer does not remember it. It returns
+`VERDICT: APPROVE` or `VERDICT: CHANGES_REQUESTED` with `[blocking]`/`[nit]`
+findings (Codex pass folded in when available). Post `review-verdict`.
 
-- `CHANGES_REQUESTED` → `f`; fresh developer dispatch (`phase=implement`, plan +
-  findings appended, prior change report inlined), then a fresh **full**
-  re-review — never narrowed to "were the findings fixed". At the soft cap
-  (round 3) with blocking findings still open, run the progress-or-stagnation
-  check against the reviewer's structured findings block (`agents/reviewer.md`,
-  "What you return") — `progress` continues past round 3 (this is exactly
-  ticket `#99`'s case), `stagnation` replans (or `failed` at `generation` 2).
+- `CHANGES_REQUESTED` → `f`; write this round's change report to
+  `<rundir>/change-report-round-<n>.md` (so a later round's reviewer can find
+  it — the developer no longer re-inlines prior rounds' evidence, see
+  `agents/developer.md`), fresh developer dispatch (`phase=implement`, plan +
+  findings appended, only this round's prior change report inlined), then a
+  fresh review **narrowed to the findings plus the delta diff** as above. At
+  the soft cap (round 3) with blocking findings still open, run the
+  progress-or-stagnation check against the reviewer's structured findings
+  block (`agents/reviewer.md`, "What you return") — `progress` continues past
+  round 3 (this is exactly ticket `#99`'s case), `stagnation` replans (or
+  `failed` at `generation` 2).
 - `APPROVE` → Phase 5.
 
 ## Phase 5 — commit, push, PR
@@ -479,8 +536,12 @@ A local PASS was a pre-filter. The pipeline decides.
 1. `head = git -C <worktree_path> rev-parse HEAD`.
 2. Poll **in this turn**: `list_pipeline_runs(project_id, commit_sha=head,
    limit=20)`; if no run exists yet or any run has `status != "completed"`,
-   `Bash("sleep 60")` — blocking, in the foreground — and poll again. Cap 45
-   minutes per round; a cap hit is an `i` round. Never poll from inside a
+   sleep and poll again — blocking, in the foreground, escalating each miss:
+   `Bash("sleep 30")` the first time, then 60, then 120, then 300, holding at
+   300 for every subsequent miss this round (ticket #105: a fixed 60 s
+   interval means up to 45 poll round-trips in a slow round; a run that takes
+   20+ minutes does not need per-minute checking). Cap 45 minutes per round;
+   a cap hit is an `i` round. Never poll from inside a
    subagent (its background processes die with its turn), and never poll by
    backgrounding something and ending your own turn either — see *Turn-end
    discipline*: ending your turn ends this process.
@@ -492,7 +553,8 @@ A local PASS was a pre-filter. The pipeline decides.
    Classify:
    - a **finding** (test failure, lint, build error caused by the diff) → fresh
      developer dispatch (`phase=implement`, plan + the failing job excerpt), then
-     a fresh full review (Phase 4, its own counter), then commit/push/poll again;
+     a fresh review (Phase 4, its own counter — narrowed exactly as any other
+     fix round, per Phase 4's rule above), then commit/push/poll again;
    - **infrastructure** (runner lost, timeout unrelated to the diff, workflow
      misconfiguration not introduced by this package) → `i`; re-run by pushing
      an empty commit (`git -C <worktree_path> commit --allow-empty -m "ci:

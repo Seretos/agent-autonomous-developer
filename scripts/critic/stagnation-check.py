@@ -15,9 +15,19 @@ Fingerprint rules, by gate:
 
   * plan-critic / test-critic findings: fingerprint is the exact pair
     (kind, violated_criterion), taken only from findings at severity
-    "critical" or "major" — a "minor" finding is real feedback but not
-    something a stagnation check should key on, matching how
-    skills/process-ticket/SKILL.md already treats "minor" as non-blocking.
+    "critical" or "major" AND finding_class "blocking" (ticket #105) — a
+    "minor" finding is real feedback but not something a stagnation check
+    should key on, matching how skills/process-ticket/SKILL.md already
+    treats "minor" as non-blocking; a "note"-class finding (the plan-critic
+    untestable/simplifier lenses) is excluded for the same reason a "minor"
+    is: it is never itself a reason for another round, so it must not count
+    as "progress" that buys one. Without this filter, a monotonically
+    growing plan produces a fresh simplifier finding every round — a new
+    fingerprint every time — and the loop would run to the hard cap on an
+    unchanged critical purely on the back of note-class churn. A finding
+    with no finding_class (any gate/input predating this field) defaults to
+    "blocking", so test-critic and review — which never emit note-class
+    findings — are unaffected.
   * review findings (the reviewer's additive structured block — see
     agents/reviewer.md, "What you return"): fingerprint is
     (kind, file, what[:80]), taken only from findings at severity
@@ -106,7 +116,14 @@ def main(argv):
         return 2
 
     severities = GATE_RULES[gate]["severities"]
-    current = [_fingerprint(gate, f) for f in findings if f.get("severity") in severities]
+    current = [
+        _fingerprint(gate, f) for f in findings
+        if f.get("severity") in severities
+        # finding_class only exists on plan-critic/test-critic findings (stamped by
+        # plan-critic-merge.py); a review finding has no such field and is never note-class, so the
+        # default keeps it counted exactly as before this filter existed.
+        and f.get("finding_class", "blocking") == "blocking"
+    ]
 
     history = _load_json(history_path, default=[])
     if not isinstance(history, list):

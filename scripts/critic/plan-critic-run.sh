@@ -35,9 +35,21 @@
 # adds without a justification that holds. The lens texts are fixed in plan-critic-package.sh;
 # nothing here or above it chooses them.
 #
-# The runs are independent by construction and are therefore started in parallel: they never see
-# each other's output, which is what keeps the results independent data points rather than one
-# opinion agreed to by everyone.
+# The runs are independent by construction. PARTs 1-4 of every lens's package (spec, constraints,
+# scope, plan) are byte-identical — only PART 5 (the lens block, last) differs — so the four
+# packages share a cacheable prefix. They still default to a parallel start (below), which defeats
+# that cache: nothing about independence *requires* simultaneity, and `ADEV_PLAN_CRITIC_CACHE_WARM`
+# is the switch to trade wall-clock for a cache-warm start once that trade is measured (see
+# run_one_lens and the loop below) — never see each other's output either way, which is what keeps
+# the results independent data points rather than one opinion agreed to by everyone.
+#
+# EFFORT PER LENS (ticket #105)
+#
+# Only the missed/misread lenses can produce a blocking finding (see plan-critic-merge.py and
+# skills/process-ticket/SKILL.md's Phase 2); untestable/simplifier are always notes. Effort is
+# split accordingly: missed/misread run at --effort high, untestable/simplifier at --effort medium.
+# --effort is not one of the isolation flags check-critic-isolation.sh enforces (see that script's
+# FLAGS list), so varying it per lens does not touch isolation.
 #
 # MERGE
 #
@@ -107,8 +119,27 @@ done
 # exist and this script cannot drift out of step with it.
 LENSES="$(bash "$PACKAGER" --list-lenses)"
 
+# Effort per lens (ticket #105) — see the EFFORT PER LENS comment above.
+lens_effort() {
+  case "$1" in
+    missed|misread) echo high ;;
+    *) echo medium ;;
+  esac
+}
+
+# Cache-warm-first switch (ticket #105), default off. When "1", the caller runs the first lens to
+# completion before starting the rest in parallel, so the three later processes hit a warm prompt
+# cache on PARTs 1-4 (byte-identical across lenses). Flip only after measuring wall clock and
+# usage.cache_read_input_tokens per lens (from critique-<lens>.raw.json) warm vs. cold on the same
+# package — this is a one-line switch specifically so that measurement can happen without touching
+# the invocation itself.
+ADEV_PLAN_CRITIC_CACHE_WARM="${ADEV_PLAN_CRITIC_CACHE_WARM:-0}"
+
 run_one_lens() {
   local lens="$1"
+  local start_mode="$2"
+  local effort
+  effort="$(lens_effort "$lens")"
   local pkg="$OUTDIR/package-$lens.txt"
   local raw="$OUTDIR/critique-$lens.raw.json"
   local out="$OUTDIR/critique-$lens.json"
@@ -138,13 +169,15 @@ run_one_lens() {
     echo "system_prompt_sha256: $(sha256sum "$SYSPROMPT" | cut -d' ' -f1)"
     echo "isolation_flags: --setting-sources '' --strict-mcp-config --disable-slash-commands --tools '' --system-prompt <file> --json-schema <file>"
     echo "model: opus"
+    echo "effort: $effort"
+    echo "start_mode: $start_mode"
   } > "$prov"
 
   set +e
   (
     cd "$workdir" && claude -p \
       --model opus \
-      --effort high \
+      --effort "$effort" \
       --setting-sources "" \
       --strict-mcp-config \
       --disable-slash-commands \
@@ -192,24 +225,55 @@ PY
   return $erc
 }
 
-echo "running $(echo "$LENSES" | wc -w) isolated critics in parallel..."
-
-declare -A PIDS=()
-for lens in $LENSES; do
-  run_one_lens "$lens" > "$OUTDIR/run-$lens.log" 2>&1 &
-  PIDS[$lens]=$!
-  echo "  lens '$lens' -> pid ${PIDS[$lens]}"
-done
-
 FAILED=""
-for lens in $LENSES; do
-  if wait "${PIDS[$lens]}"; then
-    echo "  lens '$lens': ok"
+declare -A PIDS=()
+
+if [ "$ADEV_PLAN_CRITIC_CACHE_WARM" = "1" ]; then
+  # Warm-first: run the first lens to completion so its cache-write establishes the shared PARTs
+  # 1-4 prefix, then start the rest in parallel to read it warm. Trades wall clock (one lens runs
+  # serially before the rest) for input-token cost on three of the four processes — see the EFFORT
+  # PER LENS / cache-warm comment above.
+  FIRST=""
+  for lens in $LENSES; do FIRST="$lens"; break; done
+  REST=""
+  for lens in $LENSES; do [ "$lens" = "$FIRST" ] || REST="$REST $lens"; done
+
+  echo "running isolated critics: '$FIRST' first (warm-first), then$REST in parallel..."
+  if run_one_lens "$FIRST" "warm-first" > "$OUTDIR/run-$FIRST.log" 2>&1; then
+    echo "  lens '$FIRST': ok"
   else
-    echo "  lens '$lens': FAILED (see $OUTDIR/critique-$lens.stderr.txt and $OUTDIR/run-$lens.log)" >&2
-    FAILED="$FAILED $lens"
+    echo "  lens '$FIRST': FAILED (see $OUTDIR/critique-$FIRST.stderr.txt and $OUTDIR/run-$FIRST.log)" >&2
+    FAILED="$FAILED $FIRST"
   fi
-done
+  for lens in $REST; do
+    run_one_lens "$lens" "warm-first" > "$OUTDIR/run-$lens.log" 2>&1 &
+    PIDS[$lens]=$!
+    echo "  lens '$lens' -> pid ${PIDS[$lens]}"
+  done
+  for lens in $REST; do
+    if wait "${PIDS[$lens]}"; then
+      echo "  lens '$lens': ok"
+    else
+      echo "  lens '$lens': FAILED (see $OUTDIR/critique-$lens.stderr.txt and $OUTDIR/run-$lens.log)" >&2
+      FAILED="$FAILED $lens"
+    fi
+  done
+else
+  echo "running $(echo "$LENSES" | wc -w) isolated critics in parallel..."
+  for lens in $LENSES; do
+    run_one_lens "$lens" "parallel" > "$OUTDIR/run-$lens.log" 2>&1 &
+    PIDS[$lens]=$!
+    echo "  lens '$lens' -> pid ${PIDS[$lens]}"
+  done
+  for lens in $LENSES; do
+    if wait "${PIDS[$lens]}"; then
+      echo "  lens '$lens': ok"
+    else
+      echo "  lens '$lens': FAILED (see $OUTDIR/critique-$lens.stderr.txt and $OUTDIR/run-$lens.log)" >&2
+      FAILED="$FAILED $lens"
+    fi
+  done
+fi
 
 MERGE_ARGS=()
 for lens in $LENSES; do

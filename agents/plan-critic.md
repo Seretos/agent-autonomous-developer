@@ -34,9 +34,10 @@ The critique runs in four separate Claude CLI processes started in empty directo
 ```
 GATE_RESULT: OK
 SEVERITY: critical=<n> major=<n> minor=<n>
+BLOCKING: critical=<n> major=<n>
 LENSES: <lens_runs summary, e.g. missed=ok misread=ok untestable=ok simplifier=ok>
 FINDINGS:
-- id: <id> | severity: <severity> | kind: <kind> | lens: <lens>
+- id: <id> | severity: <severity> | kind: <kind> | lens: <lens> | class: <blocking|note>
   title: <title>
   what: <what>
   violated_criterion: <violated_criterion>
@@ -47,7 +48,7 @@ UNVERIFIABLE_WITHOUT_CODEBASE_ACCESS:
 ARTEFACTS: <path of critique-merged.json>, <per-lens critique files>, <provenance files>
 ```
 
-Counts come from the merged file's `severity_counts`. Findings are relayed verbatim and in full — every one of them, in the file's order. Add a one-line summary of the `step_assessments` (how many sound / concern / unverifiable) and the `solid` list if it is short.
+Counts come from the merged file's `severity_counts`; `BLOCKING:` comes from its `blocking_severity_counts`. `class` is stamped by the merge, derived from which lens raised the finding (`missed`/`misread` → `blocking`, `untestable`/`simplifier` → `note`) — you never set it and never second-guess it. Findings are relayed verbatim and in full — every one of them, in the file's order. Add the `solid` list if it is short.
 
 ## Hard rules
 

@@ -11,10 +11,14 @@ and it is therefore the only text here that a finding may quote as its violated 
   repository at the start of the work, and the plan is expected to name the concrete test command
   it will use. Do not assume any particular language, framework or tooling beyond what the plan and
   the specification state.
-- Every behavioural change is implemented test-first: a driving test written and failing for the
-  right reason before the production code exists, passing afterwards. A plan is expected to say
-  what will prove each behaviour, at a level a test designer can work from — not to enumerate
-  concrete test cases itself.
+- Every behavioural requirement in the plan declares an evidence kind: `driving-test`,
+  `existing-suite`, `ci-evidence`, or `none`, one per requirement (a package may mix kinds). A
+  requirement declared `driving-test` is implemented test-first — a driving test written and
+  failing for the right reason before the production code exists, passing afterwards — and the
+  plan is expected to say what will prove it, at a level a test designer can work from, not to
+  enumerate concrete test cases itself. A requirement declared `existing-suite`, `ci-evidence`, or
+  `none` carries no such obligation; a workflow-file or documentation change is the ordinary case
+  for the latter two, not an exception that needs defending.
 - STRUCTURAL REQUIREMENT. A finding that one of these sentences is violated quotes the sentence it
   is about as its violated criterion, reflowed onto one line with single spaces:
   - An implementation plan must state the goal, the approach, the affected files (new and
