@@ -68,9 +68,19 @@ transcript or escalates.
 **Part B — `transcript`**, verbatim: for the package and then each child, in
 this order — `# <id> <title>`, the labels, the body byte-for-byte, then every
 comment as `## comment <id> by <author> (<created_at>)` followed by its body
-byte-for-byte. No trimming, no summarising, no reordering. The orchestrator
-writes this to a file that the isolated critics receive as the specification;
-the whole point is that nobody curated it.
+byte-for-byte, **except** a comment whose body *starts with* the
+`<!-- adev:event` marker — omit those. This is a filter on **authorship**, not
+on relevance: those comments are this pipeline's own machine-generated log of
+an earlier attempt (see Protocol step 2), not part of the ticket's human
+record, and excluding them costs nothing a plan critic needs — they carry no
+requirement. It is not curation: nothing is left out for being irrelevant,
+off-topic, wrong, or inconvenient, and every comment that does not start with
+that exact marker is included regardless of whether it looks useful, on the
+theory that a comment merely *quoting or replying to* an event (a human
+answering a `blocked` question, say) is a human comment and must survive. With
+that one exception, no trimming, no summarising, no reordering. The
+orchestrator writes this to a file that the isolated critics receive as the
+specification; the whole point is that nobody curated it.
 
 ## Hard rules
 

@@ -39,6 +39,21 @@ This is pure text-parsing, no subprocess, no fixtures, no model — matching
 critic actually flag a #148-shaped plan?) is a documented, deliberate testing
 gap: see the plan file / PR description for why deterministic contract tests
 were chosen over fixture-plan + live-critic tests for this ticket.
+
+**Update (ticket #105).** The `simplifier` lens (and `untestable`) no longer
+gate the plan-critic loop on their own: `plan-critic-merge.py` derives a
+`finding_class` from the lens (`missed`/`misread` -> "blocking",
+`untestable`/`simplifier` -> "note"), and a note-class finding is forwarded to
+the developer as a note rather than routed back to the planner — see
+`skills/process-ticket/SKILL.md` Phase 2 and `AGENTS.md`. The reviewer's
+"Mechanism balance vs. diff" check (BR6 below) was deliberately **not**
+loosened alongside it and stays `[blocking]`: it costs no extra model process
+and judges the plan against the real diff rather than the isolated critic's
+blind read of the plan-as-document, which is what made the pre-#105 loop noisy
+without making it converge. `lib-python-worktree#154` is the incident that
+forced this: 9 plan-critic rounds across 2 generations, ~4.5h, 0 lines of code,
+plan document growing 32KB -> 136KB monotonically, while the "0 major"
+target was never actually blocked by a design defect after round 1.
 """
 
 import pathlib
@@ -183,24 +198,25 @@ def test_constraints_carry_the_canonical_mechanism_balance_sentence():
 
 
 # --- BR5: planner.md ----------------------------------------------------------
-
-def test_planner_requires_a_mechanism_balance_section():
-    text = _read(AGENTS / "planner.md")
-    assert "**Mechanism balance**" in text
-    assert "Added:" in text and "Removed:" in text
-
-
-def test_planner_defaults_a_repeat_fix_to_simplification():
-    text = _read(AGENTS / "planner.md")
-    assert "repeat fix" in text.lower()
-    assert "14 days" in text
-    assert "simplification" in text.lower()
-
-
-def test_planner_documents_the_recent_changes_input():
-    text = _read(AGENTS / "planner.md")
-    assert "`recent_changes`" in text
-
+#
+# The three wording-pin tests that used to live here (mechanism-balance
+# section headers, "repeat fix"/"14 days"/"simplification", `recent_changes`
+# as a bare substring) were removed under ticket #105's testing-quality rule:
+# a doc string is a test-worthy contract only when something else reads it
+# mechanically (the harness, a script, another agent's literal cross-file
+# reference) — not because a human should be able to grep for it. None of
+# those three strings gate any code path; they were pure prose-wording pins
+# that made every rewording of planner.md a test failure regardless of
+# whether the underlying rule changed, rewarding "add a paragraph next to the
+# old one" over "rewrite it" — exactly the accretion pattern #105 exists to
+# stop. See `AGENTS.md`, "Doc-prose tests are a mechanical contract, not a
+# wording pin" for this repo's own version of the rule. The SEPARATE,
+# target-project version of the same idea — a test that only checks a
+# literal string is present in a file is not real evidence — lives where the
+# agents that write target-project tests actually decide that: the `ci-evidence`
+# bullet in `agents/planner.md`'s Test/verification strategy section, and the
+# evidence-kind scoping in `agents/developer.md` and
+# `scripts/critic/test-critic-constraints.md`.
 
 # --- BR6: SKILL.md and reviewer.md -------------------------------------------
 
@@ -219,9 +235,39 @@ def test_skill_names_four_isolated_critics():
 def test_reviewer_checks_the_mechanism_balance_against_the_diff():
     text = _read(AGENTS / "reviewer.md")
     assert "Mechanism balance vs. diff" in text
-    assert "[blocking]" in text
-    m = re.search(r"Mechanism balance vs\. diff.*?\n", text)
-    assert m
+    # scoped to the balance bullet itself (ticket #105 loosened other reviewer
+    # gates to [nit]/advisory; this one deliberately was not, so the pin has
+    # to check the bullet, not just that "[blocking]" occurs anywhere in the
+    # file — it occurs elsewhere regardless of what this bullet says).
+    m = re.search(r"Mechanism balance vs\. diff.*?(?=\n   - \*\*|\Z)", text, re.DOTALL)
+    assert m, "no Mechanism balance vs. diff bullet found"
+    bullet = m.group(0)
+    assert "[blocking]" in bullet
+    assert "[nit]" not in bullet
+
+
+# --- #105: derived finding_class, step_assessments removed ------------------
+
+def test_plan_critic_schema_has_no_step_assessments_or_class_field():
+    import json
+    schema = json.loads(_read(CRITIC / "plan-critic-schema.json"))
+    assert "step_assessments" not in schema["properties"]
+    assert "class" not in schema["properties"]["findings"]["items"]["properties"]
+    assert schema["required"] == ["findings", "solid"]
+
+
+def test_merge_derives_finding_class_from_lens_not_a_declared_field():
+    text = _read(CRITIC / "plan-critic-merge.py")
+    assert "NOTE_LENSES" in text
+    assert '"untestable"' in text and '"simplifier"' in text
+    assert "step_assessments" not in text
+    assert "blocking_severity_counts" in text
+
+
+def test_stagnation_check_filters_on_finding_class():
+    text = _read(CRITIC / "stagnation-check.py")
+    assert "finding_class" in text
+    assert '"blocking"' in text
 
 
 # --- BR7: three-lens prose is gone, narrowly ---------------------------------

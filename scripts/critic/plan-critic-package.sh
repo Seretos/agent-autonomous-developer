@@ -112,14 +112,19 @@ LENS_MISREAD
       cat <<'LENS_UNTESTABLE'
 This run's lens: BEHAVIOUR STATED TOO VAGUELY TO DRIVE A FAILING TEST.
 
-Every behaviour this plan claims has to be described sharply enough that a test designer could
-derive from it a driving test that fails for the right reason before the production code exists.
-For each behaviour the plan states, judge whether such a test could be derived at all: are the
-trigger, the observable result, and the conditions under which it must hold stated precisely
-enough to tell a pass from a failure? Wording that cannot come out false — "handles it
-correctly", "works as expected", "properly synchronised" — is what you are looking for, along
-with missing thresholds, unstated timing bounds, and results named without saying what would be
-observed.
+This lens applies ONLY to requirements the plan itself declares evidence kind `driving-test`. A
+requirement declared `existing-suite`, `ci-evidence`, or `none` is out of scope for this lens
+entirely — do not fault a workflow-file or documentation requirement for lacking a derivable test;
+that is what the other three kinds exist for, and a finding against one of them is a finding
+against a rule the plan is right to follow.
+
+For each `driving-test` requirement, it has to be described sharply enough that a test designer
+could derive from it a driving test that fails for the right reason before the production code
+exists. Judge whether such a test could be derived at all: are the trigger, the observable result,
+and the conditions under which it must hold stated precisely enough to tell a pass from a failure?
+Wording that cannot come out false — "handles it correctly", "works as expected", "properly
+synchronised" — is what you are looking for, along with missing thresholds, unstated timing
+bounds, and results named without saying what would be observed.
 
 Hard limit on this lens, and it is not negotiable: do NOT enumerate concrete test cases and do
 NOT propose any. A plan is required to state what will prove each behaviour, at a level a test
@@ -230,9 +235,9 @@ PART 5 — REVIEW LENS FOR THIS RUN
 Three other reviewers are reading this same package right now under different lenses. Everything
 above is identical for all four of us; only this section differs. So report findings for your
 lens only and leave theirs to them — a problem you can see but that belongs to another lens will
-be caught there, and duplicating it here only makes the merged report harder to act on. Your
-step-by-step assessments, what you record as solid, and the claims you cannot verify are not
-restricted by the lens: write those for the whole plan as usual.
+be caught there, and duplicating it here only makes the merged report harder to act on. What you
+record as solid, and the claims you cannot verify, are not restricted by the lens: write those for
+the whole plan as usual.
 
 MID4
   emit_lens "$LENS"

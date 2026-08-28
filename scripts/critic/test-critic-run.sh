@@ -37,11 +37,16 @@
 # The result is nonetheless passed through plan-critic-merge.py, so that the dispatching skill reads
 # one file shape (critique-merged.json with severity_counts, lens_runs and findings) from both gates
 # instead of two. The merge is mechanical and model-free; with a single lens it deduplicates
-# nothing. It only knows the keys findings / step_assessments / solid /
-# unverifiable_without_codebase_access, so the per-assertion `assertion_assessments` array is NOT
-# carried into the merged file — it stays in critique-tautology.json, which is written alongside.
-# The findings (with their `layer`) are what the dispatching skill acts on, and those come through
-# unchanged; anyone wanting the assertion-by-assertion view reads the per-lens file.
+# nothing. It only knows the keys findings / solid / unverifiable_without_codebase_access, so the
+# per-assertion `assertion_assessments` array is NOT carried into the merged file — it stays in
+# critique-tautology.json, which is written alongside. The findings (with their `layer`) are what
+# the dispatching skill acts on, and those come through unchanged; anyone wanting the
+# assertion-by-assertion view reads the per-lens file.
+#
+# The merge also stamps every finding with a `finding_class` (ticket #105): "blocking" or "note",
+# derived from the lens. `tautology` is not in the merge's note-lens set, so every test-critic
+# finding defaults to "blocking" — unchanged behaviour, the default exists for plan-critic's
+# untestable/simplifier lenses, not for this gate.
 #
 # Usage: test-critic-run.sh <plan-file> <tests-file> <output-dir>
 #   plan-file    the planner's plan, verbatim

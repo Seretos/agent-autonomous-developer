@@ -20,12 +20,24 @@ Rules, in full:
   * A merged group keeps the highest severity present in it (critical > major > minor), and the
     surviving finding is the member that carried that severity — earliest lens wins a tie.
   * A finding with a missing or empty `violated_criterion` is never merged with anything.
-  * Findings are the only thing deduplicated. Step assessments, the "solid" list and the
-    unverifiable-claims list are concatenated across lenses with their lens tagged on, because
-    three views of the same step are three data points, not a duplicate.
+  * Findings are the only thing deduplicated. The "solid" list and the unverifiable-claims list are
+    concatenated across lenses with their lens tagged on, because three views of the same step are
+    three data points, not a duplicate.
+  * Every finding is stamped with a `finding_class`, derived from its `lens` — never from a field a
+    critic sets itself, and never a judgment this script makes. `missed` and `misread` findings are
+    "blocking"; `untestable` and `simplifier` findings are "note". Any lens not in the note set
+    (including a future one, and `tautology` from the test-critic gate, which reuses this merge)
+    defaults to "blocking" — the safe direction, since a lens is note-only only by an explicit
+    ticket decision (#105), not by omission. A merged group's class is the STRONGEST class present
+    in it, not the survivor's own: a `missed` finding and a `simplifier` finding can share a
+    byte-identical `violated_criterion` (the mechanism-balance sentence is exactly this case), and
+    the severity-based survivor could be the `simplifier` one — without taking the max, a real
+    blocking finding would be silently declassed to a note because of which member happened to win
+    the severity tie.
 
 Deciding whether a finding is real remains the dispatching skill's job. This script does not filter, rank,
-or interpret anything.
+or interpret anything — the class derivation is a fixed table keyed on `lens`, not an assessment of
+the finding's content.
 
 Usage: plan-critic-merge.py <output-json> <lens>=<critique-json> [<lens>=<critique-json> ...]
 """
@@ -35,9 +47,20 @@ import sys
 
 SEVERITY_RANK = {"critical": 3, "major": 2, "minor": 1}
 
+# Lenses whose findings are never a reason to route back to the planner (ticket #105): they read
+# the plan as a document, not the plan against real code, and on a large plan they reliably surface
+# something every round. Any lens NOT in this set (including a lens added later, and `tautology`
+# from the test-critic gate) defaults to "blocking" — see the module docstring.
+NOTE_LENSES = {"untestable", "simplifier"}
+CLASS_RANK = {"blocking": 1, "note": 0}
+
 
 def severity_rank(finding):
     return SEVERITY_RANK.get(finding.get("severity"), 0)
+
+
+def finding_class(lens):
+    return "note" if lens in NOTE_LENSES else "blocking"
 
 
 def main(argv):
@@ -57,7 +80,6 @@ def main(argv):
 
     lens_runs = []
     findings_in = []
-    step_assessments = []
     solid = []
     unverifiable = []
 
@@ -82,12 +104,8 @@ def main(argv):
             record = dict(finding)
             record["lens"] = lens
             record["id"] = f"{lens}::{finding.get('id', index + 1)}"
+            record["finding_class"] = finding_class(lens)
             findings_in.append(record)
-
-        for assessment in data.get("step_assessments") or []:
-            tagged = dict(assessment)
-            tagged["lens"] = lens
-            step_assessments.append(tagged)
 
         solid.extend(f"[{lens}] {item}" for item in (data.get("solid") or []))
         unverifiable.extend(
@@ -117,6 +135,10 @@ def main(argv):
         # max() over a stable list returns the first maximum, so an earlier lens wins a tie.
         survivor_index = max(range(len(group)), key=lambda i: severity_rank(group[i]))
         survivor = dict(group[survivor_index])
+        # The group's class is the strongest class present, not the severity-survivor's own — see
+        # the module docstring for why (a missed/simplifier pair sharing one violated_criterion).
+        survivor["finding_class"] = "blocking" if any(
+            f.get("finding_class") == "blocking" for f in group) else "note"
         if len(group) > 1:
             deduplicated_groups += 1
             survivor["merged_from"] = [
@@ -128,14 +150,18 @@ def main(argv):
         merged_findings.append(survivor)
 
     severity_counts = {"critical": 0, "major": 0, "minor": 0}
+    blocking_severity_counts = {"critical": 0, "major": 0, "minor": 0}
     for finding in merged_findings:
         severity = finding.get("severity")
         if severity in severity_counts:
             severity_counts[severity] += 1
+            if finding.get("finding_class") == "blocking":
+                blocking_severity_counts[severity] += 1
 
     merged = {
         "lens_runs": lens_runs,
         "severity_counts": severity_counts,
+        "blocking_severity_counts": blocking_severity_counts,
         "merge_stats": {
             "findings_in": len(findings_in),
             "findings_out": len(merged_findings),
@@ -144,7 +170,6 @@ def main(argv):
             "lenses_expected": len(sources),
         },
         "findings": merged_findings,
-        "step_assessments": step_assessments,
         "solid": solid,
         "unverifiable_without_codebase_access": unverifiable,
     }
@@ -157,7 +182,9 @@ def main(argv):
           f"{len(findings_in)} findings in, {len(merged_findings)} out "
           f"({deduplicated_groups} group(s) deduplicated on an identical requirement string); "
           f"critical={severity_counts['critical']} major={severity_counts['major']} "
-          f"minor={severity_counts['minor']}")
+          f"minor={severity_counts['minor']}; "
+          f"blocking critical={blocking_severity_counts['critical']} "
+          f"major={blocking_severity_counts['major']}")
 
     # A merge over an incomplete set of lenses is still written — the caller needs to see what
     # did come back — but it is not reported as a clean run.

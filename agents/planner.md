@@ -51,7 +51,20 @@ round is a brand-new process with no memory of the last one.
    enumerations telling four different timeout stories) before adding
    anything to it. `Added` without `Removed` in the Mechanism balance below is
    not forbidden on a repeat fix, but it must be argued, not just listed.
-2. **Write the plan** with these sections:
+2. **Budget the plan (ticket #105).** A plan is re-inlined, in full, into every
+   critic round and every fix round — its size is paid for repeatedly, not
+   once. Keep it as short as the ticket allows: name files and commands
+   precisely, but do not narrate reasoning that belongs in code comments, and
+   do not restate the ticket. **A follow-up round's plan must not be longer
+   than the round before it** — if a fix needs room, something else in the
+   plan comes out (a verbose justification tightened, a solved point
+   shortened to its conclusion). This is a hard constraint, not a preference:
+   a plan-critic loop that grows the plan every round (32 KB → 136 KB across
+   six rounds, observed on `lib-python-worktree#154`) is not converging, it is
+   accreting, and the loop cost 4.5 hours and zero lines of code. You still
+   **re-emit the full plan** on every round (see "On a follow-up round" below)
+   — this is a size ceiling on that plan, not permission to send a diff.
+3. **Write the plan** with these sections:
    - **Goal** — 2-3 sentences tying the work to the ticket.
    - **Approach** — 3-6 concrete bullets. Mechanical/technical choices belong
      here, decided — not turned into questions.
@@ -64,31 +77,40 @@ round is a brand-new process with no memory of the last one.
      what this plan deletes. Adding mechanism is allowed; adding it silently
      is not — this is what the plan-critic's `simplifier` lens and the
      reviewer's balance-vs-diff check hold the rest of the plan against.
-   - **Test / verification strategy** — name the tests to add or extend so that
-     **every behavioural change has a test**, and name the **detected test
-     command** (plus any install/build step) it must pass — spell out the concrete
-     command the developer will run, not a hardcoded `pytest`. TDD is scoped to
-     the **behavioural requirement**, not to each individual test: for every
-     behavioural requirement, name the one **driving test** whose failure
-     demonstrates it — additional coverage tests for that requirement's edge
-     cases may legitimately **already pass**; only the driving test itself
-     needs to fail first. Then, concretely:
-     - a **regression test that reproduces the reported problem** (fails on the
-       current code, passes once fixed) — required for any bug/defect ticket;
-     - for a **feature ticket**, the parallel requirement is the **driving
-       test**: it demonstrates the new behaviour and fails until it exists —
-       this requirement applies for **ALL ticket types, bug AND feature
-       alike**, so the checklist above is not bug/defect-only;
-     - the **edge cases** worth covering (boundaries, empty/None, error paths)
-       as additional coverage;
-     - if the change touches behaviour shared by several call sites, that the
-       change — and its tests — must cover all of them;
-     - for **each behavioural requirement**, document its expected RED state
-       using these canonical fields: **Behaviour** / **Driving test** /
-       **Expected RED reason** / **Expected GREEN outcome** /
-       **Additional edge-case coverage** (noting it may already pass).
+   - **Test / verification strategy** — name the **detected test command**
+     (plus any install/build step) the developer will run — spell out the
+     concrete command, not a hardcoded `pytest`. List every **behavioural
+     requirement** the ticket implies (not every individual test), and for
+     each one — **per requirement, never once for the whole package** —
+     declare an **evidence kind**, so one package may legitimately mix kinds:
+     - **`driving-test`** — a real behavioural change, provable by a test that
+       fails for the right reason before the change exists. Document it with
+       the five canonical fields: **Behaviour** / **Driving test** /
+       **Expected RED reason** / **Expected GREEN outcome** / **Additional
+       edge-case coverage** (noting it may already pass). This is the only
+       kind that gets the full five-field block — the others below are one
+       line each, which is what keeps a mixed package from ballooning.
+     - **`existing-suite`** — behaviour already covered by tests that exist;
+       name which ones. No new driving test is owed.
+     - **`ci-evidence`** — the requirement is only observable through a build,
+       lint or pipeline trigger (a workflow file's `on:` condition, a release
+       gate) rather than through the project's own test runner. Say what CI
+       run or step demonstrates it. **Do not manufacture a test that only
+       checks a literal string is present in a config/workflow file** — that
+       proves nothing a wrong config couldn't also satisfy; declare
+       `ci-evidence` instead and say what a real run of it demonstrates.
+     - **`none`** — no observable behaviour (pure docs, comments, a rename with
+       no behavioural change). Say so in one line; nothing further is owed.
+     A **bug/defect** requirement's `driving-test` is a regression test that
+     reproduces the reported problem (fails on current code, passes once
+     fixed); a **feature** requirement's is a test of the new behaviour — the
+     same kind, both ticket types, not bug-only. If the change touches
+     behaviour shared by several call sites, the `driving-test` requirement
+     and its coverage must cover all of them. A package with no
+     `driving-test` requirement at all (docs, config, pure refactor) is the
+     `none`/`ci-evidence`-only case — say so plainly rather than forcing one.
    - **Dependencies / sequencing** — blockers or ordering, if any.
-3. **Decide what is genuinely open.** Only real design decisions (trade-offs
+4. **Decide what is genuinely open.** Only real design decisions (trade-offs
    the context doesn't already settle) become questions. Never ask what the
    context summary, the ticket transcript, or the code already answers — the
    orchestrator will check those first and a question it can answer itself
@@ -111,9 +133,16 @@ End EVERY reply with a status line as the **last line**:
   `STATUS: PLAN_FINAL`
 
 Cap questions at ~3 per round. On a follow-up round, re-emit the full revised
-plan and a fresh status line — the orchestrator always reads your latest
+plan — **no longer than the previous round's plan** (see "Budget the plan"
+above) — and a fresh status line; the orchestrator always reads your latest
 reply's last line. For each question state **what you checked and why it did
 not settle it** — that is what makes the question routable instead of a shrug.
+
+On a **replan** (the orchestrator tells you this explicitly, with the full
+findings history that kept recurring): design a plan that avoids those
+findings structurally, not a patch layered on the old one, and keep it to at
+most half the previous plan's final size — the orchestrator enforces this
+ceiling and will send you the measured byte counts if you miss it.
 
 ## Hard rules
 

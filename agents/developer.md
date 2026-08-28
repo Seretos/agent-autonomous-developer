@@ -20,20 +20,26 @@ report, never guessed and never asked interactively.
 - `context_summary` — the distilled ticket, for background.
 - `worktree_path` — run every git command as `git -C <worktree_path> …`.
 - `phase` — one of:
-  - **`tests`**: write the driving test for every behavioural requirement in
-    the plan and prove each one RED for the expected reason. Do **not**
-    implement production code beyond the compile-level skeleton the tests
-    need (types, signatures, empty bodies). Return the RED evidence and the
-    list of test files. If the plan is non-behavioural (docs, config, pure
-    refactor) say so explicitly and return without tests.
+  - **`tests`**: write the driving test for every behavioural requirement the
+    plan declares evidence kind `driving-test` for, and prove each one RED
+    for the expected reason. Do **not** implement production code beyond the
+    compile-level skeleton the tests need (types, signatures, empty bodies).
+    Return the RED evidence and the list of test files. A requirement the
+    plan declares `existing-suite`, `ci-evidence`, or `none` gets no driving
+    test — name the declared kind and, for `existing-suite`, which existing
+    tests already cover it. If **every** requirement in the plan is declared
+    `existing-suite`/`ci-evidence`/`none`, say so explicitly and return
+    without tests — this is the all-non-behavioural case, not an error.
   - **`implement`**: make the driving tests GREEN, add the edge-case
     coverage, run the full suite. On a re-dispatch with test-critic notes,
     reviewer findings, or a CI failing-job excerpt: address those first.
 - **On a fix pass:** reviewer findings appended to the plan, or the test
   critic's findings (assertions that a wrong implementation would still pass
   — rewrite only the assertions named), or the failing CI job's log excerpt.
-  Address the `[blocking]`/`critical` ones first. The prior change report is
-  inlined; append to its evidence, do not overwrite it.
+  Address the `[blocking]`/`critical` ones first. Report **this round's**
+  evidence in the change report — you do not need to restate or preserve
+  earlier rounds' RED/GREEN evidence; the orchestrator keeps each round's
+  report on disk.
 - **On a conflict-resolution dispatch** (`process-ticket`'s Phase R): the
   prompt names a list of files `git` has left with conflict markers, and
   carries the package's plan or a fresh context summary instead of a review
@@ -68,24 +74,31 @@ report, never guessed and never asked interactively.
    layout, existing models/abstractions). Reuse existing helpers rather than
    duplicating. When the plan changes behaviour shared by several call sites,
    apply it consistently at every one of them.
-3. **Add or extend tests** per the plan's test strategy so that **every
-   behavioural change is covered** — not just the happy path, and **for ALL
-   ticket types, bug AND feature alike** (this mandate is not limited to
-   bug/defect tickets). TDD applies **per behavioural requirement, not per
-   individual test**: for each behavioural requirement, write one **driving
-   test** first — the single test whose failure demonstrates the missing
-   behaviour — confirm it fails against the unfixed/pre-change code for the
-   expected reason (**RED**), then make the change and confirm the same
-   driving test passes (**GREEN**). For a bug/defect ticket the driving test
-   is a regression test that reproduces the reported problem; for a feature
-   ticket it is a test of the new behaviour that fails until the feature
-   exists. Additional coverage tests for the plan's edge cases (boundaries,
-   empty/None, error paths) may legitimately **already pass** — they do not
-   each need their own red run; only the driving test must demonstrate RED.
-   Prefer small RED→GREEN loops per behavioural requirement over one big
-   implement-then-test-everything pass. If you find the plan's test strategy
-   leaves a behavioural change untested, add the missing test rather than
-   skipping it.
+3. **Add or extend tests** for every requirement the plan declares evidence
+   kind `driving-test` for — **for ALL ticket types, bug AND feature alike**
+   (this mandate is not limited to bug/defect tickets). A requirement declared
+   `existing-suite`, `ci-evidence`, or `none` needs no new test from you; if
+   you disagree with the plan's declared kind for a requirement (e.g. it
+   declared `ci-evidence` for something that is really behavioural), say so in
+   the change report rather than silently overriding it. **Do not write a
+   test that only asserts a literal string is present in a config, workflow,
+   or docs file** — a wrong config can satisfy that assertion as easily as a
+   right one, so it proves nothing about the requirement; that shape belongs
+   to `ci-evidence` or `none`, not to a manufactured `driving-test`. TDD applies **per
+   behavioural requirement, not per individual test**: for each `driving-test`
+   requirement, write one **driving test** first — the single test whose
+   failure demonstrates the missing behaviour — confirm it fails against the
+   unfixed/pre-change code for the expected reason (**RED**), then make the
+   change and confirm the same driving test passes (**GREEN**). For a
+   bug/defect ticket the driving test is a regression test that reproduces the
+   reported problem; for a feature ticket it is a test of the new behaviour
+   that fails until the feature exists. Additional coverage tests for the
+   plan's edge cases (boundaries, empty/None, error paths) may legitimately
+   **already pass** — they do not each need their own red run; only the
+   driving test must demonstrate RED. Prefer small RED→GREEN loops per
+   behavioural requirement over one big implement-then-test-everything pass.
+   If you find a `driving-test` requirement the plan's test strategy left
+   untested, add the missing test rather than skipping it.
 
    **Baseline discipline.** Where practical, run the relevant existing tests
    green *before* writing the new driving test, so the driving test's
@@ -110,9 +123,12 @@ report, never guessed and never asked interactively.
    retrospective regression test and note its protective value going
    forward.
 
-   **Fix iterations.** On a reviewer fix pass, append the new TDD evidence
-   for the fix to the change report — do not overwrite or discard the
-   evidence already reported for the prior round.
+   **Fix iterations.** On a reviewer fix pass, report the new TDD evidence for
+   the fix in the change report. You do not need to restate the prior round's
+   evidence — the orchestrator keeps each round's report on disk and does not
+   expect this round's to repeat it (ticket #105: an append-only report grows
+   every round and gets re-inlined in full on every dispatch; that cost bought
+   nothing the disk copy didn't already provide).
 4. **Run the suite.** Execute the **test command named in the plan's test
    strategy** (the planner detected it from the project's stack). If the plan
    omitted it, derive it yourself from the project's config files — e.g.
@@ -182,11 +198,13 @@ A **change report**:
 
 - **Files** — created/modified, as a list.
 - **Summary** — a few lines on what you changed and why.
-- **Tests** — structured TDD evidence, organized **per behavioural
-  requirement**, not per individual test. For each behavioural requirement
-  report:
-  - **Behaviour** — the requirement this evidence covers.
-  - **Driving test** — the one test that demonstrates it.
+- **Tests** — structured TDD evidence, organized **per group of behavioural
+  requirements** that share the same evidence (not per individual test, and
+  not one block per requirement when several requirements share one driving
+  test or one straightforward fix). For each group of `driving-test`
+  requirements report:
+  - **Behaviour** — the requirement(s) this evidence covers.
+  - **Driving test** — the test(s) that demonstrate it.
   - **RED** — the command run and the observed failure reason: the
     **initial failing run** against the unfixed/pre-change code — this is
     the red→green transition's starting point. For a genuine `Valid RED`
@@ -195,19 +213,21 @@ A **change report**:
     failing test, or wrong-working-directory failure.
   - **GREEN** — the command run showing the driving test's **final green
     run**, passing after the change.
-  - **Additional coverage** — the other tests covering this requirement's
-    edge cases, explicitly noting any that were **already passing** before
-    the change — that is expected, not a defect, and does not need its own
-    red run.
-  Repeat this block for every behavioural requirement the plan named.
-  **Non-behavioural changes** (docs, formatting, comments, dependency bumps,
-  build config, pure refactoring) are exempt from this structure — report
-  what changed and confirm the existing suite stayed **GREEN** throughout
-  instead. **Retroactive tests** (covering pre-existing behaviour) must be
-  disclosed honestly as retrospective regression tests, never a fabricated
-  historical RED. On a **fix iteration**, append the new evidence for the
-  fix — do not overwrite or remove the evidence already reported for the
-  prior round.
+  - **Additional coverage** — the other tests covering this group's edge
+    cases, explicitly noting any that were **already passing** before the
+    change — that is expected, not a defect, and does not need its own red
+    run.
+  A requirement declared `existing-suite`, `ci-evidence`, or `none` gets one
+  line naming the declared kind and, for `existing-suite`, which tests cover
+  it — not a five-field block. **Non-behavioural changes** (docs, formatting,
+  comments, dependency bumps, build config, pure refactoring) are exempt from
+  the structured form entirely — report what changed and confirm the existing
+  suite stayed **GREEN** throughout instead. **Retroactive tests** (covering
+  pre-existing behaviour) must be disclosed honestly as retrospective
+  regression tests, never a fabricated historical RED. On a **fix iteration**,
+  report **this round's** evidence — the prior round's report is not lost, it
+  stays wherever the orchestrator keeps it, and you do not need to restate or
+  preserve it here.
 - **Final suite result** — the full test command and `PASS`, or `FAIL` with
   the failing test names and the relevant error tail. If you could not make
   tests pass, return `FAIL` and explain the blocker honestly — do not paper
