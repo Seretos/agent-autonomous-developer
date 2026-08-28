@@ -24,7 +24,7 @@ One skill, not model-invocable — the caller invokes it by slash command from a
 | 0 | the skill itself | **orient on the branch**: a fresh branch falls straight through; a branch with an open PR that is already CI-green on its exact HEAD but sits behind a moved base skips 1–4 and goes straight to Phase R instead |
 | R | `developer` (conflict-scoped) | *repair-only lane*: rebase onto the current base, resolve conflicts narrowly, re-verify, re-review only if the diff shape changed |
 | 1 | `context-extractor` | distilled context + a **verbatim transcript** of the package (for the critics) |
-| 2 | `planner` → `plan-critic` | a code-grounded plan, judged by three isolated critics (missed / misread / untestable) |
+| 2 | `planner` → `plan-critic` | a code-grounded plan, judged by four isolated critics (missed / misread / untestable / simplifier) |
 | 3a | `developer` (`phase=tests`) → `test-critic` | driving tests proven RED, judged by an isolated critic ("which wrong implementation still passes?") |
 | 3b | `developer` (`phase=implement`) | GREEN, full suite locally (a pre-filter, not a verdict) |
 | 4 | `reviewer` (+ Codex pass when available) | `APPROVE` / `CHANGES_REQUESTED`, full re-review per fix round |

@@ -71,6 +71,13 @@ push, not what declares the package done.
      Also confirm the suite is reported green (the Final suite result).
    - **Consistency** — when behaviour shared by several call sites changed, was
      the change applied at all of them? Flag any one-sided change.
+   - **Mechanism balance vs. diff** — every new module constant, flag/
+     parameter, registry/cache/lock, tag/reason code and special-case branch
+     visible in `git diff <base_branch>...HEAD` must appear in the plan's
+     `Added` list. Anything unlisted is `[blocking]`: `VERDICT:
+     CHANGES_REQUESTED`, structured `"kind": "consistency"`. A diff that adds
+     **less** than the balance promised is not a finding — subtraction beyond
+     the plan is welcome, not a deviation.
    - **Public-API stability** — the exported surface (see README / package
      `__init__`) must stay stable unless the plan intends a change.
    - **Conventions** — layout, models, and naming consistent with the

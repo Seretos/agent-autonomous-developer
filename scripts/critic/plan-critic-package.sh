@@ -21,11 +21,11 @@
 #
 # THE LENS
 #
-# The gate runs three critics, not one. They are identical in every respect that matters —
+# The gate runs several critics, never one. They are identical in every respect that matters —
 # same isolation, same specification, same constraints, same scope, same plan, same system prompt
-# — and differ only in a single fixed focus block appended as PART 5. That is what makes the three
-# results comparable and the packages diffable: run this script three times with the same inputs
-# and different lens ids, and `diff` shows PART 5 and nothing else.
+# — and differ only in a single fixed focus block appended as PART 5. That is what makes the
+# results comparable and the packages diffable: run this script once per lens id with the same
+# other inputs, and `diff` shows PART 5 and nothing else.
 #
 # The lens texts live in this script, hardcoded, and the caller may only name one of the ids below.
 # An agent choosing or authoring its own focus would put the curator back into a pipeline built to
@@ -38,13 +38,13 @@
 #   scope-file   short statement of the behavioural scope this plan was assigned, written by the
 #                dispatching plan-critic agent, plus the round number if this is a re-review
 #   plan-file    the planner's plan, verbatim and unedited
-#   lens-id      one of: missed | misread | untestable
+#   lens-id      one of: missed | misread | untestable | simplifier
 #
 set -euo pipefail
 
 # The single source of truth for which lenses exist; plan-critic-run.sh reads it from here rather
 # than keeping its own copy, so the two cannot drift apart.
-LENS_IDS="missed misread untestable"
+LENS_IDS="missed misread untestable simplifier"
 
 if [ "${1:-}" = "--list-lenses" ]; then
   for lens in $LENS_IDS; do echo "$lens"; done
@@ -129,6 +129,54 @@ WHETHER a failing test is derivable from the plan's own words, and where it is n
 missing from the description. Never which test to write.
 LENS_UNTESTABLE
       ;;
+    simplifier)
+      cat <<'LENS_SIMPLIFIER'
+This run's lens: MECHANISM THE PLAN ADDS WITHOUT EARNING IT.
+
+Every plan in this project must carry a mechanism balance — see the STRUCTURAL REQUIREMENT bullet
+in the fixed project constraints above, which is the criterion your findings quote. If the plan
+has no such section at all, that is one finding, severity major, kind gap, and it is not
+negotiable: a plan whose growth is unstated cannot be weighed against anything, and nothing
+elsewhere in the plan substitutes for it.
+
+Where the section exists, hold it against the rest of the plan. Growth itself is allowed — a
+feature may legitimately cost mechanism — but it has to be argued rather than declared. Read every
+justification line and ask whether it says why the addition cannot be had by removing or reshaping
+something that already exists. A line that only restates what the new mechanism does — "the lock
+prevents concurrent scans", "the flag lets callers opt out", "the cache avoids repeated lookups" —
+is not a justification, and saying so is this run's finding, kind gap. Read the plan's steps back
+against the Added list too: a constant, flag, tag, reason code or special-case branch the approach
+introduces but the balance does not name is an unlisted addition, kind gap. An Added list that
+outweighs Removed without one word about what was considered for removal is an unargued one, kind
+risk.
+
+Then look for duplication. Where the specification, the scope, or the plan itself says the
+affected code already holds two or more mechanisms answering the same question — two timeout
+regimes, two caches, two engines, two independent enumerations — a plan that adds a third is a
+major finding, kind double-claim; name the existing pair it joins and quote the words that
+establish it. And look at what the plan acts on: the symptom the specification actually reports,
+or an internal quantity the plan has decided stands in for it? Where it is the latter, quote the
+specification's symptom next to the plan's target and show the substitution, kind contradiction.
+
+You have no access to the repository, and this is the lens most tempting to guess with. You may
+assert that a duplicate mechanism already exists ONLY from words that are in the specification,
+the scope statement or the plan, and you quote those words. A suspicion that the code probably
+already has such a mechanism, with nothing in the package saying so, is not a finding here: record
+it among the claims you cannot verify without the codebase and leave it there.
+
+Use only these finding kinds, and map them exactly as instructed above, no others: gap for a
+missing balance, a missing entry, or a missing justification; double-claim for a third mechanism
+answering a question two already answer; contradiction where the plan's target contradicts a
+symptom the specification names; risk for a justification that is present but does not hold.
+
+Hard limit on this lens, and it is not negotiable: do NOT design the simpler alternative. Naming
+what an addition duplicates, and that its justification does not hold, is the whole of the job —
+which constant to delete, which two mechanisms to collapse, and what the smaller design would look
+like are the planner's decisions, never yours. Do not count mechanisms the package never mentions,
+and do not treat "this plan adds things" as a finding by itself: an addition whose justification
+actually holds is a correct result and belongs in what you record as solid.
+LENS_SIMPLIFIER
+      ;;
   esac
 }
 
@@ -179,8 +227,8 @@ MID3
 PART 5 — REVIEW LENS FOR THIS RUN
 ================================================================================
 
-Two other reviewers are reading this same package right now under different lenses. Everything
-above is identical for all three of us; only this section differs. So report findings for your
+Three other reviewers are reading this same package right now under different lenses. Everything
+above is identical for all four of us; only this section differs. So report findings for your
 lens only and leave theirs to them — a problem you can see but that belongs to another lens will
 be caught there, and duplicating it here only makes the merged report harder to act on. Your
 step-by-step assessments, what you record as solid, and the claims you cannot verify are not

@@ -325,8 +325,16 @@ If the extractor reports the MCP unavailable, end as in precondition 3.
 
 ## Phase 2 — planner → plan-critic (question-free)
 
-Dispatch `planner` synchronously and unnamed with `context_summary` and
-`worktree_path`. It ends with `STATUS: PLAN_FINAL` or `STATUS: NEEDS_INPUT`.
+Before the first planner dispatch, run
+`git -C <worktree_path> log --since=14.days --name-only --format='%H %ad %s'`
+(foreground, in this skill's own turn — see the Bash allowlist in Hard rules)
+and inline its output as `recent_changes` on every planner dispatch this round
+and every re-dispatch, including replans. A failed or empty command is not an
+error: pass `recent_changes` empty and continue.
+
+Dispatch `planner` synchronously and unnamed with `context_summary`,
+`worktree_path`, `recent_changes`. It ends with `STATUS: PLAN_FINAL` or
+`STATUS: NEEDS_INPUT`.
 
 - `PLAN_FINAL` → write the plan to `<rundir>/plan.md`; post `plan-committed`
   with the short-form plan (goal, approach bullets, affected files).
@@ -341,7 +349,7 @@ Dispatch `planner` synchronously and unnamed with `context_summary` and
 
 **Plan critique.** Dispatch `plan-critic` (fresh, unnamed) with `spec_file`,
 `plan_file`, a one-paragraph scope statement (what this package covers, round
-number), `output_dir=<rundir>/plan-critic-<round>/`. It runs three isolated
+number), `output_dir=<rundir>/plan-critic-<round>/`. It runs four isolated
 `claude -p` critics and a mechanical merge and returns `GATE_RESULT: OK` with
 severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
 
@@ -350,7 +358,10 @@ severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
 - Any `critical` → the round counts as `f`; re-dispatch the **planner** (fresh)
   with the plan verbatim plus the critical findings, then critique again.
 - `major` → your call: route it to the planner if it concerns the package's
-  scope, else note it in the plan comment as accepted with one line of reason.
+  scope, else note it in the plan comment as accepted with one line of reason
+  — **except** a `major` whose `violated_criterion` quotes the mechanism
+  balance sentence (the `simplifier` lens): that one always goes back to the
+  planner, never accepted-with-a-note.
 - `minor` → proceed.
 - Findings of kind `unverified-assumption` and the `unverifiable_…` list are
   **not** defects. The critics have no repository access; the planner grounded
