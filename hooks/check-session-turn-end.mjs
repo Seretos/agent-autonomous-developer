@@ -30,7 +30,10 @@
  *
  *   A. **Unresolved backgrounded command** — the #23 anti-pattern proper.
  *      Same detection as the #93 SubagentStop hook (shared in lib/), because
- *      it is the same mistake at a different level.
+ *      it is the same mistake at a different level. Since #101 a `Monitor`
+ *      call no longer counts as resolving it (agent-worktree#176 died with
+ *      one armed); the PreToolUse hook hooks/check-no-background.mjs refuses
+ *      the call up front, and this condition is the backstop behind it.
  *
  *   B. **Unpreserved work** — the worktree has uncommitted changes, or commits
  *      that exist on no remote. This is the damage #23 and #22 actually did:
@@ -119,10 +122,13 @@ async function main() {
         "This session is headless (claude -p): there is no loop that wakes it " +
         "after the turn ends, so ENDING THE TURN ENDS THE PROCESS and that " +
         "command is killed with it — no wait-ceiling setting changes that " +
-        "(measured on #140 at 600s, at 0, and at 2h; all three died). " +
-        "Continue this turn and either wait for the command inside it with " +
-        "the Monitor tool, or run it as a blocking foreground Bash call, or " +
-        "abandon it. Do not end the turn expecting to be resumed.",
+        "(measured on #140 at 600s, at 0, and at 2h; all three died). A " +
+        "Monitor does not help either — nothing wakes a headless process " +
+        "(agent-worktree#176, ticket #101). Backgrounding was never allowed. " +
+        "Continue this turn and wait for that command with a blocking " +
+        "foreground Bash call (poll its log or pid in an in-command loop, " +
+        "explicit `timeout`), or kill it and re-run the work as synchronous " +
+        "foreground chunks. Do not end the turn expecting to be resumed.",
     );
   }
 

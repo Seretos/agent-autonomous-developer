@@ -124,11 +124,10 @@ degrades silently to your own review. Codex problems never block the pipeline.
 3. **Run the review via the bundled script (read-only, foreground).** Use
    `scripts/codex-review.mjs`, which stages changes with `git add -A`, collects
    the staged diff, and feeds it to Codex via `task --prompt-file` — fully
-   platform-agnostic (works on Windows with unstaged changes). This call is
-   not the full test suite and stays a plain foreground call; but if it is
-   ever backgrounded for any reason, the Hard Rules below apply exactly the
-   same as everywhere else — the in-turn `Monitor` wait becomes mandatory and
-   ending the turn to "wait" for it is forbidden.
+   platform-agnostic (works on Windows with unstaged changes). This is a
+   plain blocking foreground call with an explicit `timeout` — like every
+   other command you run, it is never backgrounded (see the Hard Rules
+   below).
 
    Determine the default branch from context (threaded in by `process-ticket`'s
    precondition step); if it is not available, derive it via
@@ -208,16 +207,18 @@ an empty or nit-only list.
 - **Codex is review-only too.** When you delegate to Codex, run it without
   `--write` — it must not edit code either. Codex's blocking findings go into
   your findings list for the developer's fix pass, like your own.
-- **Never end a turn while a command you backgrounded is still running.** Ending
-  a turn does not suspend you — it **terminates** you, and the
-  `task-notification` event for a backgrounded Bash command is delivered only
-  to the main/orchestrator session, never to the sub-agent that started it;
-  the parent is then left believing you are still working when you no longer
-  exist. There are exactly two sanctioned resolutions: (a) keep the wait
-  **inside the current turn** using the `Monitor` tool polling the command's
-  log file, or (b) return an explicit **blocked/in-progress status report**
-  and hand ownership of the wait to the parent. **No-op yield commands are an
-  anti-pattern and forbidden as a substitute for waiting** — `true`,
+- **Nothing ever runs in the background.** No command is ever started with
+  `run_in_background: true`, `nohup … &`, `Start-Job`, `Start-Process`, or
+  `Monitor` — all forbidden without exception (ticket #101). Everything you
+  run is a blocking foreground `Bash` call with an explicit `timeout`; a long
+  command is cut into shorter synchronous calls, never detached. Ending a
+  turn does not suspend you — it **terminates** you, every process you
+  backgrounded dies with it, a `Monitor` never fires because nothing wakes a
+  headless process, and the parent is left believing you are still working
+  when you no longer exist. If a command genuinely cannot finish inside your
+  turn, return an explicit **blocked status report** and say why. **No-op
+  yield commands are forbidden as a substitute for waiting** — `true`,
   `exit 0`, `echo waiting`, and `sleep` used as a turn filler all terminate
-  the turn rather than suspend it; never issue one to "wait" for a background
-  command.
+  the turn rather than suspend it. A `PreToolUse` hook
+  (`hooks/check-no-background.mjs`) refuses backgrounded calls and `Monitor`
+  mechanically; treat a refusal as a bug in your own turn.

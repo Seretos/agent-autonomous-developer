@@ -213,9 +213,10 @@ def test_blocks_unresolved_background_command(tmp_path):
     _assert_blocked(_run_hook(work, lines), "#23")
 
 
-def test_passes_when_monitor_resolves_and_tree_is_clean(tmp_path):
-    """The sanctioned shape: background + in-turn Monitor wait, nothing
-    outstanding in git."""
+def test_still_blocks_when_a_monitor_was_armed(tmp_path):
+    """REGRESSION (agent-worktree#176 attempt 1, ticket #101): background +
+    Monitor + turn end used to be "the sanctioned shape" and passed; the
+    session died anyway. A Monitor resolves nothing."""
     work = _make_worktree(tmp_path)
     lines = [
         _tool_use_line(
@@ -223,6 +224,17 @@ def test_passes_when_monitor_resolves_and_tree_is_clean(tmp_path):
             {"command": "pytest -q > suite.log 2>&1", "run_in_background": True},
         ),
         _tool_use_line("Monitor", {"path": "suite.log"}),
+    ]
+    _assert_blocked(_run_hook(work, lines), "#101")
+
+
+def test_passes_with_foreground_calls_and_clean_tree(tmp_path):
+    """The only sanctioned shape: blocking foreground calls, nothing
+    outstanding in git."""
+    work = _make_worktree(tmp_path)
+    lines = [
+        _tool_use_line("Bash", {"command": "pytest -q tests/test_a.py", "timeout": 600000}),
+        _tool_use_line("Bash", {"command": "sleep 60"}),
     ]
     _assert_passed(_run_hook(work, lines))
 
@@ -379,16 +391,13 @@ def test_developer_defers_to_the_project_suite_procedure():
     )
 
 
-def test_developer_names_the_monitor_timeout():
-    """Monitor's timeout_ms defaults to 300000 (5 min) — shorter than the
-    suites the background+Monitor pattern exists for. An expired monitor is
-    the same hole by another route."""
+def test_developer_runs_the_suite_in_foreground_chunks():
+    """Since #101 there is no Monitor and no background run at all: the
+    suite is cut into synchronous foreground chunks, each with an explicit
+    Bash `timeout`. (The predecessor of this test asserted Monitor's
+    `timeout_ms` — that whole pattern is gone, see
+    tests/test_no_background_rule.py.)"""
     developer = _read(REPO_ROOT / "agents" / "developer.md")
-    assert "timeout_ms" in developer, (
-        "agents/developer.md mandates Monitor for the full suite but never "
-        "names timeout_ms, whose 300s default is shorter than those suites."
-    )
-    assert "persistent" in developer, (
-        "agents/developer.md should name persistent: true as the option for an "
-        "unbounded suite runtime."
-    )
+    assert "timeout_ms" not in developer
+    assert "chunk" in developer.lower()
+    assert "`timeout`" in developer

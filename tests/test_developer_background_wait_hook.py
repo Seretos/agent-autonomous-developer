@@ -171,11 +171,12 @@ def test_hook_blocks_unresolved_background_verification_run(tmp_path):
     assert "reason" in decision and decision["reason"]
 
 
-def test_hook_passes_when_monitor_resolves_the_wait(tmp_path):
+def test_hook_still_blocks_when_a_monitor_was_armed(tmp_path):
     """
-    The sanctioned pattern (agents/developer.md step 4): background the
-    full-suite run, then wait for it in-turn with Monitor. This must NOT
-    block.
+    REGRESSION (agent-worktree#176 attempt 1, ticket #101): background the
+    full-suite run, arm a Monitor, end the turn. Until #101 this was "the
+    sanctioned pattern" and passed the hook — and the session died, because
+    nothing wakes a headless process. A Monitor resolves nothing.
     """
     lines = [
         _tool_use_line(
@@ -189,9 +190,57 @@ def test_hook_passes_when_monitor_resolves_the_wait(tmp_path):
     ]
     result = _run_hook(tmp_path, "agent-autonomous-developer:developer", lines)
     assert result.returncode == 0
-    assert result.stdout.strip() == "", (
-        f"expected no block once Monitor resolves the wait; got: {result.stdout!r}"
+    assert result.stdout.strip(), (
+        "expected a block: a Monitor after a backgrounded run is the exact "
+        f"shape #176 died on; got: {result.stdout!r}"
     )
+    assert json.loads(result.stdout).get("decision") == "block"
+
+
+def test_hook_passes_when_the_pretooluse_hook_refused_the_call(tmp_path):
+    """A backgrounded call that hooks/check-no-background.mjs refused never
+    ran; blocking the stop would trap the agent behind a call it cannot undo."""
+    lines = [
+        _tool_use_line(
+            "Bash",
+            {"command": "nohup npm test > out.log 2>&1 &", "run_in_background": True},
+        ),
+        json.dumps(
+            {
+                "type": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "is_error": True,
+                        "content": "[adev-no-background] refused Bash(run_in_background: true): …",
+                    }
+                ],
+            }
+        ),
+    ]
+    result = _run_hook(tmp_path, "agent-autonomous-developer:developer", lines)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "", f"expected no block; got: {result.stdout!r}"
+
+
+def test_hook_never_blocks_twice(tmp_path):
+    lines = [
+        _tool_use_line("Bash", {"command": "npm test &", "run_in_background": True}),
+    ]
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not found on PATH")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload = {
+        "agent_type": "agent-autonomous-developer:developer",
+        "agent_transcript_path": str(transcript),
+        "stop_hook_active": True,
+    }
+    result = subprocess.run([node, str(HOOK_PATH)], input=json.dumps(payload), capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
 
 
 def test_hook_ignores_non_developer_agents(tmp_path):
