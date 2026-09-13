@@ -525,21 +525,79 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    bare `--force`.** A `--force-with-lease` rejection means somebody else
    pushed to this branch while you worked — post `failed` saying so; do not
    overwrite them.
-4. **Open or reuse the PR.** Use `open_pr` from Phase 0 if you have it fresh;
-   otherwise re-read `list_prs(project_id, head=<branch>, status="open",
-   limit=5, omit_body=True)`.
+4. **Compose the PR body**: summary + plan recap + review verdict +
+   substitute-execution output (command + pasted output, for every
+   requirement the plan declared one for — see the developer's change
+   report), each requirement's pasted output bounded to 200 lines or ~4000
+   characters, whichever is hit first, with a trailing "...truncated, see
+   <rundir>/change-report-round-<n>.md for full output" marker appended when
+   truncated + one "Closes #<n>" line per ticket in the package. **Then
+   check the aggregate length of the whole composed body.** The per-item cap
+   above bounds each requirement's own output but not their sum: a package
+   with several driving-test requirements, each near its per-item cap, can
+   still push the total past a hosting provider's PR-body length limit
+   (GitHub's is 65536 characters — a hard `create_pr`/`update_pr` failure,
+   not a cosmetic concern). If the composed body exceeds 60000 characters
+   (the safety margin below that limit), truncate the substitute-execution
+   section further: collapse every requirement's command+output block down
+   to a single line each — "`<command>` — ran, see
+   <rundir>/change-report-round-<n>.md for full output" — instead of the
+   per-requirement pasted output, and note at the top of that section that
+   full output was cut for length and lives in the change report. Use this
+   composed (and, if needed, re-collapsed) body as the input to step 5 below,
+   for both `create_pr` and `update_pr`.
+5. **Assemble the final candidate body, per PR case.** For `create_pr`, the
+   final candidate is exactly the step-4 body. For `update_pr` on a reused
+   PR, the final candidate is the step-4 body with one extra line appended
+   when Phase R rebased: `Rebased onto <base_branch> at <sha>.` Either way,
+   the result of this step — call it the *final candidate body* — is what
+   step 6 below runs its last check on; nothing is sent to `create_pr` or
+   `update_pr` before that check runs.
+6. **Final unconditional length cap — hard, no exceptions, runs every time,
+   on the final candidate body from step 5.** Step 4's aggregate check and
+   collapse bound the *known* biggest contributor (substitute-execution
+   output), but that is still a per-section heuristic: a large-enough
+   summary, plan recap, or review verdict alone — sections step 4 does not
+   cap at all — can still push the total over the limit even after step 4's
+   collapse has done everything it can. This step is the backstop that makes
+   the limit unconditional regardless of *which* section is oversized, and
+   it is not "usually enough" — it always runs, on every PR body, whether or
+   not step 4 collapsed anything, and after any line step 5 added:
+   - Compute the final candidate body's total character length.
+   - If the length is **≤ 60000**, use the body unchanged.
+   - If the length is **> 60000**, discard everything past the first 60000
+     characters and append this fixed marker (~150 characters, independent
+     of how large the discarded remainder was):
+     `"\n\n...PR body truncated — see the ticket's `plan-committed`/
+     `review-verdict` comments and `<rundir>` for the full plan, findings,
+     and change reports."`
+   - This guarantees termination under the hard limit unconditionally: the
+     output is always either the untruncated body (already ≤ 60000, by the
+     branch above) or exactly `60000 + len(marker)` (~60150) characters —
+     neither depends on how large the pre-truncation body was, only on the
+     fixed truncation point and the fixed marker length. `60150 < 65536`
+     (GitHub's hard limit) holds no matter which section — summary, plan
+     recap, review verdict, or substitute-execution — caused the overage, or
+     how many of them did, or whether step 5 added the `Rebased onto` line.
+     Apply this identically whether the resulting body is used for
+     `create_pr` or `update_pr`, so the two stay byte-identical in content
+     (bar the one extra `Rebased onto` line the `update_pr` case may carry
+     into this step from step 5).
+7. **Open or reuse the PR**, using the body produced by step 6. Use `open_pr`
+   from Phase 0 if you have it fresh; otherwise re-read
+   `list_prs(project_id, head=<branch>, status="open", limit=5,
+   omit_body=True)`.
    - **No open PR** → `create_pr(project_id, title=<from plan>, head=<branch>,
-     base=<base_branch>, draft=False, body=<summary + plan recap + review
-     verdict + one "Closes #<n>" line per ticket in the package>)`. Not a
-     draft: the caller merges on `ci-green`; a human never has to finalize it.
+     base=<base_branch>, draft=False, body=<the body from step 6>)`. Not a
+     draft: the caller merges on `ci-green`; a human never has to finalize
+     it.
    - **Exactly one open PR** → it is yours (this branch is named for this
      package and nothing else pushes to it): **reuse it**, never open a
-     second. `update_pr(project_id, pr_id=<n>, title=…, body=…)` with the
-     same content `create_pr` would have received, plus one extra line when
-     Phase R rebased: `Rebased onto <base_branch> at <sha>.`
+     second. `update_pr(project_id, pr_id=<n>, title=…, body=<the body from
+     step 6>)`.
    - **More than one open PR** → this cannot happen (Phase 0 already checked
      and would have failed); if you reach this branch anyway, post `failed`.
-5. Post `pr-opened` with `pr:` filled — the reused number when you reused one.
+8. Post `pr-opened` with `pr:` filled — the reused number when you reused one.
 
 ## Phase 6 — CI gate (the only verdict)
 

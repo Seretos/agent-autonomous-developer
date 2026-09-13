@@ -187,6 +187,493 @@ def test_test_critic_package_accepts_plan_with_anchor_and_carries_symptom_verbat
 
 
 # ---------------------------------------------------------------------------
+# Residual pass, R1 -- fence-safe anchor detection (ticket #108, generation 3).
+#
+# scripts/critic/test-critic-package.sh locates the Test/verification
+# strategy heading with a stateless `grep -n -m1 -iE ... | cut -d: -f1` and
+# then reads the first non-blank line after it with `tail -n +N | grep -m1`.
+# Neither step knows about a fenced (``` / ~~~) code block, so the FIRST
+# heading-like line ANYWHERE in the file wins -- including one inside an
+# example fence, which is exactly what a plan about this plugin itself
+# contains (this very plan's own AGENTS.md-adjacent docs quote the anchor
+# format inside fenced examples). The two cases below exercise both
+# directions of that bug: a fenced decoy that wrongly ACCEPTS an anchor-less
+# plan, and a fenced decoy that wrongly REJECTS a plan whose real anchor is
+# intact. Both are driving tests for the same behaviour (R1, `driving-test`
+# in the residual plan): "the anchor precondition reads the plan's real
+# Test/verification strategy section, not a fenced example."
+# ---------------------------------------------------------------------------
+
+FENCE_DECOY_WITH_WELLFORMED_ANCHOR = (
+    "```\n"
+    "### Test / verification strategy\n"
+    'Symptom (verbatim from ticket): "decoy sentence inside a fenced example block."\n'
+    "```\n\n"
+)
+
+FENCE_DECOY_WITH_NON_ANCHOR_LINE = (
+    "```\n"
+    "### Test / verification strategy\n"
+    "This is just an example heading inside a fenced code block.\n"
+    "```\n\n"
+)
+
+
+def _plan_with_fenced_decoy_heading(
+    tmp_path: pathlib.Path, decoy_block: str, *, strip_real_anchor: bool, dest_name: str
+) -> pathlib.Path:
+    """The fixture plan with `decoy_block` prepended (so the decoy heading is
+    the FIRST occurrence of the heading pattern in the file, ahead of the
+    real section), and -- when `strip_real_anchor` is set -- the real anchor
+    line replaced the same way `_plan_without_anchor` does."""
+    text = PLAN.read_text(encoding="utf-8")
+    if strip_real_anchor:
+        assert ANCHOR_LINE in text, (
+            "fixture plan.md must carry the anchor line verbatim for this "
+            "helper to be able to strip it -- fixture is broken if this fails"
+        )
+        text = text.replace(ANCHOR_LINE, "Requirements below cover the behaviour.\n")
+    dest = tmp_path / dest_name
+    dest.write_text(decoy_block + text, encoding="utf-8")
+    return dest
+
+
+def test_test_critic_package_rejects_anchorless_plan_hidden_behind_fenced_decoy(tmp_path):
+    """Driving test for the residual R1 fix (fence-safe anchor detection).
+
+    The real Test/verification strategy section carries NO anchor (stripped,
+    same as `_plan_without_anchor`), but a fenced example block ahead of it
+    contains a decoy heading whose own line right underneath IS a well-formed
+    anchor. Today's stateless grep/tail pipeline matches the decoy heading
+    first (fences are invisible to it) and reads the decoy's anchor line, so
+    an anchor-less plan is wrongly ACCEPTED.
+
+    Expected RED reason (confirmed against the unfixed script): exit 0 with a
+    package written, where exit 2 is expected -- the decoy inside the fence
+    satisfies today's accept regex.
+
+    Expected GREEN outcome (post-fix, not implemented in this dispatch): exit
+    2, stderr naming the missing anchor, and no package file written -- the
+    fix skips the fenced decoy entirely and finds the real section's
+    non-anchor line instead.
+    """
+    bad_plan = _plan_with_fenced_decoy_heading(
+        tmp_path,
+        FENCE_DECOY_WITH_WELLFORMED_ANCHOR,
+        strip_real_anchor=True,
+        dest_name="plan-fenced-decoy-accept-bug.md",
+    )
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(bad_plan), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 2, (
+        "test-critic-package.sh must not let a fenced example heading stand in "
+        "for the plan's real Test/verification strategy anchor -- the real "
+        "section here carries no anchor at all, so this must exit 2. Got exit "
+        f"{result.returncode}. stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "symptom" in result.stderr.lower() or "anchor" in result.stderr.lower(), (
+        f"exit 2 must name the missing anchor on stderr; got:\n{result.stderr}"
+    )
+    assert not out.exists(), (
+        "no package file should be written when the anchor precondition rejects the plan"
+    )
+
+
+def test_test_critic_package_accepts_real_anchor_despite_fenced_decoy_heading(tmp_path):
+    """Additional edge-case coverage for the residual R1 fix -- the
+    false-*reject* direction. The real anchor is intact and untouched, but a
+    fenced example block ahead of it contains a decoy heading followed by an
+    ORDINARY (non-anchor) line.
+
+    This is also currently RED today, for the opposite reason from the test
+    above (confirmed against the unfixed script): the decoy heading is the
+    first heading-like line in the file, so today's pipeline reads the
+    decoy's own non-anchor line and wrongly REJECTS (exit 2) a plan whose real
+    section does carry a valid anchor further down. This is "the case every
+    plan about this plugin hits", per the plan's own Approach section, since
+    such plans routinely quote the anchor format inside a fenced example.
+
+    Expected GREEN outcome (post-fix): exit 0, and the real anchor sentence
+    still appears verbatim inside PART 1 of the assembled package.
+    """
+    plan = _plan_with_fenced_decoy_heading(
+        tmp_path,
+        FENCE_DECOY_WITH_NON_ANCHOR_LINE,
+        strip_real_anchor=False,
+        dest_name="plan-fenced-decoy-reject-bug.md",
+    )
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(plan), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 0, (
+        "a fenced example heading must not cause test-critic-package.sh to "
+        "reject a plan whose real Test/verification strategy section carries "
+        f"a valid anchor. Got exit {result.returncode}. stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    package_text = out.read_text(encoding="utf-8")
+    part1_text = _part1_only(package_text)
+    assert ANCHOR_SENTENCE in part1_text, (
+        "the real anchor sentence must still appear byte-for-byte inside PART 1 "
+        f"despite the fenced decoy heading ahead of it -- not found there:\n{part1_text}"
+    )
+
+
+FENCE_DECOY_NESTED_MISMATCHED_DELIMITERS = (
+    "```\n"
+    "Example of another fence style:\n"
+    "~~~\n"
+    "### Test / verification strategy\n"
+    'Symptom (verbatim from ticket): "decoy sentence, should stay fenced."\n'
+    "~~~\n"
+    "```\n\n"
+)
+
+
+def test_test_critic_package_rejects_anchorless_plan_hidden_behind_nested_mismatched_fence(tmp_path):
+    """Driving test for the reviewer's round-1 blocking finding (fix round 1,
+    round 2 overall): the awk fence tracker must track WHICH delimiter
+    (``` vs ~~~) and what length opened the current fence, per CommonMark --
+    a ~~~ line must never close a ``` fence (or vice versa), and a
+    same-delimiter run shorter than the opener must not close it either.
+
+    Fixture shape is the reviewer's own reproduction: an OUTER ``` fence
+    containing a NESTED ~~~-delimited block, with a well-formed decoy anchor
+    inside the nested block, ahead of the real (stripped) anchor. Round 1's
+    single-flag `in_fence` toggle flips back to 0 on the INNER ~~~ line even
+    though the outer ``` fence never actually closed, exposing the decoy
+    heading and anchor line as if unfenced -- wrongly ACCEPTING (exit 0) a
+    plan whose real section carries no anchor at all.
+
+    Expected RED reason (confirmed against round 1's single-flag awk): exit 0
+    with a package written, where exit 2 is expected.
+
+    Expected GREEN: exit 2, stderr naming the missing anchor, no package
+    file written -- the fence tracker treats the mismatched-delimiter ~~~
+    lines as ordinary fenced content, keeps the outer ``` fence open across
+    them, and only finds the real (anchor-less) section once the outer
+    fence actually closes.
+    """
+    bad_plan = _plan_with_fenced_decoy_heading(
+        tmp_path,
+        FENCE_DECOY_NESTED_MISMATCHED_DELIMITERS,
+        strip_real_anchor=True,
+        dest_name="plan-nested-mismatched-fence-accept-bug.md",
+    )
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(bad_plan), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 2, (
+        "test-critic-package.sh must track which delimiter (``` vs ~~~) and "
+        "length opened the current fence -- a nested ~~~ block inside an "
+        "outer ``` fence must not close the outer fence early and expose the "
+        "decoy heading/anchor as unfenced. The real section here carries no "
+        f"anchor at all, so this must exit 2. Got exit {result.returncode}. "
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "symptom" in result.stderr.lower() or "anchor" in result.stderr.lower(), (
+        f"exit 2 must name the missing anchor on stderr; got:\n{result.stderr}"
+    )
+    assert not out.exists(), (
+        "no package file should be written when the anchor precondition rejects the plan"
+    )
+
+
+FENCE_TRAILING_JUNK_AFTER_CLOSE_LOOKALIKE = (
+    "```\n"
+    "### Test / verification strategy\n"
+    "```not-a-close\n"
+    'Symptom (verbatim from ticket): "decoy sentence, should stay fenced."\n'
+    "```\n\n"
+)
+
+
+def test_test_critic_package_treats_delimiter_run_with_trailing_text_as_still_fenced(tmp_path):
+    """Driving test for review round 2's Codex blocking finding 1: a
+    delimiter-run line followed by trailing non-whitespace text (e.g.
+    "```not-a-close") must NOT close an open fence. Per CommonMark, a
+    closing fence may be followed only by whitespace -- anything else means
+    the line is ordinary fenced content, not a closer.
+
+    Fixture shape: the REAL anchor is left intact (`strip_real_anchor=False`),
+    with a decoy block prepended that opens a ``` fence, puts a heading and a
+    well-formed decoy anchor inside it, then a look-alike closer carrying
+    trailing junk ("```not-a-close"), and only THEN the genuine closing ```
+    line alone.
+
+    Expected RED reason (confirmed against the round-2 script, which already
+    tracks delimiter character/length from round 1 but not trailing text):
+    the look-alike is wrongly accepted as a close, which reopens a *new*
+    (unterminated) fence at the next bare ``` line and swallows the rest of
+    the file, including the real (intact) heading and anchor -- so this
+    exits 2 with "no Test/verification strategy section found" where a
+    well-formed plan must exit 0.
+
+    Expected GREEN: the look-alike never closes the outer fence, so the
+    decoy heading/anchor stay hidden as fenced content throughout, the outer
+    fence closes only at the genuine bare ``` line, and the real heading and
+    anchor -- never disturbed -- are found normally: exit 0, real anchor
+    sentence present in PART 1.
+    """
+    plan = _plan_with_fenced_decoy_heading(
+        tmp_path,
+        FENCE_TRAILING_JUNK_AFTER_CLOSE_LOOKALIKE,
+        strip_real_anchor=False,
+        dest_name="plan-trailing-junk-after-close-lookalike.md",
+    )
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(plan), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 0, (
+        "a delimiter-run line with trailing non-whitespace text "
+        "('```not-a-close') must not close the fence it appears inside -- "
+        "treating it as a close lets the fence tracker desync and swallow "
+        "the real (intact) heading/anchor further down the file. Got exit "
+        f"{result.returncode}. stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    package_text = out.read_text(encoding="utf-8")
+    part1_text = _part1_only(package_text)
+    assert ANCHOR_SENTENCE in part1_text, (
+        "the real anchor sentence must still appear byte-for-byte inside "
+        f"PART 1 despite the trailing-junk close look-alike ahead of it -- "
+        f"not found there:\n{part1_text}"
+    )
+
+
+def test_test_critic_package_caps_fence_indentation_at_three_spaces(tmp_path):
+    """Driving test for review round 2's Codex blocking finding 2: a fence
+    opener's leading whitespace must be capped at 3 spaces (CommonMark); a
+    4+-space-indented backtick/tilde run is ordinary (indented-code) text,
+    never a fence opener, and a tab must not count toward the 3-space
+    allowance either.
+
+    Fixture shape: a single 4-space-indented ```` ``` ```` line, with no
+    matching close anywhere else in the file, prepended ahead of the real
+    (untouched) plan content.
+
+    Expected RED reason (confirmed against the round-2 script, whose
+    indentation check was unbounded `[ \\t]*`): the indented line is wrongly
+    treated as opening a real fence, which then never closes and swallows
+    the entire rest of the file -- including the real heading and anchor --
+    through EOF: exit 2, "no Test/verification strategy section found",
+    where a well-formed, genuinely-unfenced plan must exit 0.
+
+    Expected GREEN: the indentation cap (`^ {0,3}`) means the 4-space-indented
+    line never opens a fence at all, so it is ordinary text and the real
+    heading/anchor are found normally: exit 0, real anchor sentence present.
+    """
+    text = PLAN.read_text(encoding="utf-8")
+    dest = tmp_path / "plan-four-space-indented-fence-lookalike.md"
+    dest.write_text("    ```\n\n" + text, encoding="utf-8")
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(dest), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 0, (
+        "a 4-space-indented backtick run must not be treated as a fence "
+        "opener (CommonMark caps fence indentation at 3 spaces) -- treating "
+        "it as one leaves an unterminated fence that swallows the real "
+        f"heading/anchor. Got exit {result.returncode}. stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    package_text = out.read_text(encoding="utf-8")
+    part1_text = _part1_only(package_text)
+    assert ANCHOR_SENTENCE in part1_text, (
+        "the real anchor sentence must still appear byte-for-byte inside "
+        f"PART 1 despite the 4-space-indented fence-lookalike line ahead of "
+        f"it -- not found there:\n{part1_text}"
+    )
+
+
+FENCE_BACKTICK_INFO_STRING_CONTAINS_BACKTICK = (
+    "```contains`backtick\n"
+    "This paragraph must not be treated as fenced content -- the line above "
+    "is not a valid CommonMark fence opener (a backtick fence's info string "
+    "may not itself contain a backtick), so it is ordinary text and this "
+    "decoy block never closes.\n\n"
+)
+
+
+def test_test_critic_package_rejects_backtick_fence_with_backtick_in_info_string(tmp_path):
+    """Driving test for review round 4's Codex blocking finding 2: a line
+    that looks like an opening BACKTICK fence but whose info string (the
+    text after the delimiter run) itself contains a backtick is, per
+    CommonMark, not a valid fence opener at all -- it must be treated as
+    ordinary text, never toggle `in_fence`.
+
+    Fixture shape: a decoy line "```contains`backtick" followed by an
+    ordinary paragraph, with NO closing fence anywhere else in the file (the
+    real fixture plan.md, prepended after this block, contains no line that
+    starts with a run of 3+ backticks or tildes -- confirmed by inspection).
+
+    Expected RED reason (confirmed against the unfixed script, which
+    unconditionally treats any `^ {0,3}`{3,}` line as an opener regardless of
+    its info string's content): the decoy line wrongly opens a real fence
+    that then never closes, swallowing the rest of the file -- including the
+    real (intact) heading and anchor -- through EOF: exit 2, "no
+    Test/verification strategy section found", where a well-formed plan with
+    its real anchor intact must exit 0.
+
+    Expected GREEN: the info-string-contains-backtick check means the decoy
+    line never opens a fence at all, so it and the paragraph beneath it are
+    ordinary (non-heading) text, and the real heading/anchor further down are
+    found normally: exit 0, real anchor sentence present in PART 1.
+    """
+    text = PLAN.read_text(encoding="utf-8")
+    assert not re.search(r"^ {0,3}[`~]{3,}", text, re.MULTILINE), (
+        "fixture plan.md must not itself contain a line starting a fence "
+        "run, or this fixture's premise (no closer anywhere in the file) "
+        "is broken"
+    )
+    dest = tmp_path / "plan-backtick-info-string-invalid-opener.md"
+    dest.write_text(FENCE_BACKTICK_INFO_STRING_CONTAINS_BACKTICK + text, encoding="utf-8")
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(dest), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 0, (
+        "a backtick-fence-lookalike line whose info string itself contains a "
+        "backtick must not be treated as a valid fence opener (CommonMark "
+        "forbids a backtick in a backtick fence's info string) -- treating "
+        "it as one leaves an unterminated fence that swallows the real "
+        f"heading/anchor. Got exit {result.returncode}. stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    package_text = out.read_text(encoding="utf-8")
+    part1_text = _part1_only(package_text)
+    assert ANCHOR_SENTENCE in part1_text, (
+        "the real anchor sentence must still appear byte-for-byte inside "
+        f"PART 1 despite the backtick-in-info-string fence-lookalike line "
+        f"ahead of it -- not found there:\n{part1_text}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# R1 strengthening (ticket #108, generation 2). Every fence test above places
+# its decoy heading only BEFORE the real Test/verification strategy section,
+# and only ever uses ``` as the decoy's outer delimiter. Neither dimension is
+# exercised elsewhere in this file. These two cases are coverage-strengthening
+# additions against the current, already-correct implementation (confirmed
+# fence-aware and non-last-match above) -- not RED/GREEN driving tests: R1's
+# behaviour is already implemented and was confirmed correct by generation 1's
+# review, so both cases are expected to PASS as written.
+# ---------------------------------------------------------------------------
+
+UNFENCED_TRAILING_DECOY_WITH_WELLFORMED_ANCHOR = (
+    "### Test / verification strategy\n"
+    'Symptom (verbatim from ticket): "decoy sentence in an unfenced trailing heading."\n\n'
+)
+
+
+def _plan_with_trailing_decoy_heading(
+    tmp_path: pathlib.Path, decoy_block: str, *, strip_real_anchor: bool, dest_name: str
+) -> pathlib.Path:
+    """Mirror of `_plan_with_fenced_decoy_heading` above, but appends
+    `decoy_block` AFTER the plan's real content instead of prepending it --
+    every existing fence test places the decoy ahead of the real section, so
+    none of them would notice a "select the LAST heading match" implementation
+    (the current awk pass takes the FIRST heading match, reads the very next
+    non-blank line, and exits immediately; a plausible-looking rewrite could
+    instead keep scanning and overwrite its result on every subsequent heading
+    match, ending on the last one). `decoy_block` must be genuinely unfenced
+    for that distinction to be exercisable at all -- a fenced decoy is
+    invisible to the heading scan regardless of which match (first or last)
+    the implementation keeps, so it cannot tell the two apart."""
+    text = PLAN.read_text(encoding="utf-8")
+    if strip_real_anchor:
+        assert ANCHOR_LINE in text, (
+            "fixture plan.md must carry the anchor line verbatim for this "
+            "helper to be able to strip it -- fixture is broken if this fails"
+        )
+        text = text.replace(ANCHOR_LINE, "Requirements below cover the behaviour.\n")
+    dest = tmp_path / dest_name
+    dest.write_text(text + "\n" + decoy_block, encoding="utf-8")
+    return dest
+
+
+def test_test_critic_package_rejects_anchorless_plan_with_decoy_heading_after_real_section(tmp_path):
+    """Coverage-strengthening case: a well-formed-anchor decoy heading placed
+    AFTER the real section, genuinely UNFENCED (no ``` or ~~~ around it), with
+    the real anchor stripped.
+
+    A "select the LAST heading match" implementation would keep scanning past
+    the real section's own (stripped, non-anchor) line, reach THIS trailing
+    decoy heading, read its well-formed (but decoy) anchor line instead, and
+    wrongly exit 0. The current implementation takes the FIRST heading match,
+    reads the very next non-blank line, and exits immediately -- it never
+    reaches the trailing decoy at all, so it correctly reads the real
+    section's own (stripped) line -- which is not an anchor -- and must exit
+    2. Because the decoy here is unfenced (unlike the fenced trailing case
+    used elsewhere in this file), this case actually distinguishes the two
+    implementations: a fenced decoy would be skipped by the heading scan
+    regardless of which match wins, and would not tell them apart.
+
+    Expected outcome against the current, unmodified script: exit 2 (PASS,
+    not a RED run -- this behaviour is already implemented and correct)."""
+    bad_plan = _plan_with_trailing_decoy_heading(
+        tmp_path,
+        UNFENCED_TRAILING_DECOY_WITH_WELLFORMED_ANCHOR,
+        strip_real_anchor=True,
+        dest_name="plan-trailing-unfenced-decoy-accept-bug.md",
+    )
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(bad_plan), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 2, (
+        "a decoy heading with a well-formed anchor AFTER the real section "
+        "must not stand in for the real section's own (stripped) anchor -- a "
+        "'last heading match' implementation would wrongly accept this. Got "
+        f"exit {result.returncode}. stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "symptom" in result.stderr.lower() or "anchor" in result.stderr.lower(), (
+        f"exit 2 must name the missing anchor on stderr; got:\n{result.stderr}"
+    )
+    assert not out.exists(), (
+        "no package file should be written when the anchor precondition rejects the plan"
+    )
+
+
+FENCE_DECOY_TILDE_WITH_NON_ANCHOR_LINE = (
+    "~~~\n"
+    "### Test / verification strategy\n"
+    "This is just an example heading inside a tilde-fenced code block.\n"
+    "~~~\n\n"
+)
+
+
+def test_test_critic_package_accepts_real_anchor_despite_tilde_fenced_decoy_heading(tmp_path):
+    """Coverage-strengthening case: the accept-direction decoy (an ordinary,
+    non-anchor line under a decoy heading) using `~~~` as the outer delimiter
+    instead of the ``` every other fence test in this file uses, with the
+    real anchor left intact.
+
+    A backtick-only implementation -- one whose fence-open/close detection
+    recognises a run of backticks but never a run of tildes as a fence
+    delimiter -- would fail to treat this block as fenced at all, expose the
+    decoy heading as if unfenced, read its ordinary (non-anchor) line, and
+    wrongly exit 2. The current implementation is not backtick-only (it
+    tracks ``` and ~~~ symmetrically, see the awk pass's `fence_char`
+    branches), so it correctly skips the tilde-fenced decoy and finds the
+    real, intact anchor.
+
+    Expected outcome against the current, unmodified script: exit 0 (PASS,
+    not a RED run -- this behaviour is already implemented and correct)."""
+    plan = _plan_with_fenced_decoy_heading(
+        tmp_path,
+        FENCE_DECOY_TILDE_WITH_NON_ANCHOR_LINE,
+        strip_real_anchor=False,
+        dest_name="plan-tilde-fenced-decoy-reject-bug.md",
+    )
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(plan), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 0, (
+        "a tilde-fenced decoy heading must not cause test-critic-package.sh "
+        "to reject a plan whose real Test/verification strategy section "
+        f"carries a valid anchor. Got exit {result.returncode}. "
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    package_text = out.read_text(encoding="utf-8")
+    part1_text = _part1_only(package_text)
+    assert ANCHOR_SENTENCE in part1_text, (
+        "the real anchor sentence must still appear byte-for-byte inside "
+        f"PART 1 despite the tilde-fenced decoy heading ahead of it -- not "
+        f"found there:\n{part1_text}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # R3(a) -- test-critic-package.sh: tautology lens carries the reshaped
 # severity bullet, the new finding-title phrase, and (checked directly on the
 # static file) the system prompt's precedence sentence.
@@ -478,3 +965,85 @@ def test_plan_critic_lenses_stay_byte_identical_outside_their_own_lens_block(tmp
         assert _before_lens_block(texts[lens]) == baseline, (
             f"PARTs 1-4 diverged between 'missed' and {lens!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Review fix round 2 (generation 2): fence-tracking must stop once the
+# heading is found. Round 1's fence-skip logic applied uniformly whether
+# still searching for the heading OR searching for the anchor line after the
+# heading was found -- so a REAL section that itself opens with a fenced
+# example directly under its own heading had that fence silently skipped,
+# and the line after the fence accepted as the anchor, even though it is not
+# literally "the first non-blank line after the heading" as the exit-2
+# message claims. Fix: no more fence tolerance at all once the heading is
+# located -- the literal next non-blank line is the anchor candidate,
+# full stop; if that line is itself a fence delimiter, it is not a
+# well-formed anchor and must be rejected (exit 2), never "skip past the
+# fence and use what's after" (fail-closed, same principle as every other
+# fence case in this file).
+# ---------------------------------------------------------------------------
+
+FENCE_DIRECTLY_UNDER_REAL_HEADING = (
+    "```\n"
+    'Symptom (verbatim from ticket): "decoy sentence inside a fenced example, '
+    'directly under the real heading."\n'
+    "```\n"
+)
+
+
+def _plan_with_fence_immediately_after_real_heading(tmp_path: pathlib.Path) -> pathlib.Path:
+    """The fixture plan with its real anchor line (which normally sits
+    directly under the real heading, see plan.md line 21) replaced by a
+    fenced example block followed by the real anchor sentence. The literal
+    next non-blank line after the heading is now the fence-open delimiter
+    itself, not any anchor text -- prose, not fence content, is what the
+    fix's scoping change must see."""
+    text = PLAN.read_text(encoding="utf-8")
+    assert ANCHOR_LINE in text, (
+        "fixture plan.md must carry the anchor line verbatim for this "
+        "helper to be able to replace it -- fixture is broken if this fails"
+    )
+    replacement = FENCE_DIRECTLY_UNDER_REAL_HEADING + ANCHOR_LINE
+    text = text.replace(ANCHOR_LINE, replacement)
+    dest = tmp_path / "plan-fence-directly-under-real-heading.md"
+    dest.write_text(text, encoding="utf-8")
+    return dest
+
+
+def test_test_critic_package_rejects_fence_delimiter_immediately_after_heading(tmp_path):
+    """Driving test for review round 2's second Codex blocking finding: once
+    the real Test/verification strategy heading is found, the fix's
+    scoping change means NO fence-tracking applies any more -- the literal
+    next non-blank line is the anchor candidate, whatever it is. Here that
+    line is a fence-open delimiter (```), which does not match either
+    `Symptom` anchor form, so this must exit 2 -- never "skip the fence and
+    accept the well-formed anchor sentence that follows it", which is
+    exactly the bug this fix removes.
+
+    Expected RED reason (confirmed against the pre-fix script, which still
+    applied fence-skipping in the anchor-search phase too): exit 0, because
+    the fence directly under the heading was skipped and the real anchor
+    sentence after it was read and accepted -- where exit 2 is required.
+
+    This is a deliberate behaviour change from what the pre-fix code did on
+    this exact input (accept): the fail-closed principle this whole gate is
+    built on says rejecting is always safe, and "the next line is a fence
+    delimiter" is never a well-formed anchor on its own terms, regardless of
+    what a later, skipped-past line might have said.
+    """
+    plan = _plan_with_fence_immediately_after_real_heading(tmp_path)
+    out = tmp_path / "package.txt"
+    result = _run(TEST_CRITIC_PACKAGE, str(plan), str(TESTS_DIFF), "tautology", str(out))
+    assert result.returncode == 2, (
+        "once the heading is found, the literal next non-blank line is the "
+        "anchor candidate with no more fence tolerance -- a fence-open "
+        "delimiter line there is not a well-formed anchor and must be "
+        f"rejected. Got exit {result.returncode}. stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "symptom" in result.stderr.lower() or "anchor" in result.stderr.lower(), (
+        f"exit 2 must name the missing anchor on stderr; got:\n{result.stderr}"
+    )
+    assert not out.exists(), (
+        "no package file should be written when the anchor precondition rejects the plan"
+    )
