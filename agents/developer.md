@@ -100,6 +100,21 @@ report, never guessed and never asked interactively.
    If you find a `driving-test` requirement the plan's test strategy left
    untested, add the missing test rather than skipping it.
 
+   **Substitute execution.** Where the plan carries a `Substitute execution:
+   <command> …` line for a requirement (the escape hatch for evidence that is
+   neither a driving test nor `ci-evidence`/`none`), run that exact command
+   synchronously, in the foreground — the no-background rule in step 4 below
+   applies unchanged, this is not an exception to it — and paste its real
+   output verbatim into the change report, next to the plan's `expected:`
+   clause for that requirement. A command that cannot be run (missing
+   dependency, wrong environment, etc.) is a reported blocker in the change
+   report, never a paraphrase of what it would have shown. That same absence
+   means the change report — the document `agents/reviewer.md`'s Substitute
+   execution / `ci-evidence` anchor evidence hard gate (lines 89-99) actually
+   reads at Phase 4 — is missing the required evidence, which is `[blocking]`
+   at review (and, later, the PR body too, if that evidence was never
+   produced) — the run can only end `failed`, never a silent `ci-green`.
+
    **Baseline discipline.** Where practical, run the relevant existing tests
    green *before* writing the new driving test, so the driving test's
    subsequent failure is attributable to the missing behaviour rather than a

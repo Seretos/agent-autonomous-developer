@@ -122,6 +122,111 @@ def test_merge_emits_blocking_severity_counts(tmp_path):
     assert merged["blocking_severity_counts"]["major"] == 1
 
 
+# --- Ticket #108: finding_class keyed on (lens, severity), not lens alone ---
+#
+# lib-python-worktree#154's own root cause (an isolated critic finding
+# *something* every round) has a twin at the opposite end: a package whose
+# ticket states a runtime symptom but whose only driving tests are
+# prose/literal/structure assertions gets graded a `note`-class `untestable`
+# finding today no matter how severe, and can reach ci-green with the user's
+# actual symptom unfixed. #108 makes an `untestable` finding "blocking" when
+# (and only when) its severity is `critical` — the flat lens-only table
+# (NOTE_LENSES / finding_class(lens)) cannot express that distinction; the
+# driving test below is the one that currently proves it.
+
+def test_untestable_critical_finding_is_blocking_not_note(tmp_path):
+    """Driving test for #108's R1: an `untestable`+`critical` finding (the
+    ticket's stated symptom is exercised by no test at all) must be
+    `finding_class: "blocking"`, not a note the round-cap loop can grind on
+    forever. Today's flat lens-only table returns "note" for every
+    `untestable` finding regardless of severity -- this must currently fail
+    with `"note"` where it asserts `"blocking"`."""
+    mod = _load_merge_module()
+    untestable = tmp_path / "critique-untestable.json"
+    _write_critique(untestable, [
+        {"id": "1", "title": "t", "what": "the acceptance criterion is exercised by no test",
+         "violated_criterion": "c-untestable-critical", "kind": "gap", "severity": "critical"},
+    ])
+    out = tmp_path / "merged.json"
+    rc = mod.main(["prog", str(out), f"untestable={untestable}"])
+    assert rc == 0
+    merged = json.loads(out.read_text(encoding="utf-8"))
+    assert merged["findings"][0]["finding_class"] == "blocking", (
+        "an untestable+critical finding must be blocking under #108's "
+        "(lens, severity) table, not the flat lens-only note it gets today")
+
+
+def test_untestable_major_finding_stays_a_note(tmp_path):
+    """Additional coverage: an `untestable`+`major` finding stays a note --
+    only `critical` severity promotes it to blocking."""
+    mod = _load_merge_module()
+    untestable = tmp_path / "critique-untestable.json"
+    _write_critique(untestable, [
+        {"id": "1", "title": "t", "what": "w", "violated_criterion": "c-untestable-major",
+         "kind": "gap", "severity": "major"},
+    ])
+    out = tmp_path / "merged.json"
+    rc = mod.main(["prog", str(out), f"untestable={untestable}"])
+    assert rc == 0
+    merged = json.loads(out.read_text(encoding="utf-8"))
+    assert merged["findings"][0]["finding_class"] == "note"
+
+
+def test_simplifier_critical_finding_stays_a_note(tmp_path):
+    """Control case, must not regress: `simplifier` is a note at every
+    severity, including critical -- #108 only touches `untestable`."""
+    mod = _load_merge_module()
+    simplifier = tmp_path / "critique-simplifier.json"
+    _write_critique(simplifier, [
+        {"id": "1", "title": "t", "what": "w", "violated_criterion": "c-simplifier-critical",
+         "kind": "gap", "severity": "critical"},
+    ])
+    out = tmp_path / "merged.json"
+    rc = mod.main(["prog", str(out), f"simplifier={simplifier}"])
+    assert rc == 0
+    merged = json.loads(out.read_text(encoding="utf-8"))
+    assert merged["findings"][0]["finding_class"] == "note"
+
+
+def test_missed_and_misread_critical_findings_stay_blocking(tmp_path):
+    """Control case, must not regress: `missed`/`misread` stay blocking at
+    every severity under the new (lens, severity) table."""
+    mod = _load_merge_module()
+    missed = tmp_path / "critique-missed.json"
+    _write_critique(missed, [
+        {"id": "1", "title": "t", "what": "w", "violated_criterion": "c-missed-critical",
+         "kind": "gap", "severity": "critical"},
+    ])
+    misread = tmp_path / "critique-misread.json"
+    _write_critique(misread, [
+        {"id": "1", "title": "t", "what": "w", "violated_criterion": "c-misread-critical",
+         "kind": "gap", "severity": "critical"},
+    ])
+    out = tmp_path / "merged.json"
+    rc = mod.main(["prog", str(out), f"missed={missed}", f"misread={misread}"])
+    assert rc == 0
+    merged = json.loads(out.read_text(encoding="utf-8"))
+    classes = {f["violated_criterion"]: f["finding_class"] for f in merged["findings"]}
+    assert classes["c-missed-critical"] == "blocking"
+    assert classes["c-misread-critical"] == "blocking"
+
+
+def test_unknown_lens_stays_blocking_at_every_severity(tmp_path):
+    """Control case, must not regress: an unnamed lens (the safe default)
+    stays blocking regardless of severity."""
+    mod = _load_merge_module()
+    other = tmp_path / "critique-other.json"
+    _write_critique(other, [
+        {"id": "1", "title": "t", "what": "w", "violated_criterion": "c-other-minor",
+         "kind": "gap", "severity": "minor"},
+    ])
+    out = tmp_path / "merged.json"
+    rc = mod.main(["prog", str(out), f"other-lens={other}"])
+    assert rc == 0
+    merged = json.loads(out.read_text(encoding="utf-8"))
+    assert merged["findings"][0]["finding_class"] == "blocking"
+
+
 # --- D1: acceptance threshold, prose pins ------------------------------------
 
 def test_skill_accepts_at_the_soft_cap_with_no_blocking_critical():

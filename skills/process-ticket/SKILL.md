@@ -127,18 +127,22 @@ than trying to end the turn again.
 | CI | 3 | 3 (unchanged) | this skill |
 | rebase | 3 | 3 (unchanged) | this skill (Phase R only) |
 
-**Acceptance threshold, not zero findings (ticket #105).** Not every plan-critic
-finding is a reason for another round. Only the `missed` and `misread` lenses
-can produce a **blocking** finding; `untestable` and `simplifier` findings are
-always **notes**, forwarded to the developer, never a reason to re-dispatch the
-planner. The merged critique carries this as `finding_class` per finding
-(`plan-critic-merge.py`, derived from which lens raised it — never declared by
-a critic, never second-guessed by you) and as `blocking_severity_counts`
-alongside the plain `severity_counts`. **Every cap, threshold and stagnation
-check in this document reads `blocking_severity_counts`, never
-`severity_counts`.** At the soft cap (round 3) with `blocking critical == 0`,
-accept the plan rather than continuing toward the hard cap — see Phase 2's
-routing rules below for exactly how.
+**Acceptance threshold, not zero findings (ticket #105, table extended by
+#108).** Not every plan-critic finding is a reason for another round. The
+`missed` and `misread` lenses always produce a **blocking** finding;
+`simplifier` findings are always **notes**; `untestable` findings are
+**blocking** only when `severity == critical` (ticket #108 — the ticket's
+stated symptom exercised by no test at all is exactly the case a `note` must
+not be allowed to grind on forever), and **notes** at every other severity.
+Note-class findings are forwarded to the developer, never a reason to
+re-dispatch the planner. The merged critique carries this as `finding_class`
+per finding (`plan-critic-merge.py`, derived from the finding's `(lens,
+severity)` pair — never declared by a critic, never second-guessed by you) and
+as `blocking_severity_counts` alongside the plain `severity_counts`. **Every
+cap, threshold and stagnation check in this document reads
+`blocking_severity_counts`, never `severity_counts`.** At the soft cap (round
+3) with `blocking critical == 0`, accept the plan rather than continuing
+toward the hard cap — see Phase 2's routing rules below for exactly how.
 
 Package ceiling **per generation**: 9 gate rounds in total (plan-critic +
 test-critic + review), CI excluded. A new generation (see "Replan" below)
@@ -363,14 +367,21 @@ Dispatch `planner` synchronously and unnamed with `context_summary`,
 
 - `PLAN_FINAL` → write the plan to `<rundir>/plan.md`; post `plan-committed`
   with the short-form plan (goal, approach bullets, affected files).
-- `NEEDS_INPUT` → **you try to answer first.** Read the transcript you already
-  hold (`spec.md`): the epic body, sibling tickets, prior comments, the code
-  references the planner cites. If the answer is there, re-dispatch the planner
-  (fresh, unnamed) with the previous plan draft verbatim plus your answer keyed
-  to the question number and the instruction to fold it in, not start over. Cap
-  two such rounds. If the question is a genuine decision the context does not
-  settle → post `blocked` (question, options, recommendation, what you checked
-  and why it was not enough) and end.
+- `NEEDS_INPUT` whose reply body (the text preceding the trailing
+  `STATUS: NEEDS_INPUT` line) **begins with the literal marker
+  `PREMISE FALSIFIED:`** → skip the "you try to answer first" step entirely.
+  The planner has already checked this against the code and found the
+  premise false — there is nothing left for you to verify. Post `blocked`
+  directly, quoting the marker line verbatim as the finding, and end.
+- `NEEDS_INPUT` (any other case) → **you try to answer first.** Read the
+  transcript you already hold (`spec.md`): the epic body, sibling tickets,
+  prior comments, the code references the planner cites. If the answer is
+  there, re-dispatch the planner (fresh, unnamed) with the previous plan
+  draft verbatim plus your answer keyed to the question number and the
+  instruction to fold it in, not start over. Cap two such rounds. If the
+  question is a genuine decision the context does not settle → post
+  `blocked` (question, options, recommendation, what you checked and why it
+  was not enough) and end.
 
 **Plan critique.** Dispatch `plan-critic` (fresh, unnamed) with `spec_file`,
 `plan_file`, a one-paragraph scope statement (what this package covers, round
@@ -380,14 +391,15 @@ severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
 
 - `INFRA_FAILURE` → the round counts as `i`; re-dispatch. Three infra rounds →
   `failed`.
-- A **blocking** `critical` (`finding_class: blocking`, i.e. `missed` or
-  `misread`) → the round counts as `f`; re-dispatch the **planner** (fresh)
-  with the plan verbatim plus the critical findings, then critique again.
+- A **blocking** `critical` (`finding_class: blocking`, i.e. `missed`/`misread`
+  at any severity, or `untestable` specifically at `critical`) → the round
+  counts as `f`; re-dispatch the **planner** (fresh) with the plan verbatim
+  plus the critical findings, then critique again.
 - A **blocking** `major` → your call: route it to the planner if it concerns
   the package's scope, else note it in the plan comment as accepted with one
   line of reason.
-- A **note**-class finding (`untestable` or `simplifier`, any severity,
-  including `critical`) → **never** a reason for another round. Collect it and
+- A **note**-class finding (`simplifier` at any severity, or `untestable`
+  below `critical`) → **never** a reason for another round. Collect it and
   forward it verbatim into the Phase 3 developer dispatch (3a and 3b) as a note
   to answer against real code — that is cheaper and better-grounded than
   another blind round against the document. This is a deliberate reversal of
@@ -513,21 +525,79 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    bare `--force`.** A `--force-with-lease` rejection means somebody else
    pushed to this branch while you worked — post `failed` saying so; do not
    overwrite them.
-4. **Open or reuse the PR.** Use `open_pr` from Phase 0 if you have it fresh;
-   otherwise re-read `list_prs(project_id, head=<branch>, status="open",
-   limit=5, omit_body=True)`.
+4. **Compose the PR body**: summary + plan recap + review verdict +
+   substitute-execution output (command + pasted output, for every
+   requirement the plan declared one for — see the developer's change
+   report), each requirement's pasted output bounded to 200 lines or ~4000
+   characters, whichever is hit first, with a trailing "...truncated, see
+   <rundir>/change-report-round-<n>.md for full output" marker appended when
+   truncated + one "Closes #<n>" line per ticket in the package. **Then
+   check the aggregate length of the whole composed body.** The per-item cap
+   above bounds each requirement's own output but not their sum: a package
+   with several driving-test requirements, each near its per-item cap, can
+   still push the total past a hosting provider's PR-body length limit
+   (GitHub's is 65536 characters — a hard `create_pr`/`update_pr` failure,
+   not a cosmetic concern). If the composed body exceeds 60000 characters
+   (the safety margin below that limit), truncate the substitute-execution
+   section further: collapse every requirement's command+output block down
+   to a single line each — "`<command>` — ran, see
+   <rundir>/change-report-round-<n>.md for full output" — instead of the
+   per-requirement pasted output, and note at the top of that section that
+   full output was cut for length and lives in the change report. Use this
+   composed (and, if needed, re-collapsed) body as the input to step 5 below,
+   for both `create_pr` and `update_pr`.
+5. **Assemble the final candidate body, per PR case.** For `create_pr`, the
+   final candidate is exactly the step-4 body. For `update_pr` on a reused
+   PR, the final candidate is the step-4 body with one extra line appended
+   when Phase R rebased: `Rebased onto <base_branch> at <sha>.` Either way,
+   the result of this step — call it the *final candidate body* — is what
+   step 6 below runs its last check on; nothing is sent to `create_pr` or
+   `update_pr` before that check runs.
+6. **Final unconditional length cap — hard, no exceptions, runs every time,
+   on the final candidate body from step 5.** Step 4's aggregate check and
+   collapse bound the *known* biggest contributor (substitute-execution
+   output), but that is still a per-section heuristic: a large-enough
+   summary, plan recap, or review verdict alone — sections step 4 does not
+   cap at all — can still push the total over the limit even after step 4's
+   collapse has done everything it can. This step is the backstop that makes
+   the limit unconditional regardless of *which* section is oversized, and
+   it is not "usually enough" — it always runs, on every PR body, whether or
+   not step 4 collapsed anything, and after any line step 5 added:
+   - Compute the final candidate body's total character length.
+   - If the length is **≤ 60000**, use the body unchanged.
+   - If the length is **> 60000**, discard everything past the first 60000
+     characters and append this fixed marker (~150 characters, independent
+     of how large the discarded remainder was):
+     `"\n\n...PR body truncated — see the ticket's `plan-committed`/
+     `review-verdict` comments and `<rundir>` for the full plan, findings,
+     and change reports."`
+   - This guarantees termination under the hard limit unconditionally: the
+     output is always either the untruncated body (already ≤ 60000, by the
+     branch above) or exactly `60000 + len(marker)` (~60150) characters —
+     neither depends on how large the pre-truncation body was, only on the
+     fixed truncation point and the fixed marker length. `60150 < 65536`
+     (GitHub's hard limit) holds no matter which section — summary, plan
+     recap, review verdict, or substitute-execution — caused the overage, or
+     how many of them did, or whether step 5 added the `Rebased onto` line.
+     Apply this identically whether the resulting body is used for
+     `create_pr` or `update_pr`, so the two stay byte-identical in content
+     (bar the one extra `Rebased onto` line the `update_pr` case may carry
+     into this step from step 5).
+7. **Open or reuse the PR**, using the body produced by step 6. Use `open_pr`
+   from Phase 0 if you have it fresh; otherwise re-read
+   `list_prs(project_id, head=<branch>, status="open", limit=5,
+   omit_body=True)`.
    - **No open PR** → `create_pr(project_id, title=<from plan>, head=<branch>,
-     base=<base_branch>, draft=False, body=<summary + plan recap + review
-     verdict + one "Closes #<n>" line per ticket in the package>)`. Not a
-     draft: the caller merges on `ci-green`; a human never has to finalize it.
+     base=<base_branch>, draft=False, body=<the body from step 6>)`. Not a
+     draft: the caller merges on `ci-green`; a human never has to finalize
+     it.
    - **Exactly one open PR** → it is yours (this branch is named for this
      package and nothing else pushes to it): **reuse it**, never open a
-     second. `update_pr(project_id, pr_id=<n>, title=…, body=…)` with the
-     same content `create_pr` would have received, plus one extra line when
-     Phase R rebased: `Rebased onto <base_branch> at <sha>.`
+     second. `update_pr(project_id, pr_id=<n>, title=…, body=<the body from
+     step 6>)`.
    - **More than one open PR** → this cannot happen (Phase 0 already checked
      and would have failed); if you reach this branch anyway, post `failed`.
-5. Post `pr-opened` with `pr:` filled — the reused number when you reused one.
+8. Post `pr-opened` with `pr:` filled — the reused number when you reused one.
 
 ## Phase 6 — CI gate (the only verdict)
 

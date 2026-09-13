@@ -90,6 +90,15 @@ Judge coverage, not quality. A requirement the plan does address but gets wrong 
 run's finding, however wrong it is — report only what is missing outright. Requirements outside
 the assigned scope are not findings either; if you mention one, say explicitly that it is out of
 scope.
+
+The plan's Symptom anchor line (the first line of its Test/verification strategy section) is also
+this lens's concern (ticket #108): verify the quoted sentence, or a `none:<category>` claim,
+against the specification itself — textual presence somewhere in the ticket is necessary but never
+sufficient on its own. The anchor is a `critical` `gap` when the sentence it quotes is not the
+ticket's actual stated runtime symptom (a sentence that appears in the ticket somewhere, but is not
+what the ticket reports as actually failing, does not count). It is likewise a `critical` `gap`
+when the plan claims `Symptom: none:<category>` while the specification does state a runtime
+symptom — a `none` claim is not a way to skip this branch.
 LENS_MISSED
       ;;
     misread)
@@ -112,11 +121,16 @@ LENS_MISREAD
       cat <<'LENS_UNTESTABLE'
 This run's lens: BEHAVIOUR STATED TOO VAGUELY TO DRIVE A FAILING TEST.
 
-This lens applies ONLY to requirements the plan itself declares evidence kind `driving-test`. A
-requirement declared `existing-suite`, `ci-evidence`, or `none` is out of scope for this lens
-entirely — do not fault a workflow-file or documentation requirement for lacking a derivable test;
-that is what the other three kinds exist for, and a finding against one of them is a finding
-against a rule the plan is right to follow.
+This lens's ordinary derivability judgment — whether a failing test can be derived from the plan's
+own words — applies ONLY to requirements the plan itself declares evidence kind `driving-test`. A
+requirement declared `existing-suite`, `ci-evidence`, or `none` is out of scope for that judgment;
+do not fault a workflow-file or documentation requirement for lacking a derivable test, that is
+what those other kinds exist for, and a finding against one of them on that basis would be a
+finding against a rule the plan is right to follow. The one exception to this scoping is the
+ticket #108 symptom carve-out below, which applies specifically when the requirement covering the
+specification's stated runtime symptom is the one declaring `none`, `existing-suite`, `ci-evidence`,
+or manual instead of `driving-test` — that is the failure mode the carve-out exists to catch, not an
+exception you have to reconcile against the paragraph above.
 
 For each `driving-test` requirement, it has to be described sharply enough that a test designer
 could derive from it a driving test that fails for the right reason before the production code
@@ -132,6 +146,29 @@ designer can work from — it is explicitly NOT required to list test cases, and
 demands them would be a finding against a rule the plan is right to follow. You judge only
 WHETHER a failing test is derivable from the plan's own words, and where it is not, name what is
 missing from the description. Never which test to write.
+
+A related carve-out (ticket #108): when the specification states a runtime symptom, find
+the requirement that is supposed to cover it. If that requirement declares `none`, `existing-suite`,
+`ci-evidence`, or manual verification as its evidence — rather than `driving-test` — report a
+`critical` finding, kind `gap`, `violated_criterion` the ticket's quoted symptom sentence — UNLESS
+that requirement's evidence line names something that is itself a plausible way to exercise the
+symptom quoted in the plan's own `Symptom (verbatim from ticket):` anchor line: either a
+`Substitute execution: <command> — expected: <what the output should show> — output pasted in the
+PR body` line naming a `<command>`, or, for `ci-evidence`, the specific CI run/job it names as
+demonstrating the requirement (`agents/planner.md` requires `ci-evidence` to name one). In either
+case, if the named command or CI run/job plausibly exercises the anchor symptom, the coverage is
+solid, not a finding — its evidence is the pasted command output or the CI run, not a test. Read
+the `<command>` or the named CI run/job against the quoted anchor sentence exactly as you would read
+a requirement against the specification elsewhere in this lens: a command or CI run/job with no
+discernible relation to the anchor's stated symptom, or one whose own `expected:` clause (for
+`Substitute execution`) it would satisfy regardless of whether the symptom is present or fixed (e.g.
+`Substitute execution: echo success — expected: prints success`), does NOT qualify for the carve-out
+— report the same `critical`/`gap` finding you would report had the line been absent entirely. This
+applies equally to `ci-evidence`: naming an unrelated lint/build job, or an existing test suite that
+does not cover the symptom, does not qualify. `ci-evidence` is exempt only from the ordinary
+driving-test derivability judgment above — merely declaring the kind and naming *some* CI run is not
+by itself an exemption from this symptom carve-out; the named run still has to plausibly cover the
+symptom.
 LENS_UNTESTABLE
       ;;
     simplifier)

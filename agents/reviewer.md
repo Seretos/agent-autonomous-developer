@@ -86,6 +86,45 @@ push, not what declares the package done.
        had) must be honestly disclosed as such, not reported as a fabricated
        historical RED; evaluate their **protective value** going forward.
      Also confirm the suite is reported green (the Final suite result).
+   - **Substitute execution / `ci-evidence` anchor evidence (hard gate), for
+     requirements the plan covers by `Substitute execution:` or by declaring
+     `ci-evidence` rather than a driving test.** This check is standalone —
+     it covers exactly the requirements the Test coverage gate above
+     excludes (`none`/`existing-suite`/`ci-evidence`/manual), so it is not
+     nested inside that gate's scope. Wherever the plan names a
+     `Substitute execution: <command>` line, the developer's change report
+     or PR body must show that command's actual output, and that output
+     must show the result the plan says it expects. Named in the plan but
+     absent from the PR, or present but contradicting the plan's stated
+     expectation, is `[blocking]`.
+     For the requirement covering the plan's `Symptom (verbatim from
+     ticket):` anchor specifically, matching the plan's own `expected:`
+     clause is necessary but not sufficient — that clause is the plan's
+     self-declared bar, and a vacuous command clears its own bar by
+     construction. Also read the named `<command>` against the quoted
+     anchor sentence and judge, from the two texts alone, whether running
+     that command is a plausible way to exercise the symptom the anchor
+     describes — a runtime symptom about a browser-navigation failure asks
+     for a command that drives that navigation path, not one that inspects
+     source text or prints a fixed string. A command that bears no
+     discernible relation to the anchor's stated symptom, or one whose
+     `expected:` clause it would satisfy regardless of whether the symptom
+     is present or fixed (e.g. `Substitute execution: echo success —
+     expected: prints success`), is `[blocking]` even when the pasted
+     output technically matches that `expected:` clause.
+     The same plausibility judgment applies, unchanged, when the requirement
+     covering the anchor instead declares evidence kind `ci-evidence`.
+     `agents/planner.md` already requires a `ci-evidence` requirement to name
+     the specific CI run/job that demonstrates it — read that named run/job
+     against the quoted anchor sentence exactly as you would a
+     `Substitute execution:` command: is it plausible that this run actually
+     exercises the symptom, or does it just exist? A `ci-evidence` line
+     naming an unrelated lint/build job, a release gate, or an existing test
+     suite/pipeline step that does not cover the symptom, is `[blocking]` —
+     the same finding you would report for an absent or vacuous `Substitute
+     execution:` line. Declaring `ci-evidence` and naming *some* CI run is
+     not by itself sufficient; the named run has to plausibly cover the
+     anchor's stated symptom.
    - **Consistency** — when behaviour shared by several call sites changed, was
      the change applied at all of them? Flag any one-sided change.
    - **Mechanism balance vs. diff** — every new module constant, flag/

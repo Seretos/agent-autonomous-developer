@@ -64,7 +64,14 @@ round is a brand-new process with no memory of the last one.
    accreting, and the loop cost 4.5 hours and zero lines of code. You still
    **re-emit the full plan** on every round (see "On a follow-up round" below)
    — this is a size ceiling on that plan, not permission to send a diff.
-3. **Write the plan** with these sections:
+3. **Write the plan** with these sections, each rendered as a `###`-level
+   markdown heading (`### Goal`, `### Approach`, `### Affected files`, `###
+   Mechanism balance`, `### Test / verification strategy`, `###
+   Dependencies / sequencing`) — never as a bold paragraph label. The
+   test-critic packager (`scripts/critic/test-critic-package.sh`) locates
+   the Test / verification strategy section by matching a `#`-prefixed
+   heading; a plan that renders the section name as `**Test / verification
+   strategy**` prose instead of a heading is invisible to that anchor check:
    - **Goal** — 2-3 sentences tying the work to the ticket.
    - **Approach** — 3-6 concrete bullets. Mechanical/technical choices belong
      here, decided — not turned into questions.
@@ -77,12 +84,32 @@ round is a brand-new process with no memory of the last one.
      what this plan deletes. Adding mechanism is allowed; adding it silently
      is not — this is what the plan-critic's `simplifier` lens and the
      reviewer's balance-vs-diff check hold the rest of the plan against.
-   - **Test / verification strategy** — name the **detected test command**
-     (plus any install/build step) the developer will run — spell out the
-     concrete command, not a hardcoded `pytest`. List every **behavioural
-     requirement** the ticket implies (not every individual test), and for
-     each one — **per requirement, never once for the whole package** —
-     declare an **evidence kind**, so one package may legitimately mix kinds:
+   - **Test / verification strategy** — the **first line** of this section
+     is exactly one of:
+     - `Symptom (verbatim from ticket): "<copied sentence(s)>"` — copy the
+       ticket's stated runtime symptom verbatim, never paraphrase it. This
+       is the one artefact that carries the ticket's own words as far as the
+       test-critic gate, which sees this plan but never the ticket itself.
+     - `Symptom: none:<category>` — this package has no runtime symptom to
+       anchor to (e.g. `none:docs`, `none:refactor`, `none:infra`); say so
+       plainly rather than inventing one.
+     A requirement covering the symptom may declare evidence kind `none`,
+     `existing-suite`, or manual verification only if it also carries the
+     line `Substitute execution: <command> — expected: <what the output
+     should show> — output pasted in the PR body`. The `expected:` clause is
+     load-bearing, not decoration: it is what the reviewer's substitute-
+     execution gate (`agents/reviewer.md`) holds the pasted PR output
+     against, and a plan that omits it gives the reviewer nothing to compare
+     the output to. This is the one escape of record for a symptom-covering
+     requirement that cannot get a driving test; neither the test-critic nor
+     the plan-critic's `untestable` lens restates what this line means, they
+     just recognise it.
+     Then name the **detected test command** (plus any install/build step)
+     the developer will run — spell out the concrete command, not a
+     hardcoded `pytest`. List every **behavioural requirement** the ticket
+     implies (not every individual test), and for each one —
+     **per requirement, never once for the whole package** — declare an
+     **evidence kind**, so one package may legitimately mix kinds:
      - **`driving-test`** — a real behavioural change, provable by a test that
        fails for the right reason before the change exists. Document it with
        the five canonical fields: **Behaviour** / **Driving test** /
@@ -115,6 +142,23 @@ round is a brand-new process with no memory of the last one.
    context summary, the ticket transcript, or the code already answers — the
    orchestrator will check those first and a question it can answer itself
    was a wasted round.
+5. **Premise verification, only if the context carries one.** If
+   `context_summary` contains a line `Premises to verify before planning:
+   <list>` under a `## Frame (gatekeeper)` comment, verify each listed
+   premise against the actual code before you reach `PLAN_FINAL`, and record
+   one prose line per premise under a `Premises verified` heading in the
+   plan, saying how you checked it and what you found. No such line exists
+   in any package today — this is a no-op on every current ticket — but
+   write the instruction anyway, for the package that does carry one. If a
+   premise turns out to be false, do not plan around it: still end the turn
+   with `STATUS: NEEDS_INPUT` as the last line (the ordinary status protocol
+   below applies unchanged), but make the **first line of the body that
+   precedes it** begin with the literal marker `PREMISE FALSIFIED: <premise>,
+   checked via <method>, found: <result>` — in place of the usual `## Open
+   Questions` section. The marker is the first line of the `NEEDS_INPUT`
+   reply's body, not a replacement for the status line itself; the
+   orchestrator still looks for `STATUS: NEEDS_INPUT` to classify the reply,
+   then reads the body for the marker to skip straight to `blocked`.
 
 ## Status protocol (load-bearing — the orchestrator parses this)
 

@@ -13,11 +13,14 @@ against.
   purpose, and are supposed to be failing right now. That a test currently fails is the expected
   state and never a defect. What is being judged is whether it would still fail once a *wrong*
   implementation existed.
-- An assertion that only checks a literal string is present in a config, workflow, or docs file
-  proves nothing about the requirement it is supposed to demonstrate — a wrong config can satisfy
-  it as easily as a right one. Such a requirement should have been declared `ci-evidence` or
-  `none`, not `driving-test`; if you find one, it is a `tautology`-lens finding in its own right,
-  layer `plan` (the plan misdeclared the requirement, not that the test author wrote it badly).
+- An assertion that only checks a literal string is present in a config, workflow, or docs
+  file — including a markdown heading's exact text, a bare string-presence check, or a JSON
+  key's mere presence — is a `critical`, `tautology`-lens finding in its own right, layer
+  `plan`: it proves nothing about the requirement it is supposed to demonstrate, since a wrong
+  config, a right heading over the wrong behaviour, or a present-but-unused JSON key can satisfy
+  it as easily as a correct implementation. Such a requirement should have been declared
+  `ci-evidence` or `none`, not `driving-test` (the plan misdeclared the requirement, not that
+  the test author wrote it badly).
 - One driving test per requirement the plan declares evidence kind `driving-test` for is the
   minimum; additional coverage of behaviour that already exists may be present and may already
   pass. A passing test for existing behaviour is not a defect, and a driving test is not weaker for
