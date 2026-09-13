@@ -39,6 +39,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # A missing bash/jq must fail this job, not silently skip the tests
+      # that need them (tests/test_release_scripts.py's shared harness).
+      ADEV_REQUIRE_SHELL_TOOLING: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -51,3 +55,27 @@ jobs:
 
       - name: Run pytest
         run: python -m pytest -q
+
+  test-windows:
+    # ticket #107: release.yml's own tests (tests/test_release_scripts.py)
+    # execute real bash under Git-for-Windows -- the one OS-specific
+    # assumption this repo's test suite makes. Targeted at that one file
+    # rather than the full suite: gating this PR on 100+ tests that never
+    # ran on Windows would be a full-suite OS matrix this ticket explicitly
+    # does not add.
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      ADEV_REQUIRE_SHELL_TOOLING: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run pytest (release scripts only)
+        run: python -m pytest -q tests/test_release_scripts.py

@@ -29,8 +29,12 @@ jobs:
         shell: bash
         run: |
           V="${{ inputs.version }}"
-          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Version '$V' is not valid semver (expected MAJOR.MINOR.PATCH[-PRERELEASE])."
+          # Strict semver, no build metadata (a "+..." suffix is illegal in a
+          # git tag / marketplace ref) and no leading zeros -- kept in exact
+          # lockstep with tools/prev_release_tag.py's VERSION_RE (see
+          # test_workflow_version_regex_matches_module_parser_grammar).
+          if [[ ! "$V" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?$ ]]; then
+            echo "::error::Version '$V' is not valid semver (expected MAJOR.MINOR.PATCH[-PRERELEASE], no leading zeros, no build metadata)."
             exit 1
           fi
 
@@ -40,16 +44,65 @@ jobs:
           fetch-depth: 0
 
       - name: Fail if tag already exists
+        id: preflight
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
-          TAG="${PLUGIN_NAME}--v${{ inputs.version }}"
-          if gh api "repos/${{ github.repository }}/git/refs/tags/${TAG}" >/dev/null 2>&1; then
+          TAG="${PLUGIN_NAME}--v${VERSION}"
+          MAIN_SHA=$(git rev-parse HEAD)
+
+          # Side-effect-free checks first, cheapest and most fundamental
+          # first, so a violated precondition fails before any push, tag,
+          # zip, or burned version number.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "::error::Checkout is shallow -- release.yml requires 'fetch-depth: 0' so the full tag/commit history can be walked to resolve the previous release and generate notes."
+            exit 1
+          fi
+
+          if [ "${REF_NAME:-}" != "${DEFAULT_BRANCH:-}" ]; then
+            echo "::error::release.yml must be dispatched from the repository's default branch (${DEFAULT_BRANCH:-<unknown>}), not ${REF_NAME:-<unknown>} -- the src/<TAG> marker and the notes-generation range are only meaningful relative to that branch's own history."
+            exit 1
+          fi
+
+          if gh api "repos/${REPO}/git/refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "::error::Tag ${TAG} already exists. Delete it first or pick a new version."
             exit 1
           fi
+
+          if gh api "repos/${REPO}/git/refs/tags/src/${TAG}" >/dev/null 2>&1; then
+            echo "::error::src/${TAG} already exists. This marker tag must never be moved or deleted -- pick a new version instead."
+            exit 1
+          fi
+
+          # PYTHON_BIN is unset in production (falls back to "python3" on
+          # PATH); the test harness sets it to the running interpreter so
+          # this resolves deterministically on every platform, including the
+          # Windows CI leg.
+          PYTHON_BIN="${PYTHON_BIN:-python3}"
+          PREV_TAG=$(git tag -l | "$PYTHON_BIN" tools/prev_release_tag.py --plugin-name "$PLUGIN_NAME" --exclude-tag "$TAG")
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "::notice::No previous ${PLUGIN_NAME}--v* release tag was found -- treating this as the first release. If this is unexpected (e.g. history was not fetched), double-check 'fetch-depth: 0' rather than trusting this notice blindly."
+          else
+            if ! gh api "repos/${REPO}/git/refs/tags/src/${PREV_TAG}" >/dev/null 2>&1; then
+              echo "::error::src/${PREV_TAG} marker tag is missing -- release notes cannot be generated between it and src/${TAG} without it."
+              echo "::error::Bootstrap it once, from the commit the ${PREV_TAG} release was actually built from, then re-run this workflow:"
+              echo "::error::  git tag src/${PREV_TAG} <head_sha_of_last_successful_release_run>"
+              echo "::error::  git push origin src/${PREV_TAG}"
+              exit 1
+            fi
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "plugin_name=${PLUGIN_NAME}" >> "$GITHUB_OUTPUT"
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+          echo "main_sha=${MAIN_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Stamp version into plugin.json (in CI only)
         shell: bash
@@ -88,6 +141,31 @@ jobs:
         shell: bash
         run: |
           python3 tools/check_plugin_payload.py --stage "${{ steps.stage.outputs.stage }}"
+
+      # This is the run's first remote side effect. Deliberately unconditional
+      # (no skip-if-exists guard, no backfill in any form): src/<TAG> must
+      # always point at MAIN_SHA, and a pre-existing src/<TAG> was already
+      # rejected by the preflight step above. The remote default-branch tip
+      # is re-read here -- immediately before the push -- rather than only in
+      # the preflight, to close the dispatch-to-push race: the branch could
+      # have moved between the preflight check and this point.
+      - name: Push source tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.preflight.outputs.tag }}
+          MAIN_SHA: ${{ steps.preflight.outputs.main_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          REMOTE_TIP=$(gh api "repos/${REPO}/git/ref/heads/${DEFAULT_BRANCH}" --jq .object.sha)
+          if [ "$REMOTE_TIP" != "$MAIN_SHA" ]; then
+            echo "::error::${DEFAULT_BRANCH} has moved since this run started (remote tip ${REMOTE_TIP}, expected ${MAIN_SHA}) -- aborting before pushing src/${TAG} to avoid tagging the wrong commit."
+            exit 1
+          fi
+
+          git tag "src/${TAG}" "${MAIN_SHA}"
+          git push origin "refs/tags/src/${TAG}"
 
       - name: Push orphan release branch and capture commit
         id: rel
@@ -148,16 +226,40 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.preflight.outputs.tag }}
+          MAIN_SHA: ${{ steps.preflight.outputs.main_sha }}
+          PREV_TAG: ${{ steps.preflight.outputs.prev_tag }}
+          ORPHAN_SHA: ${{ steps.rel.outputs.sha }}
+          ASSET: ${{ steps.rel.outputs.asset }}
+          PRERELEASE: ${{ contains(inputs.version, '-') && 'true' || 'false' }}
         run: |
-          PLUGIN_NAME=$(jq -r '.name' .claude-plugin/plugin.json)
-          TAG="${PLUGIN_NAME}--v${{ inputs.version }}"
+          # $TAG is the orphan release tag -- the commit it points at has no
+          # parents, so `--generate-notes`/`--notes-start-tag` (which walk
+          # commit history reachable from the target) have nothing to walk
+          # and always produce an empty body. Notes are generated instead
+          # from main's real history, between the two src/* markers that
+          # parallel this run's TAG/PREV_TAG (pushed at MAIN_SHA, a real
+          # commit on main with real ancestry) -- then attached to the
+          # orphan release via --notes-file.
+          NOTES_FILE="$RUNNER_TEMP/notes.md"
+          NOTES_ARGS=(-f "tag_name=src/${TAG}" -f "target_commitish=${MAIN_SHA}")
+          if [ -n "$PREV_TAG" ]; then
+            NOTES_ARGS+=(-f "previous_tag_name=src/${PREV_TAG}")
+          fi
+          gh api "repos/${REPO}/releases/generate-notes" "${NOTES_ARGS[@]}" --jq .body > "$NOTES_FILE"
+
+          EXTRA_FLAGS=()
+          if [ "$PRERELEASE" = "true" ]; then
+            EXTRA_FLAGS+=(--prerelease)
+          fi
           gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --target "${{ steps.rel.outputs.sha }}" \
+            --repo "$REPO" \
+            --target "$ORPHAN_SHA" \
             --title "$TAG" \
-            --generate-notes \
-            ${{ contains(inputs.version, '-') && '--prerelease' || '' }} \
-            "${{ steps.rel.outputs.asset }}"
+            --notes-file "$NOTES_FILE" \
+            "${EXTRA_FLAGS[@]}" \
+            "$ASSET"
 
       # Tags created via GITHUB_TOKEN don't fire downstream push:tags workflows
       # (Actions blocks this to prevent recursive loops). Call the marketplace
@@ -168,19 +270,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_PAT:   ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
           VERSION:  ${{ inputs.version }}
+          REPO:     ${{ github.repository }}
+          TAG:      ${{ steps.preflight.outputs.tag }}
         run: |
           DESC=$(jq -r '.description' .claude-plugin/plugin.json)
           NAME=$(jq -r '.name'        .claude-plugin/plugin.json)
-          TAG="${NAME}--v${VERSION}"
+          # TAG is threaded in via env: (the preflight step's own output),
+          # not re-derived from plugin.json + $VERSION here -- so this step
+          # can't silently diverge from the tag the release/source-tag steps
+          # actually used.
           # Raw URLs pinned to the release tag (the same ref dispatched below);
           # assets/ and description.md are staged into the release tree above, so these resolve.
-          ICON="https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/assets/icon.png"
-          DESC_URL="https://raw.githubusercontent.com/${{ github.repository }}/${TAG}/description.md"
+          ICON="https://raw.githubusercontent.com/${REPO}/${TAG}/assets/icon.png"
+          DESC_URL="https://raw.githubusercontent.com/${REPO}/${TAG}/description.md"
 
-          # Same notes already generated for the GitHub Release two steps
-          # above (`--generate-notes`) -- read them back rather than
-          # recomputing, so the two can never drift apart.
-          CHANGELOG=$(gh release view "$TAG" --repo "${{ github.repository }}" --json body -q .body)
+          # Same body already generated for the GitHub Release two steps
+          # above -- read it back rather than recomputing, so the two can
+          # never drift apart. `&& printf x` + trailing-`x`/newline strip
+          # (rather than a plain `$(...)`) is deliberate: command
+          # substitution alone strips *every* trailing newline, which would
+          # silently lose more of a body ending in a blank line than the one
+          # newline this round trip is meant to lose.
+          CHANGELOG=$(gh release view "$TAG" --repo "$REPO" --json body --jq .body && printf x)
+          CHANGELOG="${CHANGELOG%x}"
+          CHANGELOG="${CHANGELOG%$'\n'}"
 
           # Built with jq, not spliced into an unquoted heredoc: the
           # changelog is multi-line markdown that can contain backticks,
@@ -191,7 +304,7 @@ jobs:
           PAYLOAD=$(jq -n \
             --arg name "$NAME" \
             --arg desc "$DESC" \
-            --arg repo "${{ github.repository }}" \
+            --arg repo "${REPO}" \
             --arg version "$VERSION" \
             --arg ref "$TAG" \
             --arg icon "$ICON" \
@@ -204,6 +317,15 @@ jobs:
               tags: ["git", "organisation", "ticket", "automation"],
               changelog: $changelog
             }}')
+
+          # The changelog key is omitted entirely (never sent empty) when
+          # the release body is empty -- a `del()` pass rather than folding
+          # the condition into the filter above, since that filter's shape
+          # (an object literal ending "}}") is pinned byte-for-byte by
+          # tests/test_release_payload.py::_extract_jq_filter.
+          if [ -z "$CHANGELOG" ]; then
+            PAYLOAD=$(printf '%s' "$PAYLOAD" | jq 'del(.client_payload.changelog)')
+          fi
 
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GH_PAT" \
