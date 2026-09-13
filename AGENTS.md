@@ -141,6 +141,22 @@ The same notes body `--generate-notes` already produced for the GitHub Release, 
 
 A failed release is never "fixed" in place — "Fail if tag already exists" refuses to reuse a version number, so a failure's only way forward is the next version number. Nothing here tries to detect or special-case a retry, and nothing should.
 
+## Contracts
+
+`release.yml` tags the release itself at a parent-less orphan commit (the marketplace `ref` contract requires that), so it cannot supply its own release-notes history — ticket #107 fixed this by generating notes from `main`'s real history instead, via a parallel `src/<plugin>--v<version>` marker tag pushed at the same commit `main` was at when the run started. That marker scheme carries one one-time manual precondition and one standing dispatch precondition, both enforced by the `Fail if tag already exists` step (`id: preflight`):
+
+- **One-time bootstrap, before the next release runs.** No `src/*` marker exists for any release before this ticket, so the pre-flight's "previous release" check would otherwise fail closed on the very first post-#107 release. Tag the commit the *last* successful `release.yml` run actually built from, and push it, once, by hand:
+
+  ```
+  git tag src/<plugin-name>--v<last-released-version> <head_sha_of_that_release_run>
+  git push origin src/<plugin-name>--v<last-released-version>
+  ```
+
+  Every release after that pushes its own `src/<TAG>` marker automatically (the `Push source tag` step) — this manual step is a one-time gap-fill, not a recurring one. `tools/prev_release_tag.py` resolves "the previous release" by strict-semver order among `<plugin_name>--v*` tags (excluding the tag being created and any `src/*` marker), so the bootstrap only needs the single most recent one; the pre-flight prints the exact two commands above, filled in, whenever it detects a resolvable previous release with a missing marker.
+- **Standing precondition: dispatch from the default branch.** The pre-flight aborts if `github.ref_name != github.event.repository.default_branch` — the notes-generation range and the `src/<TAG>` marker are only meaningful relative to that branch's own history, and `workflow_dispatch` does not itself constrain which ref it runs against.
+
+Both preconditions fail before any push, tag, zip, or burned version number — the release either has real history to generate notes from, or it does not run at all.
+
 ## Optional Codex review augmentation lives in the reviewer
 
 When the Codex plugin is installed and ready, `agents/reviewer.md` runs `scripts/codex-review.mjs` (read-only, never `--write`) and folds blocking findings into its verdict; every failure degrades silently to the reviewer's own review with a visible `[nit]` so the orchestrator can see the pass did not run. Codex is therefore recommended, **not** declared under `dependencies`. The pass runs on every review round, including re-reviews.
