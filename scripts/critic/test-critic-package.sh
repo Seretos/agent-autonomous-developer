@@ -77,6 +77,30 @@ case " $LENS_IDS " in
   *) echo "unknown lens id: '$LENS' (expected one of: $LENS_IDS)" >&2; exit 2 ;;
 esac
 
+# Symptom-anchor precondition (ticket #108): the plan's Test/verification strategy section must
+# open with one of the two anchor forms `agents/planner.md` mandates -- `Symptom (verbatim from
+# ticket): "<sentence>"` or `Symptom: none:<category>`. This packager carries no ticket text at
+# all (see "WHAT IS IN THE PACKAGE, AND WHY" above), so this is the one place in the whole gate
+# that can catch a missing or paraphrased anchor before the isolated critic ever runs -- the
+# critic itself has nothing to compare the anchor against.
+heading_line="$(grep -n -m1 -iE '^#+[[:space:]]*test[[:space:]]*/[[:space:]]*verification[[:space:]]*strategy' "$PLAN" | cut -d: -f1 || true)"
+anchor_line=""
+if [ -n "$heading_line" ]; then
+  anchor_line="$(tail -n +"$((heading_line + 1))" "$PLAN" | grep -m1 '[^[:space:]]' || true)"
+fi
+
+if ! printf '%s' "$anchor_line" | grep -Eq '^Symptom \(verbatim from ticket\): ".+"$' && \
+   ! printf '%s' "$anchor_line" | grep -Eq '^Symptom: none:.+$'; then
+  echo "test-critic-package.sh: the plan's Test/verification strategy section must open with a" >&2
+  echo "Symptom anchor line (ticket #108) -- expected the first non-blank line after the section" >&2
+  echo "heading to be either:" >&2
+  echo '  Symptom (verbatim from ticket): "<copied sentence(s)>"' >&2
+  echo "or:" >&2
+  echo "  Symptom: none:<category>" >&2
+  echo "got: ${anchor_line:-<no Test/verification strategy section found>}" >&2
+  exit 2
+fi
+
 emit_lens() {
   case "$1" in
     tautology)
@@ -97,6 +121,22 @@ The specific shape to hunt for is the assertion that only returns what it alread
 own input — checking that a string handed in comes back out, that an object is non-null right after
 construction, that a collection has the count the test itself put into it. A constant-returning
 implementation passes those, and so does an implementation that never ran.
+
+A related but distinct shape (ticket #108): when PART 1's Test/verification strategy section opens
+with a `Symptom (verbatim from ticket): "..."` anchor stating a runtime symptom, check — across the
+whole test diff you were handed, not one assertion at a time — whether ANY assertion actually
+executes the action or outcome that sentence names. If every assertion touching that requirement
+only inspects prose, a literal string, a file's structure, or a JSON key, and none of them runs the
+actual behaviour the symptom describes, report a `critical` finding, layer `plan`, whose title and
+`what` literally contain the phrase "the acceptance criterion is exercised by no test". Three
+exemptions belong with this same clause, and none of them is a finding: a `Symptom: none:<category>`
+anchor never fires it (there is no runtime symptom to exercise); a requirement covering the
+symptom that carries a `Substitute execution:` line never fires it either (its evidence is the
+pasted command output, not a test); and a requirement covering the symptom that is declared
+`ci-evidence`, naming the specific CI run/job that demonstrates it (`agents/planner.md` requires
+`ci-evidence` to name one), never fires it either (its evidence is that CI run, not a test) — the
+plausibility of that named run against the anchor symptom is validated at the plan-critic/review
+layer, not here.
 
 Report only this. Whether the batch covers every case of the requirement, whether the tests are
 tidy, whether they follow the naming convention — none of that is this run's finding.

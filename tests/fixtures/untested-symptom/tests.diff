@@ -1,0 +1,37 @@
+diff --git a/tests/browser_bootstrap.test.js b/tests/browser_bootstrap.test.js
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/tests/browser_bootstrap.test.js
+@@ -0,0 +1,20 @@
++const fs = require("fs");
++const path = require("path");
++
++describe("browser bootstrap (R1)", () => {
++  test("browser-tool.js calls ensureBrowserInstalled before navigating", () => {
++    const src = fs.readFileSync(
++      path.join(__dirname, "..", "src", "browser-tool.js"),
++      "utf8"
++    );
++    expect(src).toContain("ensureBrowserInstalled(");
++  });
++
++  test("install.js exports ensureBrowserInstalled", () => {
++    const install = require("../src/install.js");
++    expect(typeof install.ensureBrowserInstalled).toBe("function");
++  });
++});
+diff --git a/src/install.js b/src/install.js
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/install.js
+@@ -0,0 +1,9 @@
++function ensureBrowserInstalled() {
++  // stub for the fixture: real implementation runs `npx playwright install`
++  // and writes a marker file so a later call in the same session can skip
++  // the check (R2, covered by the existing caching suite).
++  return true;
++}
++
++module.exports = { ensureBrowserInstalled };

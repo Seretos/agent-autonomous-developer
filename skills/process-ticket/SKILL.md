@@ -127,18 +127,22 @@ than trying to end the turn again.
 | CI | 3 | 3 (unchanged) | this skill |
 | rebase | 3 | 3 (unchanged) | this skill (Phase R only) |
 
-**Acceptance threshold, not zero findings (ticket #105).** Not every plan-critic
-finding is a reason for another round. Only the `missed` and `misread` lenses
-can produce a **blocking** finding; `untestable` and `simplifier` findings are
-always **notes**, forwarded to the developer, never a reason to re-dispatch the
-planner. The merged critique carries this as `finding_class` per finding
-(`plan-critic-merge.py`, derived from which lens raised it — never declared by
-a critic, never second-guessed by you) and as `blocking_severity_counts`
-alongside the plain `severity_counts`. **Every cap, threshold and stagnation
-check in this document reads `blocking_severity_counts`, never
-`severity_counts`.** At the soft cap (round 3) with `blocking critical == 0`,
-accept the plan rather than continuing toward the hard cap — see Phase 2's
-routing rules below for exactly how.
+**Acceptance threshold, not zero findings (ticket #105, table extended by
+#108).** Not every plan-critic finding is a reason for another round. The
+`missed` and `misread` lenses always produce a **blocking** finding;
+`simplifier` findings are always **notes**; `untestable` findings are
+**blocking** only when `severity == critical` (ticket #108 — the ticket's
+stated symptom exercised by no test at all is exactly the case a `note` must
+not be allowed to grind on forever), and **notes** at every other severity.
+Note-class findings are forwarded to the developer, never a reason to
+re-dispatch the planner. The merged critique carries this as `finding_class`
+per finding (`plan-critic-merge.py`, derived from the finding's `(lens,
+severity)` pair — never declared by a critic, never second-guessed by you) and
+as `blocking_severity_counts` alongside the plain `severity_counts`. **Every
+cap, threshold and stagnation check in this document reads
+`blocking_severity_counts`, never `severity_counts`.** At the soft cap (round
+3) with `blocking critical == 0`, accept the plan rather than continuing
+toward the hard cap — see Phase 2's routing rules below for exactly how.
 
 Package ceiling **per generation**: 9 gate rounds in total (plan-critic +
 test-critic + review), CI excluded. A new generation (see "Replan" below)
@@ -363,14 +367,21 @@ Dispatch `planner` synchronously and unnamed with `context_summary`,
 
 - `PLAN_FINAL` → write the plan to `<rundir>/plan.md`; post `plan-committed`
   with the short-form plan (goal, approach bullets, affected files).
-- `NEEDS_INPUT` → **you try to answer first.** Read the transcript you already
-  hold (`spec.md`): the epic body, sibling tickets, prior comments, the code
-  references the planner cites. If the answer is there, re-dispatch the planner
-  (fresh, unnamed) with the previous plan draft verbatim plus your answer keyed
-  to the question number and the instruction to fold it in, not start over. Cap
-  two such rounds. If the question is a genuine decision the context does not
-  settle → post `blocked` (question, options, recommendation, what you checked
-  and why it was not enough) and end.
+- `NEEDS_INPUT` whose reply body (the text preceding the trailing
+  `STATUS: NEEDS_INPUT` line) **begins with the literal marker
+  `PREMISE FALSIFIED:`** → skip the "you try to answer first" step entirely.
+  The planner has already checked this against the code and found the
+  premise false — there is nothing left for you to verify. Post `blocked`
+  directly, quoting the marker line verbatim as the finding, and end.
+- `NEEDS_INPUT` (any other case) → **you try to answer first.** Read the
+  transcript you already hold (`spec.md`): the epic body, sibling tickets,
+  prior comments, the code references the planner cites. If the answer is
+  there, re-dispatch the planner (fresh, unnamed) with the previous plan
+  draft verbatim plus your answer keyed to the question number and the
+  instruction to fold it in, not start over. Cap two such rounds. If the
+  question is a genuine decision the context does not settle → post
+  `blocked` (question, options, recommendation, what you checked and why it
+  was not enough) and end.
 
 **Plan critique.** Dispatch `plan-critic` (fresh, unnamed) with `spec_file`,
 `plan_file`, a one-paragraph scope statement (what this package covers, round
@@ -380,14 +391,15 @@ severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
 
 - `INFRA_FAILURE` → the round counts as `i`; re-dispatch. Three infra rounds →
   `failed`.
-- A **blocking** `critical` (`finding_class: blocking`, i.e. `missed` or
-  `misread`) → the round counts as `f`; re-dispatch the **planner** (fresh)
-  with the plan verbatim plus the critical findings, then critique again.
+- A **blocking** `critical` (`finding_class: blocking`, i.e. `missed`/`misread`
+  at any severity, or `untestable` specifically at `critical`) → the round
+  counts as `f`; re-dispatch the **planner** (fresh) with the plan verbatim
+  plus the critical findings, then critique again.
 - A **blocking** `major` → your call: route it to the planner if it concerns
   the package's scope, else note it in the plan comment as accepted with one
   line of reason.
-- A **note**-class finding (`untestable` or `simplifier`, any severity,
-  including `critical`) → **never** a reason for another round. Collect it and
+- A **note**-class finding (`simplifier` at any severity, or `untestable`
+  below `critical`) → **never** a reason for another round. Collect it and
   forward it verbatim into the Phase 3 developer dispatch (3a and 3b) as a note
   to answer against real code — that is cheaper and better-grounded than
   another blind round against the document. This is a deliberate reversal of

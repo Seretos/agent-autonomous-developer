@@ -23,17 +23,21 @@ Rules, in full:
   * Findings are the only thing deduplicated. The "solid" list and the unverifiable-claims list are
     concatenated across lenses with their lens tagged on, because three views of the same step are
     three data points, not a duplicate.
-  * Every finding is stamped with a `finding_class`, derived from its `lens` — never from a field a
-    critic sets itself, and never a judgment this script makes. `missed` and `misread` findings are
-    "blocking"; `untestable` and `simplifier` findings are "note". Any lens not in the note set
-    (including a future one, and `tautology` from the test-critic gate, which reuses this merge)
-    defaults to "blocking" — the safe direction, since a lens is note-only only by an explicit
-    ticket decision (#105), not by omission. A merged group's class is the STRONGEST class present
-    in it, not the survivor's own: a `missed` finding and a `simplifier` finding can share a
-    byte-identical `violated_criterion` (the mechanism-balance sentence is exactly this case), and
-    the severity-based survivor could be the `simplifier` one — without taking the max, a real
-    blocking finding would be silently declassed to a note because of which member happened to win
-    the severity tie.
+  * Every finding is stamped with a `finding_class`, derived from its `(lens, severity)` pair —
+    never from a field a critic sets itself, and never a judgment this script makes. `missed` and
+    `misread` findings are "blocking" at every severity; `simplifier` findings are "note" at every
+    severity; `untestable` findings are "blocking" only when `severity == "critical"`, else "note"
+    (ticket #108 — an `untestable`+`critical` finding means the ticket's stated symptom is
+    exercised by no test at all, which the round-cap loop must not be allowed to grind on forever
+    the way a `major`/`minor` `untestable` note may legitimately be argued out later). Any lens not
+    named above (including a future one, and `tautology` from the test-critic gate, which reuses
+    this merge) defaults to "blocking" at every severity — the safe direction, since a lens is
+    note-only, or severity-conditional, only by an explicit ticket decision (#105, #108), never by
+    omission. A merged group's class is the STRONGEST class present in it, not the survivor's own:
+    a `missed` finding and a `simplifier` finding can share a byte-identical `violated_criterion`
+    (the mechanism-balance sentence is exactly this case), and the severity-based survivor could be
+    the `simplifier` one — without taking the max, a real blocking finding would be silently
+    declassed to a note because of which member happened to win the severity tie.
 
 Deciding whether a finding is real remains the dispatching skill's job. This script does not filter, rank,
 or interpret anything — the class derivation is a fixed table keyed on `lens`, not an assessment of
@@ -47,11 +51,18 @@ import sys
 
 SEVERITY_RANK = {"critical": 3, "major": 2, "minor": 1}
 
-# Lenses whose findings are never a reason to route back to the planner (ticket #105): they read
-# the plan as a document, not the plan against real code, and on a large plan they reliably surface
-# something every round. Any lens NOT in this set (including a lens added later, and `tautology`
-# from the test-critic gate) defaults to "blocking" — see the module docstring.
-NOTE_LENSES = {"untestable", "simplifier"}
+# Lenses that are always "note", regardless of severity (ticket #105): they read the plan as a
+# document, not the plan against real code, and on a large plan they reliably surface something
+# every round. `untestable` used to be in this set unconditionally too; ticket #108 makes it
+# severity-conditional instead (see UNTESTABLE_BLOCKING_SEVERITIES and finding_class() below) — an
+# `untestable`+`critical` finding means the ticket's stated symptom is exercised by no test at all,
+# which is exactly the case #105's "note, never a reason for another round" rule was never meant to
+# cover. Any lens NOT named in finding_class() below (including a lens added later, and `tautology`
+# from the test-critic gate) defaults to "blocking" at every severity — see the module docstring.
+NOTE_LENSES = {"simplifier"}
+# untestable is "blocking" only at these severities (ticket #108); every other severity is "note",
+# matching the pre-#108 behaviour lenses in NOTE_LENSES already had unconditionally.
+UNTESTABLE_BLOCKING_SEVERITIES = {"critical"}
 CLASS_RANK = {"blocking": 1, "note": 0}
 
 
@@ -59,8 +70,13 @@ def severity_rank(finding):
     return SEVERITY_RANK.get(finding.get("severity"), 0)
 
 
-def finding_class(lens):
-    return "note" if lens in NOTE_LENSES else "blocking"
+def finding_class(lens, severity):
+    if lens in NOTE_LENSES:
+        return "note"
+    if lens == "untestable":
+        return "blocking" if severity in UNTESTABLE_BLOCKING_SEVERITIES else "note"
+    # missed, misread, and any unnamed/future lens default to blocking at every severity.
+    return "blocking"
 
 
 def main(argv):
@@ -104,7 +120,7 @@ def main(argv):
             record = dict(finding)
             record["lens"] = lens
             record["id"] = f"{lens}::{finding.get('id', index + 1)}"
-            record["finding_class"] = finding_class(lens)
+            record["finding_class"] = finding_class(lens, finding.get("severity"))
             findings_in.append(record)
 
         solid.extend(f"[{lens}] {item}" for item in (data.get("solid") or []))
