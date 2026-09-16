@@ -35,6 +35,24 @@ Fingerprint rules, by gate:
     requirement IDs to anchor to), so the fingerprint is coarser by
     necessity; that is documented, not a bug to be tightened here.
 
+Ticket #112: for gate "review" only, a finding's effective finding_class is
+derived from its `kind` field rather than from a `finding_class` field it
+never carries: `kind == "codex"` (the reviewer's tag for a Codex-sourced
+finding, agents/reviewer.md, "What you return") is note-class and excluded
+from the fingerprint; every other kind stays blocking-class, exactly as
+before this ticket. This is the same "note-class findings never buy a round
+on their own" idea ticket #105 built for plan-critic's simplifier/untestable
+lenses, just keyed on `kind` because the review gate has no lens concept.
+The severity filter (only "blocking" survives at all) is unchanged; the
+kind-based split only narrows what already passed it.
+
+Alongside RESULT, the review gate also prints REVIEW_OWN_BLOCKING: <n> — the
+exact count of findings with severity "blocking" and kind != "codex" — so
+skills/process-ticket/SKILL.md Phase 4 can tell "no genuine review-sourced
+blocker is left open" (0) apart from "the reviewer still has real blocking
+findings" (>0), independent of the fingerprint/stagnation verdict. This line
+is review-gate only; plan-critic and test-critic print nothing extra.
+
 The history file is a flat JSON list of `[kind, key]` pairs already seen in
 the current generation. This script never resets it — that is
 process-ticket's job on a replan (a new generation starts from an empty
@@ -57,7 +75,9 @@ Usage:
                     the verdict — a "stagnation" round still recorded nothing
                     new, and there is nothing to fold in.
 
-Prints exactly one line to stdout: "RESULT: progress" or "RESULT: stagnation".
+Prints "RESULT: progress" or "RESULT: stagnation" to stdout. For gate
+"review" only, a second line follows: "REVIEW_OWN_BLOCKING: <n>" (see above).
+plan-critic and test-critic print exactly that one RESULT line, unchanged.
 Exit code 0 on either verdict; exit code 2 on a usage/input error (never
 silently defaults to a verdict on bad input, since a wrong default here is
 a wrong decision about a human's Question card).
@@ -80,6 +100,19 @@ def _fingerprint(gate, finding):
         what = (finding.get("what") or "")[:80]
         key = f"{finding.get('file', '')}::{what}"
     return [kind, key]
+
+
+def _finding_class(gate, finding):
+    """The finding's effective finding_class for stagnation-fingerprint
+    purposes. For gate "review" this is derived from `kind` (ticket #112):
+    kind == "codex" -> "note" (a second opinion, never itself a reason for
+    another round), everything else -> "blocking" -- a fixed two-way table,
+    not an allowlist of known non-Codex kinds. Every other gate keeps the
+    pre-#112 behavior: a `finding_class` field already stamped by
+    plan-critic-merge.py, defaulting to "blocking" when absent."""
+    if gate == "review":
+        return "note" if finding.get("kind") == "codex" else "blocking"
+    return finding.get("finding_class", "blocking")
 
 
 def _load_json(path, default=None):
@@ -119,10 +152,7 @@ def main(argv):
     current = [
         _fingerprint(gate, f) for f in findings
         if f.get("severity") in severities
-        # finding_class only exists on plan-critic/test-critic findings (stamped by
-        # plan-critic-merge.py); a review finding has no such field and is never note-class, so the
-        # default keeps it counted exactly as before this filter existed.
-        and f.get("finding_class", "blocking") == "blocking"
+        and _finding_class(gate, f) == "blocking"
     ]
 
     history = _load_json(history_path, default=[])
@@ -138,6 +168,14 @@ def main(argv):
         json.dump(updated, f, indent=2)
 
     print(f"RESULT: {'progress' if new_fingerprints else 'stagnation'}")
+
+    if gate == "review":
+        own_blocking = sum(
+            1 for f in findings
+            if f.get("severity") == "blocking" and f.get("kind") != "codex"
+        )
+        print(f"REVIEW_OWN_BLOCKING: {own_blocking}")
+
     return 0
 
 

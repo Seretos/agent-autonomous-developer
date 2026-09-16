@@ -498,17 +498,36 @@ the last-reviewed sha yourself; the reviewer does not remember it. It returns
 `VERDICT: APPROVE` or `VERDICT: CHANGES_REQUESTED` with `[blocking]`/`[nit]`
 findings (Codex pass folded in when available). Post `review-verdict`.
 
-- `CHANGES_REQUESTED` → `f`; write this round's change report to
-  `<rundir>/change-report-round-<n>.md` (so a later round's reviewer can find
-  it — the developer no longer re-inlines prior rounds' evidence, see
-  `agents/developer.md`), fresh developer dispatch (`phase=implement`, plan +
-  findings appended, only this round's prior change report inlined), then a
-  fresh review **narrowed to the findings plus the delta diff** as above. At
-  the soft cap (round 3) with blocking findings still open, run the
-  progress-or-stagnation check against the reviewer's structured findings
-  block (`agents/reviewer.md`, "What you return") — `progress` continues past
-  round 3 (this is exactly ticket `#99`'s case), `stagnation` replans (or
-  `failed` at `generation` 2).
+- `CHANGES_REQUESTED` → `f`. Write the reviewer's structured findings block to
+  `<rundir>/generation-<g>-review-findings-round-<n>.json` and run
+  `scripts/critic/stagnation-check.py review <that file>
+  <rundir>/generation-<g>-review-history.json` **every round, starting at
+  round 1** — not only on reaching the soft cap (ticket #112: the
+  generation's fingerprint history must actually start accumulating from
+  round 1 for the soft-cap check at round 3+ to mean anything). Read
+  `REVIEW_OWN_BLOCKING: <n>` from its output.
+  - **`REVIEW_OWN_BLOCKING: 0`** (ticket #112) — every remaining
+    `severity: "blocking"` finding this round is Codex-sourced
+    (`kind: "codex"`; see `agents/reviewer.md`, "What you return"), and a
+    Codex-only round is never, by itself, a reason to spend a developer fix
+    round: do **not** dispatch the developer again, do **not** run the
+    progress-or-stagnation branch below, do **not** trigger a replan — accept
+    this round and go straight to **Phase 5**. Post `review-verdict` noting
+    the round was accepted with the still-open Codex findings named (title +
+    `what`, not just a bare count — a human reading the ticket should see
+    what was waived, not just how many). Carry the list of these still-open
+    `kind: "codex"` findings forward to Phase 5 step 4 (the "Codex notes"
+    section).
+  - **`REVIEW_OWN_BLOCKING` > 0** — unchanged: write this round's change
+    report to `<rundir>/change-report-round-<n>.md` (so a later round's
+    reviewer can find it — the developer no longer re-inlines prior rounds'
+    evidence, see `agents/developer.md`), fresh developer dispatch
+    (`phase=implement`, plan + findings appended, only this round's prior
+    change report inlined), then a fresh review **narrowed to the findings
+    plus the delta diff** as above. At the soft cap (round 3) with blocking
+    findings still open, the `RESULT` line from the same check decides:
+    `progress` continues past round 3 (this is exactly ticket `#99`'s case),
+    `stagnation` replans (or `failed` at `generation` 2).
 - `APPROVE` → Phase 5.
 
 ## Phase 5 — commit, push, PR
@@ -531,8 +550,14 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    report), each requirement's pasted output bounded to 200 lines or ~4000
    characters, whichever is hit first, with a trailing "...truncated, see
    <rundir>/change-report-round-<n>.md for full output" marker appended when
-   truncated + one "Closes #<n>" line per ticket in the package. **Then
-   check the aggregate length of the whole composed body.** The per-item cap
+   truncated + one "Closes #<n>" line per ticket in the package. If the
+   review gate was accepted at a round with `REVIEW_OWN_BLOCKING: 0` while
+   `kind: "codex"` findings were still open (ticket #112 — see Phase 4),
+   append a `## Codex notes (not blocking)` section listing each such finding
+   (title + `what`, file when available) — a waived second opinion stays
+   visible to a human in the PR instead of silently disappearing. Omit the
+   section entirely when there are none. **Then check the aggregate length
+   of the whole composed body.** The per-item cap
    above bounds each requirement's own output but not their sum: a package
    with several driving-test requirements, each near its per-item cap, can
    still push the total past a hosting provider's PR-body length limit
