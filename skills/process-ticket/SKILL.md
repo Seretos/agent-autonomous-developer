@@ -109,13 +109,75 @@ than trying to end the turn again.
    run; a refusal is a bug in your own turn, not a hook to route around.
 2. **Never end your turn with work no remote has.** Before *every* ending —
    `ci-green`, `blocked`, `failed`, and any point at which you are about to
-   stop for any other reason — `git -C <worktree_path> add -A`, commit, and
-   `git -C <worktree_path> push -u origin <branch>`. The caller removes this
-   worktree after a failed second attempt, so uncommitted work is destroyed and
-   the retry re-pays for context, planning and critique; a retry that finds
-   committed work continues from it instead. Commit even work you do not rate:
-   a discarded commit costs nothing, a lost implementation costs the whole
-   attempt. If the push itself fails, say so in the terminal event's text.
+   stop for any other reason — run the **Checkpoint (commit + push)**
+   procedure below, `push_mode=plain` unless Phase R has rewritten this
+   branch's history in this session (then `push_mode=lease`). The caller
+   removes this worktree after a failed second attempt, so uncommitted work
+   is destroyed and the retry re-pays for context, planning and critique; a
+   retry that finds committed work continues from it instead. Commit even
+   work you do not rate: a discarded commit costs nothing, a lost
+   implementation costs the whole attempt.
+
+### Checkpoint (commit + push)
+
+A named procedure, fired not just at turn end but at every point in this
+pipeline that changes the tree, so a hard kill from outside loses at most
+one checkpoint's worth of work (ticket #115). **Scratch is never staged:**
+`<rundir>` = `<worktree_path>/.adev/<package>-<attempt>/`, and precondition 4
+has already appended `.adev/` to the target repo's `.gitignore` (Phase 5
+step 1 re-verifies with `git -C <worktree_path> check-ignore .adev`), so
+`git -C <worktree_path> add -A` never stages `plan.md`, `plan-round-<n>.md`,
+`spec.md`, `tests.diff` or any `critique-merged.json`.
+
+1. **Skip guards**, checked in this order — any one applying means do
+   nothing and move on (see step 5 for the one case where a skip must still
+   be recorded):
+   - clean tree with nothing unpushed: `git -C <worktree_path> status
+     --porcelain` is empty **and** `git -C <worktree_path> log --oneline
+     origin/<branch>..HEAD` is empty;
+   - a rebase is in progress: `test -d "$(git -C <worktree_path> rev-parse
+     --git-path rebase-merge)"` or `…rebase-apply` — a checkpoint here would
+     swallow the staged resolution Phase R step 2 hands to `rebase
+     --continue`;
+   - detached HEAD: `git -C <worktree_path> rev-parse --abbrev-ref HEAD` is
+     `HEAD`.
+   - A clean tree with unpushed commits skips the commit step below but
+     still pushes.
+2. **Commit**, unless the clean-tree guard applied: `git -C <worktree_path>
+   add -A`; commit single-line with `-m "<summary> (#<ticket>)"`.
+   Multi-line **only** via `Write <rundir>/commit-msg.txt` then
+   `git -C <worktree_path> commit -F <rundir>/commit-msg.txt` — never a
+   here-string through the Bash tool.
+3. **Push, by `push_mode`** — a parameter of this procedure, named at every
+   call site, never inferred from context:
+   - `plain` — `git -C <worktree_path> push -u origin <branch>`. Used by:
+     Phase 3a, Phase 3b, Phase 4 fix rounds, Phase 6 CI-repair rounds, and
+     Turn-end rule 2 when no rebase ran in this session.
+   - `lease` — `git -C <worktree_path> push -u origin <branch>
+     --force-with-lease`. Used by all three Phase R checkpoint points
+     (after a clean step-1 rebase; after `rebase --continue` reports the
+     rebase finished; after step 4's re-verify), and by Turn-end rule 2 once
+     Phase R has rewritten this branch's history in this session. A rebase
+     rewrites history relative to `origin/<branch>`, so a `plain` push
+     there is rejected non-fast-forward, and combined with step 4 below
+     ("a failed push is not a stop") that would silently leave the
+     post-rebase work unpushed — exactly the loss #115 exists to prevent.
+     `--force-with-lease` is safe specifically here because this session
+     holds the branch during its own rebase; a lease rejection means
+     somebody else pushed, handled the same way Phase 5 step 3 already
+     handles it: post `failed`, never overwrite them.
+   - **Never bare `--force`**, at any site.
+   - **Phase 5 step 3 is the one exception to this generic dispatch:** it
+     keeps its own wording verbatim (`plain`, retry **once** with
+     `--force-with-lease` if rejected *and* Phase R rebased) — it is the one
+     site that must also survive a rejection caused by someone else, and its
+     `once` framing is unchanged by this procedure.
+4. **A failed push is not a stop:** record `checkpoint push failed: <first
+   line of git stderr>` and carry it into the **next** event's text.
+5. **A skip is never silent at turn end.** If the turn-end trigger (rule 2
+   above) fires while any of step 1's guards applies, the terminal event's
+   text must say so: `checkpoint skipped at turn end: <guard> — <n>
+   uncommitted paths`. Mid-turn skips (every other call site) need no note.
 
 ## Round caps
 
@@ -170,6 +232,13 @@ soft cap of 3. Instead, **on reaching the soft cap**, run
 `scripts/critic/stagnation-check.py <gate> <this round's findings JSON>
 <rundir>/generation-<g>-<gate>-history.json` (the script creates the history
 file on first use; see its header for the exact fingerprint rule per gate).
+"This round's findings JSON" is the concrete `critique-merged.json` file
+each gate already produces per round — `<rundir>/plan-critic-<round>/critique-merged.json`
+for plan-critic, `<rundir>/test-critic-<round>/critique-merged.json` for
+test-critic — or, for review, the structured findings file named in Phase
+4's own rule (`<rundir>/generation-<g>-review-findings-round-<n>.json`); this
+is a naming clarification, not a behavioural change — the call site was
+already path-based.
 
 - **`RESULT: progress`** — this round surfaced at least one finding the
   history has not seen before in this generation. Keep going exactly as
@@ -199,15 +268,23 @@ because the check is on the findings, not on a round count.
 Triggered by `stagnation` on **plan-critic**, **test-critic**, or **review**
 (never CI, never rebase — see above), and only while **generation < 2**:
 
-1. Dispatch `planner` (fresh, unnamed) with the **full** accumulated findings
-   history of this generation across all three gates — not only the gate
-   that stagnated — inlined verbatim, plus the current `plan.md` and
-   `context_summary`. The prompt frames this explicitly as a replan: the
-   existing plan has been tried and kept hitting the same objections; design
-   a plan that avoids them, not a patch on the old one.
-2. The result is a new `plan.md` (write it to `<rundir>`, alongside — never
-   over — the previous one, which stays as `<rundir>/plan-generation-<g>.md`
-   for the record). **Generation 2's plan must not exceed 50% of generation
+1. Archive the current `<rundir>/plan.md` (generation `g`'s final plan) with
+   a plain `Bash` `cp` to `<rundir>/plan-generation-<g>.md` — alongside,
+   never over, so `plan.md` itself still holds generation `g`'s plan for the
+   planner to `Read`. Dispatch `planner` (fresh, unnamed) with
+   `plan_path=<rundir>/plan.md`, `round=1`, `context_summary`, and the
+   **paths** to every findings file accumulated this generation across all
+   three gates — not only the gate that stagnated: each round's
+   `<rundir>/plan-critic-<round>/critique-merged.json`, each round's
+   `<rundir>/test-critic-<round>/critique-merged.json`, and each round's
+   `<rundir>/generation-<g>-review-findings-round-<n>.json` — with the
+   instruction to `Read` each rather than findings text inlined. The prompt
+   frames this explicitly as a replan: the existing plan has been tried and
+   kept hitting the same objections; design a plan that avoids them, not a
+   patch on the old one.
+2. The planner `Write`s the new plan into the same `plan_path`, overwriting
+   generation `g`'s copy — already safely archived in step 1.
+   **Generation 2's plan must not exceed 50% of generation
    1's final size** (ticket #105): measure `wc -c <rundir>/plan-generation-1.md`
    against the new `plan.md`'s byte count. Over budget → one re-dispatch of
    the planner with both measured numbers inlined and the instruction to cut,
@@ -307,22 +384,29 @@ posts the same terminal and intermediate events Phases 1–6 always could
 `rebase=` sub-field on the `rounds:` line instead of the others.
 
 1. `git -C <worktree_path> rebase origin/<base_branch>`.
-   - Clean → the diff shape is unchanged from before the rebase; go to step 4.
+   - Clean → the diff shape is unchanged from before the rebase; run the
+     **Checkpoint** procedure, `push_mode=lease` (the rebase rewrote this
+     branch's history even though nothing else changed), then go to step 4.
    - Stopped on a conflict → step 2.
    - Any other failure → `git -C <worktree_path> rebase --abort`, post
      `failed` with the git output.
 2. **Resolve — one round per stop it makes, cap 3.** Collect
    `git -C <worktree_path> diff --name-only --diff-filter=U`. Dispatch
    `developer` (fresh, unnamed, `phase=implement`) with `worktree_path`,
-   `base_branch`, the conflicted file list, and the package's intent — the
-   newest `<worktree_path>/.adev/*/plan.md` if one survived from an earlier
-   attempt, otherwise a fresh `context-extractor` dispatch's
-   `context_summary`. State the mandate narrowly in the prompt: **resolve the
+   `base_branch`, the conflicted file list, and the package's intent as
+   `plan` — the absolute path of the newest
+   `<worktree_path>/.adev/*/plan.md` if one survived from an earlier
+   attempt (read it with `Read`), otherwise a fresh `context-extractor`
+   dispatch's `context_summary` inlined. State the mandate narrowly in the
+   prompt: **resolve the
    conflict markers so both sides' intent survives; do not redesign, do not
    add scope, do not touch files that are not conflicted.** When it returns,
    `git -C <worktree_path> add -A`, then `git -C <worktree_path> rebase
    --continue` — **you** do the history mutation, never the developer; it
-   only stages resolved files. A further stop is the next round.
+   only stages resolved files. If that call reports the rebase **finished**,
+   run the **Checkpoint** procedure, `push_mode=lease`, before continuing to
+   step 3's exit or step 4. A further stop (rebase not yet finished) is the
+   next round; no checkpoint fires on an unfinished stop.
 3. Three rounds without a finished rebase, or the developer reporting the two
    sides as a genuine, incompatible design decision rather than a mechanical
    conflict → `git -C <worktree_path> rebase --abort`, then post `blocked`
@@ -330,7 +414,8 @@ posts the same terminal and intermediate events Phases 1–6 always could
    `failed`, whichever fits what happened.
 4. **Re-verify.** Dispatch `developer` (fresh, `phase=implement`): "the change
    is already made; run the full suite and fix only what the rebase broke."
-   Post `tests-green` ("local pre-filter only — CI decides").
+   Run the **Checkpoint** procedure, `push_mode=lease`, then post
+   `tests-green` ("local pre-filter only — CI decides").
 5. **Review only if step 1 did not go clean.** A conflict changed the diff, so
    it earns Phase 4 unchanged (its own 3-round cap). After a clean rebase
    nothing but the base moved — skip the reviewer entirely.
@@ -361,12 +446,32 @@ unbounded `--name-only` log re-run and re-inlined on every dispatch is paid
 for repeatedly for information that does not change mid-session). A failed or
 empty command is not an error: pass `recent_changes` empty and continue.
 
-Dispatch `planner` synchronously and unnamed with `context_summary`,
-`worktree_path`, `recent_changes`. It ends with `STATUS: PLAN_FINAL` or
-`STATUS: NEEDS_INPUT`.
+`<rundir>/plan.md` is the one file the planner ever writes (ticket #113): every
+dispatch below passes `plan_path=<rundir>/plan.md` and the current `round`
+number, and the planner `Write`s its plan there itself instead of returning
+the full text. Every later phase in this document that takes a `plan` input
+means this same absolute path — pass it as-is and let the receiving agent
+`Read` it; `agents/developer.md`/`agents/reviewer.md` are unchanged and still
+describe `plan` as inlined text, but their existing `Read` grant and their own
+Hard Rule on reading inputs already cover a path value, so the dispatch prompt
+you compose is the one place that has to say "absolute path — read it with
+`Read`."
 
-- `PLAN_FINAL` → write the plan to `<rundir>/plan.md`; post `plan-committed`
-  with the short-form plan (goal, approach bullets, affected files).
+**Round 1:** dispatch `planner` synchronously and unnamed with
+`context_summary`, `plan_path=<rundir>/plan.md`, `round=1`, `worktree_path`,
+`recent_changes`. **Before any later round's re-dispatch** (round `n > 1`,
+whether for a `NEEDS_INPUT` answer or a blocking plan-critic finding), first
+run `cp <rundir>/plan.md <rundir>/plan-round-<n-1>.md` (a plain `Bash` copy —
+the bytes never enter this turn's context) to archive the round that is about
+to be overwritten, then dispatch `planner` with the same `plan_path`, the
+incremented `round`, and whatever round-specific input is described below. The
+planner ends every round with `STATUS: PLAN_FINAL` or `STATUS: NEEDS_INPUT`
+and a **≤30-line summary, not the full plan** — the full plan is always in
+`plan_path`.
+
+- `PLAN_FINAL` → post `plan-committed` with the planner's returned summary
+  (goal, approach bullets, affected files) — you no longer write `plan.md`
+  yourself, the planner already did.
 - `NEEDS_INPUT` whose reply body (the text preceding the trailing
   `STATUS: NEEDS_INPUT` line) **begins with the literal marker
   `PREMISE FALSIFIED:`** → skip the "you try to answer first" step entirely.
@@ -376,12 +481,15 @@ Dispatch `planner` synchronously and unnamed with `context_summary`,
 - `NEEDS_INPUT` (any other case) → **you try to answer first.** Read the
   transcript you already hold (`spec.md`): the epic body, sibling tickets,
   prior comments, the code references the planner cites. If the answer is
-  there, re-dispatch the planner (fresh, unnamed) with the previous plan
-  draft verbatim plus your answer keyed to the question number and the
-  instruction to fold it in, not start over. Cap two such rounds. If the
-  question is a genuine decision the context does not settle → post
-  `blocked` (question, options, recommendation, what you checked and why it
-  was not enough) and end.
+  there: `Read` `<rundir>/plan.md` (the previous round's draft, still sitting
+  there unchanged), archive it per the paragraph above, then re-dispatch the
+  planner (fresh, unnamed) with `plan_path`, the incremented `round`, that
+  same draft inlined verbatim — `agents/planner.md`'s Inputs still require
+  this — plus your answer keyed to the question number, with the instruction
+  to fold it in, not start over. Cap two such rounds. If the question is a
+  genuine decision the context does not settle → post `blocked` (question,
+  options, recommendation, what you checked and why it was not enough) and
+  end.
 
 **Plan critique.** Dispatch `plan-critic` (fresh, unnamed) with `spec_file`,
 `plan_file`, a one-paragraph scope statement (what this package covers, round
@@ -393,18 +501,24 @@ severity counts and findings, or `GATE_RESULT: INFRA_FAILURE`.
   `failed`.
 - A **blocking** `critical` (`finding_class: blocking`, i.e. `missed`/`misread`
   at any severity, or `untestable` specifically at `critical`) → the round
-  counts as `f`; re-dispatch the **planner** (fresh) with the plan verbatim
-  plus the critical findings, then critique again.
-- A **blocking** `major` → your call: route it to the planner if it concerns
-  the package's scope, else note it in the plan comment as accepted with one
-  line of reason.
+  counts as `f`; archive `<rundir>/plan.md` to `<rundir>/plan-round-<n-1>.md`
+  (see above), then re-dispatch the **planner** (fresh) with `plan_path`, the
+  incremented `round`, the previous plan draft read from that archive step
+  and inlined verbatim, plus the **path** to this round's
+  `<rundir>/plan-critic-<round>/critique-merged.json` — read it with `Read`
+  — instead of pasting the findings text; then critique again.
+- A **blocking** `major` → your call: route it to the planner (same
+  archive-then-path handover as above) if it concerns the package's scope,
+  else note it in the plan comment as accepted with one line of reason.
 - A **note**-class finding (`simplifier` at any severity, or `untestable`
-  below `critical`) → **never** a reason for another round. Collect it and
-  forward it verbatim into the Phase 3 developer dispatch (3a and 3b) as a note
-  to answer against real code — that is cheaper and better-grounded than
-  another blind round against the document. This is a deliberate reversal of
-  the pre-#105 rule that a `simplifier` major always routed back to the
-  planner; see `AGENTS.md` for why.
+  below `critical`) → **never** a reason for another round. Forward the
+  **path** to this round's `<rundir>/plan-critic-<round>/critique-merged.json`
+  into the Phase 3 developer dispatch (3a and 3b) as a note to answer against
+  real code — that is cheaper and better-grounded than another blind round
+  against the document — with the instruction to `Read` it and answer each
+  note against real code. This is a deliberate reversal of the pre-#105 rule
+  that a `simplifier` major always routed back to the planner; see
+  `AGENTS.md` for why.
 - `minor` (of either class) → proceed; note-class minors are forwarded like
   their majors.
 - Findings of kind `unverified-assumption` and the `unverifiable_…` list are
@@ -432,15 +546,38 @@ exists to stop.
 
 Two developer dispatches, both fresh and unnamed.
 
-**3a — tests (`phase=tests`).** Dispatch `developer` with `plan`,
-`context_summary`, `worktree_path`, `phase=tests`. It writes the driving tests
+**3a — tests (`phase=tests`).** Before round 1's dispatch, capture
+`base_sha=$(git -C <worktree_path> rev-parse HEAD)` **once**, before this
+loop's first Checkpoint runs — this is the commit that predates every round's
+test-file commits, and it is reused, unchanged, for every round's diff below;
+it is never re-captured mid-loop.
+
+Dispatch `developer` with `plan` (the
+absolute path, per Phase 2 above — read it with `Read`), `context_summary`,
+`worktree_path`, `phase=tests` (round 2+: also the prior round's test-critic
+findings, per the `critical` bullet below). It writes the driving tests
 for every behavioural requirement, confirms each fails for the expected reason
 (valid RED), and returns the RED evidence plus the list of test files. Post
-`tests-red`. Then write the verbatim test diff to `<rundir>/tests.diff`
-(`git -C <worktree_path> diff -- <test files>` plus `git diff --no-index
-/dev/null <new file>` for untracked ones) and dispatch `test-critic` (fresh,
-unnamed) with `plan_file`, `tests_file=<rundir>/tests.diff`,
-`output_dir=<rundir>/test-critic-<round>/`.
+`tests-red`. Before checkpointing, write the verbatim test diff to
+`<rundir>/tests.diff` — **`git -C <worktree_path> diff <base_sha> -- <test
+files>` plus `git diff --no-index /dev/null <new file>` for any file still
+untracked at HEAD.** Always diff against the fixed `base_sha` captured above,
+**never** against a plain working-tree/HEAD diff (i.e. never
+`git diff -- <test files>` with no base argument) — this matters starting
+round 2: round 1's Checkpoint below commits round 1's test files, so by round
+2 a base-less diff would compare the working tree against a HEAD that already
+contains round 1's committed tests, silently capturing only round 2's
+incremental edits and dropping the tests test-critic already saw and must
+re-evaluate in full. Diffing against `base_sha` on every round instead always
+yields the full cumulative test diff since before this loop started,
+regardless of how many rounds' worth of commits sit between `base_sha` and
+HEAD. Capture it **before** the Checkpoint procedure runs, because the
+checkpoint's `git add -A` + commit would otherwise track/commit the new test
+files first and leave both the tracked-file diff and the untracked-file
+fallback with nothing to show. Only then run the **Checkpoint** procedure,
+`push_mode=plain` — the RED tests are worth preserving before the test
+critique runs. Then dispatch `test-critic` (fresh, unnamed) with `plan_file`,
+`tests_file=<rundir>/tests.diff`, `output_dir=<rundir>/test-critic-<round>/`.
 
 - `INFRA_FAILURE` → `i`, re-dispatch; three → `failed`.
 - `critical` → `f`; re-dispatch the developer `phase=tests` with the findings
@@ -448,7 +585,9 @@ unnamed) with `plan_file`, `tests_file=<rundir>/tests.diff`,
   (round 3) with a `critical` still open, run the progress-or-stagnation
   check as in Phase 2 — `progress` continues, `stagnation` replans (or
   `failed` at `generation` 2).
-- `major`/`minor` → forward to 3b as notes; proceed.
+- `major`/`minor` → forward the **path** to this round's
+  `<rundir>/test-critic-<round>/critique-merged.json` to the 3b dispatch as
+  notes to `Read` and answer against real code; proceed.
 
 Post `test-critic-verdict` per round. The test critique judges only
 `driving-test`-declared requirements (see `agents/planner.md`'s evidence
@@ -461,14 +600,19 @@ requirements, some not) runs 3a and the test critique normally, scoped to the
 `driving-test` subset — it is not exempt just because part of it is
 non-behavioural.
 
-**3b — implementation (`phase=implement`).** Dispatch `developer` with `plan`,
-`context_summary`, `worktree_path`, `phase=implement`, the test-critic notes.
-It implements to GREEN and runs the **full suite** locally as synchronous
+**3b — implementation (`phase=implement`).** Dispatch `developer` with `plan`
+(the absolute path, as above), `context_summary`, `worktree_path`,
+`phase=implement`, and the paths to any note-class findings forwarded above
+(the plan-critic's `<rundir>/plan-critic-<round>/critique-merged.json` from
+Phase 2, and/or the test-critic's `<rundir>/test-critic-<round>/critique-merged.json`
+from 3a) — `Read` them and answer each note against real code. It implements
+to GREEN and runs the **full suite** locally as synchronous
 foreground chunks inside its own turn (never backgrounded — see *Turn-end
 discipline*). It returns the change report with GREEN evidence and the
 full-suite result.
 
-- `PASS` → post `tests-green` (text: "local pre-filter only — CI decides").
+- `PASS` → post `tests-green` (text: "local pre-filter only — CI decides"),
+  then run the **Checkpoint** procedure, `push_mode=plain`.
 - `FAIL` with a named blocker the developer could not resolve → one fresh
   re-dispatch with the failure tail; still `FAIL` → `failed` (infra or findings,
   say which).
@@ -488,8 +632,9 @@ full-suite result.
 
 ## Phase 4 — reviewer
 
-Dispatch `reviewer` (fresh, unnamed) with `plan`, `change_report`,
-`worktree_path`, `base_branch`, `rundir`. Round 1 of a generation reviews the
+Dispatch `reviewer` (fresh, unnamed) with `plan` (the absolute path, as
+above), `change_report`, `worktree_path`, `base_branch`, `rundir`. Round 1 of
+a generation reviews the
 whole diff; round 2+ reviews the open findings plus the **delta diff since the
 last-reviewed sha** (ticket #105 — a full re-review every round re-reads the
 whole diff and the whole change report on every one of up to six rounds, for
@@ -523,27 +668,39 @@ findings (Codex pass folded in when available). Post `review-verdict`.
     reviewer can find it — the developer no longer re-inlines prior rounds'
     evidence, see `agents/developer.md`), fresh developer dispatch
     (`phase=implement`, plan + findings appended, only this round's prior
-    change report inlined), then a fresh review **narrowed to the findings
-    plus the delta diff** as above. At the soft cap (round 3) with blocking
-    findings still open, the `RESULT` line from the same check decides:
-    `progress` continues past round 3 (this is exactly ticket `#99`'s case),
-    `stagnation` replans (or `failed` at `generation` 2).
+    change report inlined). **The moment this dispatch returns, run the
+    Checkpoint procedure, `push_mode=plain`** — deliberately before the
+    fresh review below accepts the round, a documented interpretive
+    deviation from #115 AC1 (which reads "each accepted fix round"): a
+    checkpoint deferred to acceptance would leave both the fix round and the
+    following re-review window unprotected, which is the exact loss #115
+    exists to close, and a round whose fixes are later revised is simply
+    committed on top by the next checkpoint. Then run a fresh review
+    **narrowed to the findings plus the delta diff** as above. At the soft
+    cap (round 3) with blocking findings still open, the `RESULT` line from
+    the same check decides: `progress` continues past round 3 (this is
+    exactly ticket `#99`'s case), `stagnation` replans (or `failed` at
+    `generation` 2).
 - `APPROVE` → Phase 5.
 
 ## Phase 5 — commit, push, PR
 
 1. `.gitignore` guarantee already done in preconditions; verify `.adev/` is
    ignored (`git -C <worktree_path> check-ignore .adev`).
-2. `git -C <worktree_path> add -A`, then commit. Single-line: `-m "<summary>
+2. **Commit**, per the Checkpoint procedure's step 2 above: `git -C
+   <worktree_path> add -A`, then commit. Single-line: `-m "<summary>
    (#<ticket>)"`. Multi-line: Write the message to `<rundir>/commit-msg.txt`,
    `git -C <worktree_path> commit -F <rundir>/commit-msg.txt`. Never a
    PowerShell here-string through the Bash tool.
-3. `git -C <worktree_path> push -u origin <branch>`. If it is rejected as
-   non-fast-forward *and* you rewrote this branch's history in this session
-   (Phase R ran a rebase), retry **once** with `--force-with-lease`. **Never
-   bare `--force`.** A `--force-with-lease` rejection means somebody else
-   pushed to this branch while you worked — post `failed` saying so; do not
-   overwrite them.
+3. **Push, `push_mode=plain`** — this is the one site that keeps its own
+   wording verbatim rather than the generic procedure's push step, because
+   it is the one site that must also survive a rejection caused by someone
+   else: `git -C <worktree_path> push -u origin <branch>`. If it is
+   rejected as non-fast-forward *and* you rewrote this branch's history in
+   this session (Phase R ran a rebase), retry **once** with
+   `--force-with-lease`. **Never bare `--force`.** A `--force-with-lease`
+   rejection means somebody else pushed to this branch while you worked —
+   post `failed` saying so; do not overwrite them.
 4. **Compose the PR body**: summary + plan recap + review verdict +
    substitute-execution output (command + pasted output, for every
    requirement the plan declared one for — see the developer's change
@@ -647,13 +804,19 @@ A local PASS was a pre-filter. The pipeline decides.
    `get_pipeline_step_log(project_id, run_id, job_id, mode="around_failure")`.
    Classify:
    - a **finding** (test failure, lint, build error caused by the diff) → fresh
-     developer dispatch (`phase=implement`, plan + the failing job excerpt), then
-     a fresh review (Phase 4, its own counter — narrowed exactly as any other
-     fix round, per Phase 4's rule above), then commit/push/poll again;
+     developer dispatch (`phase=implement`, plan + the failing job excerpt).
+     **The moment this CI-repair dispatch returns, run the Checkpoint
+     procedure, `push_mode=plain`**, then a fresh review (Phase 4, its own
+     counter — narrowed exactly as any other fix round, per Phase 4's rule
+     above), then poll again;
    - **infrastructure** (runner lost, timeout unrelated to the diff, workflow
      misconfiguration not introduced by this package) → `i`; re-run by pushing
      an empty commit (`git -C <worktree_path> commit --allow-empty -m "ci:
-     retry (#<ticket>)"`) and poll again.
+     retry (#<ticket>)"`) and poll again. This empty-commit retry is
+     deliberately **not** a Checkpoint invocation — it has nothing to add and
+     no unpushed developer work to protect, and running it through the
+     Checkpoint procedure would let the skip-on-clean-tree guard swallow it
+     silently.
 5. Three CI rounds without green → `failed`. The text must separate `f` from
    `i` rounds and quote the last failing job.
 
@@ -661,18 +824,22 @@ A local PASS was a pre-filter. The pipeline decides.
 
 - **Delegate everything.** Your own tools: `Agent` (always unnamed, always
   `run_in_background: false`, always a fresh call — never `name`, never
-  `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git
-  and `sleep` calls named above and for invoking
-  `scripts/critic/stagnation-check.py` (deterministic, no model — see "Round
-  caps: progress or stagnation"), and these MCP calls: `list_projects`,
-  `add_comment`, `create_pr`, `list_prs`, `update_pr`, `list_pipeline_runs`,
-  `get_pipeline_run`, `get_pipeline_step_log`. Nothing else — in particular no
-  `get_pr` and no `merge_pr`: mergeability and merging are the caller's
-  concern, not this skill's.
+  `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git,
+  `cp` (round/generation plan archives) and `sleep` calls named above and for
+  invoking `scripts/critic/stagnation-check.py` (deterministic, no model —
+  see "Round caps: progress or stagnation"), and these MCP calls:
+  `list_projects`, `add_comment`, `create_pr`, `list_prs`, `update_pr`,
+  `list_pipeline_runs`, `get_pipeline_run`, `get_pipeline_step_log`. Nothing else
+  — in particular no `get_pr` and no `merge_pr`: mergeability and
+  merging are the caller's concern, not this skill's.
 - **No human in the loop.** `AskUserQuestion` does not exist for you. A
   question is a `blocked` event. A retry is never a question.
-- **Every return trip is a fresh dispatch with everything inlined.** Subagents
-  cannot refetch; re-inline plan, findings, change report each time.
+- **Every return trip is a fresh dispatch, nothing re-fetched.** Subagents
+  cannot refetch. The plan and any plan-critic/test-critic findings are
+  handed on **by absolute path** (ticket #113 — `plan_path`, and each gate's
+  `critique-merged.json`), read with `Read` by whoever receives them; the
+  change report is still inlined, but only the **current round's**, never the
+  whole accumulated chain (ticket #105).
 - **Never on main, never create the branch/worktree, never `-C`-less git.**
 - **Never move a board column.** The caller owns the board.
 - **One terminal event, then stop.** Do not keep working after `ci-green`,

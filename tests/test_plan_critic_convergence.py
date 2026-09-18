@@ -30,6 +30,18 @@ def _read(p: pathlib.Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _frontmatter(text: str) -> dict:
+    # same convention as test_pipeline_contract.py's helper of the same name
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+    assert m, "missing YAML front-matter"
+    fm = {}
+    for line in m.group(1).splitlines():
+        if ":" in line and not line.startswith(" "):
+            k, v = line.split(":", 1)
+            fm[k.strip()] = v.strip()
+    return fm
+
+
 def _load_merge_module():
     # scripts/critic/ ships no __pycache__ (see test_pipeline_contract.py's
     # test_no_unity_in_critic_material, which iterates every file in that
@@ -319,8 +331,118 @@ def test_planner_states_a_length_budget_and_a_non_growth_rule():
 
 
 def test_planner_still_re_emits_the_full_plan():
+    """Ticket #116 (#113): the full plan is still re-emitted on every
+    follow-up round, but the destination changes — it goes to `plan_path`
+    via `Write`, never into the reply text, which now carries only the
+    bounded summary.
+
+    Round 2 (test-critic tautology::F7, F8, F12): the original guard
+    (`re.search(r"(re-emit|write) the full[^.\n]*plan[^.\n]*", text)`) is a
+    strict superset of the pre-#116 assertion (`re-emit the full`) and
+    matches today's unedited file by construction — "re-emit the full
+    revised plan" (line ~179) already reads that way when the destination is
+    still the reply, not `plan_path`. So the locate step below is split from
+    the assertion: candidate re-emission sentences are found first (a pure
+    extraction step, expected to match both before and after the edit), and
+    the actual behavioural check is that at least one of them names
+    `plan_path` as the `Write` destination *in that same sentence* — a 400-
+    char trailing window (the old shape) could span several unrelated
+    sentences and would trivially "find" plan_path anywhere nearby once it
+    exists at all in the file, without it being tied to re-emission at all."""
     text = _read(AGENTS / "planner.md")
-    assert re.search(r"re-emit the full", text)
+
+    sentences = re.split(r"(?<=[.\n])\s*", text)
+    reemission_sentences = [
+        s for s in sentences
+        if re.search(r"\b(?:re-emit|write)s?\b", s, re.IGNORECASE)
+        and re.search(r"\bfull\b[^\n]{0,40}\bplan\b", s, re.IGNORECASE)
+    ]
+    assert reemission_sentences, "full-plan re-emission rule missing"
+
+    tied_to_plan_path = [
+        s for s in reemission_sentences
+        if re.search(r"\bWrite\b[^\n]{0,40}\bplan_path\b|\bplan_path\b[^\n]{0,40}\bWrite\b", s)
+    ]
+    assert tied_to_plan_path, (
+        "the full-plan re-emission sentence must name plan_path as the "
+        "Write destination in the SAME sentence -- today's file re-emits "
+        "the full plan into the reply, with no plan_path mention anywhere "
+        "in the document")
+
+    # F8: the reply/status-protocol section must, on its own, state the
+    # reply excludes the full plan -- scoped to that section specifically
+    # (located the same way "What you report" is located in
+    # test_pipeline_contract.py), not a bare whole-file substring search
+    # that any incidental occurrence elsewhere in the document would satisfy.
+    status = re.search(r"## Status protocol[^\n]*\n(.*?)\n## Hard rules", text, re.DOTALL)
+    assert status, "no Status protocol section"
+    assert re.search(r"not the full plan", status.group(1), re.IGNORECASE), \
+        "the reply's summary must be explicitly distinguished from the full " \
+        "plan, inside the reply/status-protocol section itself"
+
+    # R2's contract names a specific bound -- a "≤30-line summary" -- not just
+    # a vague "bounded"/"short" summary. Require the actual number (≤30) to
+    # be stated, in the same section scope located above, so a future edit
+    # that widens or drops the bound (e.g. to 50 lines, or to prose with no
+    # number at all) is caught here instead of silently drifting from the
+    # plan.
+    assert re.search(r"(?:≤\s*30|\bat most 30\b|\b30[-\s]line\b)",
+                      status.group(1), re.IGNORECASE), \
+        "the reply/status-protocol section must state the ≤30-line bound " \
+        "on the summary, not just that it is 'bounded' or 'short'"
+
+
+# --- #116 R2: planner writes its own plan.md --------------------------------
+
+def test_planner_frontmatter_grants_write_only_for_planning():
+    fm = _frontmatter(_read(AGENTS / "planner.md"))
+    tools = [t.strip() for t in fm.get("tools", "").split(",")]
+    assert "Write" in tools, "planner must hold Write to author plan_path itself"
+    assert "Edit" not in tools, "planner must not hold Edit"
+    assert "Bash" not in tools, "planner must not hold Bash"
+
+
+def test_planner_hard_rules_restrict_write_to_plan_path():
+    """Round 2 (test-critic tautology::F9, F10, F11): the `## Hard rules`
+    heading lookup below is a pure extraction guard -- it already succeeds
+    against today's unedited file, which has always had a Hard rules
+    section, so it must not be mistaken for evidence of anything. The two
+    checks that follow it are the real behavioural assertions, and each
+    fails against today's text for a substantive reason (annotated below),
+    not because the heading is missing."""
+    text = _read(AGENTS / "planner.md")
+    m = re.search(r"## Hard rules\n(.*)", text, re.DOTALL)
+    assert m, "no Hard rules section"
+    hard_rules = m.group(1)
+
+    # F9: co-occurrence of "Write" and "plan_path" is not enough -- a
+    # permissive rule naming plan_path plus another allowed Write target
+    # would satisfy bare co-occurrence. Require an exclusivity word
+    # ("exactly"/"only"/"sole(ly)"/"no other") in the same clause. Today's
+    # Hard rules mention neither Write-as-plan_path-destination nor any such
+    # word (plan_path does not appear in the file at all yet), so this must
+    # fail RED on the *first* assert below, not the exclusivity one.
+    write_clause = re.search(
+        r"\bWrite\b[^\n]{0,80}\bplan_path\b|\bplan_path\b[^\n]{0,80}\bWrite\b",
+        hard_rules)
+    assert write_clause, "Hard rules must name plan_path as a Write target"
+    clause_text = write_clause.group(0).lower()
+    assert re.search(r"\bexactly\b|\bonly\b|\bsole(?:ly)?\b|\bno other\b", clause_text), (
+        "Hard rules must state Write is restricted to plan_path exclusively "
+        "-- mere co-occurrence with Write is not enough")
+
+    # F10: the "never write a repo file" prohibition must be unconditional.
+    # A hedged phrasing ("never ... repo file, unless/except/when ...")
+    # containing both tokens must not pass just because both tokens are
+    # present. Today's Hard rules contain neither "repo file" nor any
+    # occurrence of "never" followed by it within a short span (the current
+    # rule is "Never write a ticket comment or open a PR"), so this fails
+    # RED on the presence assert, for the genuine reason that the
+    # prohibition doesn't exist yet -- not because of a heading or hedge.
+    m_never = re.search(r"never[^\n]{0,60}repo file", hard_rules, re.IGNORECASE)
+    assert m_never, "Hard rules must forbid writing any repo file"
+    hedge = re.search(r"\bunless\b|\bexcept\b|\bwhen\b", m_never.group(0), re.IGNORECASE)
+    assert not hedge, "the repo-file prohibition must be unconditional, not hedged"
 
 
 def test_replan_caps_generation_two_plan_size():

@@ -31,28 +31,26 @@ The critique runs in four separate Claude CLI processes started in empty directo
 
 ## What you report
 
+The findings listing below is blocking-class only — a note-class finding is
+never relayed inline; it stays inside `critique-merged.json` for whoever
+reads that file to use as a note instead.
+
 ```
 GATE_RESULT: OK
 SEVERITY: critical=<n> major=<n> minor=<n>
 BLOCKING: critical=<n> major=<n>
 LENSES: <lens_runs summary, e.g. missed=ok misread=ok untestable=ok simplifier=ok>
-FINDINGS:
-- id: <id> | severity: <severity> | kind: <kind> | lens: <lens> | class: <blocking|note>
-  title: <title>
-  what: <what>
-  violated_criterion: <violated_criterion>
-  (merged_from: <lens/id/title of collapsed findings, if any>)
+FINDINGS (blocking-class only):
+- id: <id> | severity: <severity> | violated_criterion: <criterion> | what: <finding, truncated to 200 chars>
 ...
-UNVERIFIABLE_WITHOUT_CODEBASE_ACCESS:
-- <each entry verbatim>
-ARTEFACTS: <path of critique-merged.json>, <per-lens critique files>, <provenance files>
+MERGED: <absolute path of critique-merged.json>
 ```
 
-Counts come from the merged file's `severity_counts`; `BLOCKING:` comes from its `blocking_severity_counts`. `class` is stamped by the merge, derived from the finding's `(lens, severity)` pair — never from a field a critic sets, never a judgment you make: `missed`/`misread` → `blocking` at every severity; `simplifier` → `note` at every severity; `untestable` → `blocking` only when `severity == critical`, else `note` (ticket #108). Findings are relayed verbatim and in full — every one of them, in the file's order. Add the `solid` list if it is short.
+Counts come from the merged file's `severity_counts`; `BLOCKING:` comes from its `blocking_severity_counts`. Only `what` is truncated to 200 characters — `id`, `severity` and `violated_criterion` are never truncated. `class` is stamped by the merge, derived from the finding's `(lens, severity)` pair — never from a field a critic sets, never a judgment you make: `missed`/`misread` → `blocking` at every severity; `simplifier` → `note` at every severity; `untestable` → `blocking` only when `severity == critical`, else `note` (ticket #108). List every `finding_class == "blocking"` finding, in the file's order; everything else the merged file carries — the note-class findings, the collapsed-duplicate provenance, the unverifiable-assumption entries — stays out of this reply. The `MERGED:` line is the pointer to all of that, in full.
 
 ## Hard rules
 
-- Never filter, rank, soften, reword or re-severity a finding, and never add findings of your own. If you think a finding is wrong, say so in a clearly marked separate note and leave the finding intact.
-- Never upgrade an unverified assumption to a defect. The critics cannot see the codebase; their claims about existing code come back as `unverifiable_without_codebase_access` and are relayed as exactly that. This does not extend to whether the ticket's stated symptom is actually exercised — whether by a driving test whose assertions bite, or by any evidence at all when no driving test is declared: that question is decidable from the specification's stated symptom and the plan's own declared evidence kind for the requirement covering it, both already in front of the critic, not a claim about code it cannot see, and may be graded critical.
+- Never filter, rank, soften, reword or re-severity anything on its way into `critique-merged.json`, and never add findings of your own. If you think a finding is wrong, say so in a clearly marked separate note and leave the finding intact. The inline report above is a bounded pointer to that file, not a substitute for it.
+- Never upgrade an unverified assumption to a defect. The critics cannot see the codebase; their claims about existing code come back as `unverifiable_without_codebase_access` inside `critique-merged.json`, verbatim. This does not extend to whether the ticket's stated symptom is actually exercised — whether by a driving test whose assertions bite, or by any evidence at all when no driving test is declared: that question is decidable from the specification's stated symptom and the plan's own declared evidence kind for the requirement covering it, both already in front of the critic, not a claim about code it cannot see, and may be graded critical.
 - Never edit the plan, the spec file or the merged JSON, and never merge lens outputs by hand. A failed lens is a failed run (`INFRA_FAILURE`), not a partial result.
 - You do not decide. The dispatching skill decides what the findings mean for the plan and counts the rounds.

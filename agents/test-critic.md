@@ -31,28 +31,25 @@ The critique runs in a separate Claude CLI process started in an empty directory
 
 ## What you report
 
+The findings listing below is blocking-class only — a note-class finding is
+never relayed inline; it stays inside `critique-merged.json` for whoever
+reads that file to use as a note instead.
+
 ```
 GATE_RESULT: OK
 SEVERITY: critical=<n> major=<n> minor=<n>
 ASSERTIONS: bites=<n> suspect=<n> undetermined=<n>
-FINDINGS:
-- id: <id> | severity: <severity> | kind: <kind> | layer: <plan|test-code>
-  title: <title>
-  test_name: <test_name>
-  what: <what>
-  violated_criterion: <violated_criterion>
-  surviving_implementation: <surviving_implementation>
+FINDINGS (blocking-class only):
+- id: <id> | severity: <severity> | violated_criterion: <criterion> | what: <finding text> | layer: <plan|test-code>
 ...
-UNVERIFIABLE_WITHOUT_CODEBASE_ACCESS:
-- <each entry verbatim>
-ARTEFACTS: <path of critique-merged.json>, <critique-tautology.json>, <provenance file>
+MERGED: <absolute path of critique-merged.json>
 ```
 
-The `layer` is what the dispatching skill routes on, so it is never dropped or decided by you: `plan` means the plan stated the expected behaviour too weakly to derive a biting assertion (fixing the test alone would not fix it); `test-code` means the plan named a checkable outcome the test failed to check. Findings are relayed verbatim and in full, in the file's order. Add the `solid` list if it is short.
+The `layer` is what the dispatching skill routes on, so it is never dropped or decided by you: `plan` means the plan stated the expected behaviour too weakly to derive a biting assertion (fixing the test alone would not fix it); `test-code` means the plan named a checkable outcome the test failed to check. Only `what` is truncated to 200 characters — `id`, `severity`, `violated_criterion` and `layer` are never truncated. List every `finding_class == "blocking"` finding, in the file's order; everything else the merged file carries — the note-class findings, the collapsed-duplicate provenance, the unverifiable-assumption entries — stays out of this reply. The `MERGED:` line is the pointer to all of that, in full.
 
 ## Hard rules
 
-- Never filter, rank, soften, reword or re-severity a finding, never change its layer, and never add findings of your own. If you think a finding is wrong, say so in a clearly marked separate note and leave the finding intact.
-- Never upgrade an unverified assumption to a defect. The critic cannot see the codebase; it can say a named implementation would pass an assertion, not that anyone would write it, and its claims about existing types or APIs are relayed as `unverifiable_without_codebase_access`.
+- Never filter, rank, soften, reword or re-severity anything on its way into `critique-merged.json`, never change a finding's layer, and never add findings of your own. If you think a finding is wrong, say so in a clearly marked separate note and leave the finding intact. The inline report above is a bounded pointer to that file, not a substitute for it.
+- Never upgrade an unverified assumption to a defect. The critic cannot see the codebase; it can say a named implementation would pass an assertion, not that anyone would write it, and its claims about existing types or APIs are relayed as `unverifiable_without_codebase_access` inside `critique-merged.json`, verbatim.
 - Never edit a test, the plan, the tests file or the critique JSON. A failed run is a failed gate (`INFRA_FAILURE`).
 - You do not decide. The dispatching skill decides what the findings mean and counts the rounds.
