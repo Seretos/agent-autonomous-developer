@@ -204,6 +204,179 @@ def test_critic_agents_reference_existing_runners():
         assert "GATE_RESULT" in text
 
 
+def test_critic_wrappers_report_blocking_only_findings_with_merged_pointer():
+    """Ticket #116 (#113): both critic wrappers stop relaying the full
+    findings dump inline and instead report only blocking-class findings,
+    in a fixed field order, plus a MERGED: <path> pointer to the file that
+    carries everything (note-class findings, merged_from, etc.).
+
+    Round 2 (test-critic tautology::F1-F6): every check below is anchored to
+    the actual per-finding template line or the fenced report block itself,
+    never to prose that could describe the right shape while the template
+    stays unchanged. `## What you report` / `## Hard rules` heading lookups
+    below are pure extraction guards (they already succeed against today's
+    unedited files); the assertions that follow them are what must fail
+    against today's text, and each one is annotated with why it does."""
+    for agent, extra_field in (("plan-critic", None), ("test-critic", "layer")):
+        text = _read(AGENTS / f"{agent}.md")
+        m = re.search(r"## What you report\n(.*?)\n## Hard rules", text, re.DOTALL)
+        assert m, f"{agent}.md missing a 'What you report' section"
+        section = m.group(1)
+
+        code_block = re.search(r"```\n(.*?)\n```", section, re.DOTALL)
+        assert code_block, f"{agent}.md report block missing"
+        block = code_block.group(1)
+        block_lines = [l for l in block.splitlines() if l.strip()]
+
+        # F1: the listing structure itself must be bounded -- no separate
+        # note/blocking class-discriminator field may remain in the
+        # per-finding template, since that is exactly what would let a
+        # wrapper keep its full verbatim-dump template and merely bolt a
+        # "blocking-class only" sentence on top. Today's block still carries
+        # `class: <blocking|note>` (plan-critic) -- this must fail RED.
+        assert "class:" not in block, (
+            f"{agent}.md report block must not carry a class-discriminator "
+            "field -- the listing itself must be blocking-only, not merely "
+            "described as such alongside an unchanged template")
+
+        # the listing must also be explicitly *described* as blocking-class
+        # only (belt-and-braces alongside the structural check above)
+        assert re.search(r"blocking[- ]class[^.\n]{0,15}only|only[^.\n]{0,15}blocking[- ]class",
+                          section, re.IGNORECASE), \
+            f"{agent}.md must state the findings listing is blocking-class only"
+
+        # F3: field order is checked within the actual one-line per-finding
+        # template (the line starting "- id:"), never against prose
+        # elsewhere in the section that could describe the fields in the
+        # right order while the template itself stays wrong. Today's
+        # template line carries only id/severity/kind/lens(+class) --
+        # violated_criterion and what live on separate lines below it -- so
+        # this must fail RED for a real structural reason, not a wording one.
+        finding_line = next(
+            (l for l in block_lines if l.strip().startswith("- id:")), None)
+        assert finding_line, f"{agent}.md report block missing the per-finding template line"
+        order_pattern = r"\bid\b.{0,25}\bseverity\b.{0,25}\bviolated_criterion\b.{0,25}\bwhat\b"
+        if extra_field:
+            order_pattern += rf".{{0,25}}\b{extra_field}\b"
+        assert re.search(order_pattern, finding_line), (
+            f"{agent}.md per-finding template line must itself order "
+            "id|severity|violated_criterion|what"
+            + (f"|{extra_field}" if extra_field else "")
+            + " -- today's template line splits these across multiple lines"
+        )
+        # and the collapsed one-liner must actually drop the retired columns,
+        # not just reorder around them
+        for stale_field in ("kind:", "lens:", "class:"):
+            assert stale_field not in finding_line, (
+                f"{agent}.md per-finding template line must drop {stale_field} "
+                "-- the one-liner keeps exactly the fields named in the plan")
+
+        # F2: only `what` may be truncated to 200 chars. A template that
+        # truncates every field to 200 chars must not pass -- so the check
+        # requires the *scope between "only" and "truncat[ed]"* to name
+        # `what` and nothing else; a phrasing that also states the other
+        # three fields are never truncated is fine (that sentence's "only"
+        # clause still only spans `what`), but a blanket "all fields ...
+        # truncated to 200 chars" (no exclusive "only ... what ... truncat"
+        # span) must fail.
+        m_only = re.search(r"\bonly\b(?P<mid>.{0,40}?)truncat", section, re.IGNORECASE)
+        assert m_only, (
+            f"{agent}.md must state, with an explicit 'only ... truncated' "
+            "scope, that just `what` is bounded")
+        mid = m_only.group("mid").lower()
+        assert "what" in mid, f"{agent}.md truncation scope must name `what`"
+        for other in ("id", "severity", "violated_criterion"):
+            assert other not in mid, (
+                f"{agent}.md truncation scope must exclude `{other}` -- "
+                "only `what` may be bounded to 200 chars")
+        nearby = section[max(0, m_only.start() - 60): m_only.end() + 60]
+        assert "200" in nearby, \
+            f"{agent}.md must state the 200-char bound near the only-`what`-is-truncated scope"
+
+        # F4: the old verbatim dump (note-class findings, merged_from, the
+        # UNVERIFIABLE_... list, solid) must actually be gone from this
+        # report section, not merely additive-coexisting with the new
+        # sentences above. Checked against the whole section (not just the
+        # fenced block) since `solid` is currently introduced in prose right
+        # after the block ("Add the `solid` list if it is short.").
+        for stale_token in ("merged_from", "UNVERIFIABLE_WITHOUT_CODEBASE_ACCESS", "solid"):
+            assert stale_token not in section, (
+                f"{agent}.md 'What you report' section must no longer relay "
+                f"{stale_token} inline -- it belongs only in "
+                "critique-merged.json now")
+
+        # F6: the report ends with a MERGED: <path> pointer that itself
+        # looks like a path to critique-merged.json, not a bare label a
+        # wrapper could satisfy with unconstrained free text.
+        assert block_lines[-1].strip().startswith("MERGED:"), \
+            f"{agent}.md report block must end with a MERGED: <path> line"
+        merged_line = block_lines[-1]
+        assert re.search(r"critique-merged\.json", merged_line), \
+            f"{agent}.md MERGED line must point at critique-merged.json"
+        assert "/" in merged_line or "absolute" in merged_line.lower(), (
+            f"{agent}.md MERGED line must read as a path (absolute-path "
+            "shape or an explicit 'absolute' qualifier), not a bare literal")
+
+
+def test_skill_phase2_and_phase3a_dispatches_name_plan_path_and_merged_json():
+    """Ticket #116, reviewer round 1 finding 2: a cross-file consistency gap
+    none of the earlier tests covered -- agents/planner.md could gain the
+    `plan_path` contract while SKILL.md's own dispatch prose drifts and
+    never actually passes it, and nothing would catch that drift. Anchored
+    to the specific paragraphs, not a whole-file grep: the Phase 2 round-1
+    planner-dispatch sentence, the Phase 2 blocking-critical-to-planner
+    handover bullet, and the Phase 3a major/minor-to-3b forwarding bullet.
+
+    RED against the pre-#116 wording (`git show main:skills/process-ticket/SKILL.md`):
+    the round-1 dispatch there passes no `plan_path` at all ("Dispatch
+    `planner` synchronously and unnamed with `context_summary`,
+    `worktree_path`, `recent_changes`"), and both handover bullets forward
+    the findings inline ("plus the critical findings" / "forward to 3b as
+    notes") rather than a `critique-merged.json` path -- so each assertion
+    below fails against main's SKILL.md for a real structural reason, not a
+    wording tweak."""
+    text = _read(SKILL)
+
+    def section(start_heading, end_heading):
+        m = re.search(re.escape(start_heading) + r"\n(.*?)\n" + re.escape(end_heading),
+                      text, re.DOTALL)
+        assert m, f"missing section {start_heading!r} .. {end_heading!r}"
+        return m.group(1)
+
+    phase2 = section(
+        "## Phase 2 — planner → plan-critic (question-free)",
+        "## Phase 3 — developer, test-first, with the test critique between RED and GREEN")
+    phase3 = section(
+        "## Phase 3 — developer, test-first, with the test critique between RED and GREEN",
+        "## Phase 4 — reviewer")
+
+    # (a) the round-1 planner-dispatch sentence itself must name `plan_path`
+    # as an input handed to the planner -- not merely somewhere else in
+    # Phase 2 (e.g. only in the surrounding prose paragraph).
+    m = re.search(r"[Dd]ispatch `planner` synchronously and unnamed with([^.]*)\.",
+                  phase2, re.DOTALL)
+    assert m, "Phase 2 round-1 planner-dispatch sentence not found"
+    assert "plan_path" in m.group(1), (
+        "Phase 2's round-1 planner-dispatch sentence must name `plan_path` "
+        "as an input handed to the planner")
+
+    # (b) the blocking-critical-to-planner handover bullet must reference
+    # the critique-merged.json path, not inlined findings text.
+    m = re.search(r"A \*\*blocking\*\* `critical`.*?critique again\.", phase2, re.DOTALL)
+    assert m, "Phase 2 blocking-critical handover bullet not found"
+    assert "critique-merged.json" in m.group(0), (
+        "Phase 2's blocking-critical-to-planner handover bullet must "
+        "reference critique-merged.json rather than inlining the findings text")
+
+    # (c) the Phase 3a major/minor-to-3b forwarding bullet must reference
+    # the same path pattern, not a bare "forward ... as notes" with no path.
+    m = re.search(r"`major`/`minor` → forward.*?proceed\.", phase3, re.DOTALL)
+    assert m, "Phase 3a major/minor forwarding bullet not found"
+    assert "critique-merged.json" in m.group(0), (
+        "Phase 3a's major/minor-to-3b forwarding bullet must reference "
+        "critique-merged.json rather than a bare 'forward as notes' with no path")
+
+
 def test_context_extractor_expands_epics():
     text = _read(AGENTS / "context-extractor.md")
     assert "list_hierarchy" in _frontmatter(text).get("tools", "")
