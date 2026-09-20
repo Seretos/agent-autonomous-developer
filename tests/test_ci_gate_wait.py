@@ -1,5 +1,5 @@
 """
-Ticket #118: Phase 6 of process-ticket waits for CI with one blocking
+Ticket #118: Phase 6 of process-developer waits for CI with one blocking
 foreground `project-issues wait-pipeline` call instead of a `sleep` ladder.
 
 Only what a machine reads is tested here:
@@ -20,7 +20,7 @@ import re
 from tests.test_no_background_rule import _pipeline_cwd, _run_pre, _assert_allowed, _assert_refused
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKILL_MD = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+SKILL_MD = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
 
 _BASH_CALL = re.compile(r'Bash\(\s*"([^"]*)"(?:\s*,\s*timeout:\s*(\d+))?\s*\)')
 

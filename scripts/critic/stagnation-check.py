@@ -8,7 +8,7 @@ the loop, no judgment call about whether a finding is "really" the same one —
 only a fixed, quoted fingerprint compared for exact equality. Placing a model
 here would make this script a curator, able to wave a stagnating round
 through as "progress" on its own opinion; that is precisely what
-process-ticket's round-cap decision (see skills/process-ticket/SKILL.md,
+process-developer's round-cap decision (see skills/process-developer/SKILL.md,
 "Round caps: progress or stagnation") must not be exposed to.
 
 Fingerprint rules, by gate:
@@ -17,7 +17,7 @@ Fingerprint rules, by gate:
     (kind, violated_criterion), taken only from findings at severity
     "critical" or "major" AND finding_class "blocking" (ticket #105) — a
     "minor" finding is real feedback but not something a stagnation check
-    should key on, matching how skills/process-ticket/SKILL.md already
+    should key on, matching how skills/process-developer/SKILL.md already
     treats "minor" as non-blocking; a "note"-class finding (the plan-critic
     untestable/simplifier lenses) is excluded for the same reason a "minor"
     is: it is never itself a reason for another round, so it must not count
@@ -48,14 +48,14 @@ kind-based split only narrows what already passed it.
 
 Alongside RESULT, the review gate also prints REVIEW_OWN_BLOCKING: <n> — the
 exact count of findings with severity "blocking" and kind != "codex" — so
-skills/process-ticket/SKILL.md Phase 4 can tell "no genuine review-sourced
+skills/process-developer/SKILL.md Phase 4 can tell "no genuine review-sourced
 blocker is left open" (0) apart from "the reviewer still has real blocking
 findings" (>0), independent of the fingerprint/stagnation verdict. This line
 is review-gate only; plan-critic and test-critic print nothing extra.
 
 The history file is a flat JSON list of `[kind, key]` pairs already seen in
 the current generation. This script never resets it — that is
-process-ticket's job on a replan (a new generation starts from an empty
+process-developer's job on a replan (a new generation starts from an empty
 history, deliberately: a fresh plan deserves a fresh stagnation comparison).
 This script only ever reads it, decides, and appends the current round's new
 fingerprints to it.

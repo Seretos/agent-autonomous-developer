@@ -13,7 +13,7 @@ Requirements covered (ids from the plan's test strategy):
   ``["git", ...]`` argv). Release-payload discovery is not re-tested here: the
   payload gate already runs in CI.
 
-The Phase 6 wiring in skills/process-ticket/SKILL.md is prose a model executes;
+The Phase 6 wiring in skills/process-developer/SKILL.md is prose a model executes;
 by maintainer decision (#122, comment 5752466363) it is deliberately not pinned
 by a text test -- the reviewer checks it against the diff and the PR lists it
 under "Not covered by tests".

@@ -45,7 +45,7 @@ gate the plan-critic loop on their own: `plan-critic-merge.py` derives a
 `finding_class` from the lens (`missed`/`misread` -> "blocking",
 `untestable`/`simplifier` -> "note"), and a note-class finding is forwarded to
 the developer as a note rather than routed back to the planner — see
-`skills/process-ticket/SKILL.md` Phase 2 and `AGENTS.md`. The reviewer's
+`skills/process-developer/SKILL.md` Phase 2 and `AGENTS.md`. The reviewer's
 "Mechanism balance vs. diff" check (BR6 below) was deliberately **not**
 loosened alongside it and stays `[blocking]`: it costs no extra model process
 and judges the plan against the real diff rather than the isolated critic's
@@ -62,7 +62,7 @@ import re
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 AGENTS = REPO_ROOT / "agents"
 CRITIC = REPO_ROOT / "scripts" / "critic"
-SKILL = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+SKILL = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
 
 LENS_IDS = ["missed", "misread", "untestable", "simplifier"]
 SCHEMA_KIND_ENUM = ["gap", "contradiction", "double-claim", "risk", "unverified-assumption"]

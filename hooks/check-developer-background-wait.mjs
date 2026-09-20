@@ -23,7 +23,7 @@
  * one catches a turn ending with one outstanding anyway (a harness that did
  * not run the PreToolUse hook, a detach shape the classifier missed).
  *
- * The same mistake one level up — the top-level `process-ticket` session
+ * The same mistake one level up — the top-level `process-developer` session
  * ending its turn with an outstanding background command, which in headless
  * `claude -p` ends the whole process — is caught by the Stop hook
  * hooks/check-session-turn-end.mjs (ticket #23). The transcript walk and the

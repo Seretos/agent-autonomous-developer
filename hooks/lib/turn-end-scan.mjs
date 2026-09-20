@@ -11,7 +11,7 @@
  *       the `developer` subagent must not end its turn while a command it
  *       backgrounded is unresolved.
  *   - hooks/check-session-turn-end.mjs            (Stop, #23)
- *       the top-level `process-ticket` session must not end its turn while a
+ *       the top-level `process-developer` session must not end its turn while a
  *       command it backgrounded is unresolved, nor while the package's work
  *       sits uncommitted in the worktree.
  *

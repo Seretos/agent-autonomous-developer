@@ -147,9 +147,9 @@ def test_prose_paths_and_package_heredoc_hunk_are_all_prose(tmp_path):
 
 def test_diff_can_be_read_from_stdin():
     result = _role_check("--diff", "-", "--repo-root", str(REPO_ROOT),
-                         stdin=_hunk("skills/process-ticket/SKILL.md", 5, 2))
+                         stdin=_hunk("skills/process-developer/SKILL.md", 5, 2))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert any("skills/process-ticket/SKILL.md:5-6" in l for l in _lines(result.stdout, "PROSE"))
+    assert any("skills/process-developer/SKILL.md:5-6" in l for l in _lines(result.stdout, "PROSE"))
 
 
 def test_repo_root_decides_heredoc_ranges_not_the_working_directory(tmp_path):

@@ -23,7 +23,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 AGENTS = REPO_ROOT / "agents"
 CRITIC = REPO_ROOT / "scripts" / "critic"
-SKILL = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+SKILL = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
 
 
 def _read(p: pathlib.Path) -> str:

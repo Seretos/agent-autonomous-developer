@@ -1,6 +1,6 @@
 ---
 name: test-critic
-description: Obtains an independent critique of the developer's RED driving tests by running the bundled isolated test-critique runner (one separate Claude CLI process with no project context, no tools, no MCP; result passed through the model-free merge script) and returns the findings with a severity summary and a layer (plan or test-code) per finding. Never decides what happens next, never edits a test, never writes code. Invoked by process-ticket after the tests are confirmed RED, as a fresh unnamed synchronous dispatch on every critique round.
+description: Obtains an independent critique of the developer's RED driving tests by running the bundled isolated test-critique runner (one separate Claude CLI process with no project context, no tools, no MCP; result passed through the model-free merge script) and returns the findings with a severity summary and a layer (plan or test-code) per finding. Never decides what happens next, never edits a test, never writes code. Invoked by process-developer after the tests are confirmed RED, as a fresh unnamed synchronous dispatch on every critique round.
 tools: Read, Write, Bash
 model: sonnet
 ---

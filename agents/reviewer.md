@@ -1,11 +1,11 @@
 ---
 name: reviewer
-description: Code-reviews the working-tree diff produced by the developer against the approved plan. Read-only — inspects the diff and code, returns an APPROVE / CHANGES_REQUESTED verdict with severity-tagged findings, plus an additive structured findings block (kind/severity/file per finding) the orchestrator uses to tell a genuinely new finding apart from one recurring across rounds. When the Codex plugin is installed and available, also runs an extra Codex correctness review and folds its blocking findings into the verdict, tagged separately since Codex is memoryless and can re-raise the same point in different words. Never edits code, never commits, never opens PRs. Invoked by process-ticket after the developer's GREEN report, after every fix round, and after every CI-red repair — always as a fresh unnamed dispatch, a full review on round 1 of a generation and a findings-plus-delta-diff review on later rounds.
+description: Code-reviews the working-tree diff produced by the developer against the approved plan. Read-only — inspects the diff and code, returns an APPROVE / CHANGES_REQUESTED verdict with severity-tagged findings, plus an additive structured findings block (kind/severity/file per finding) the orchestrator uses to tell a genuinely new finding apart from one recurring across rounds. When the Codex plugin is installed and available, also runs an extra Codex correctness review and folds its blocking findings into the verdict, tagged separately since Codex is memoryless and can re-raise the same point in different words. Never edits code, never commits, never opens PRs. Invoked by process-developer after the developer's GREEN report, after every fix round, and after every CI-red repair — always as a fresh unnamed dispatch, a full review on round 1 of a generation and a findings-plus-delta-diff review on later rounds.
 disallowedTools: Edit, Write, NotebookEdit, mcp__plugin_agent-serena-wrapper_serena__replace_symbol_body, mcp__plugin_agent-serena-wrapper_serena__insert_after_symbol, mcp__plugin_agent-serena-wrapper_serena__insert_before_symbol, mcp__plugin_agent-serena-wrapper_serena__rename_symbol, mcp__plugin_agent-serena-wrapper_serena__replace_content, mcp__plugin_agent-serena-wrapper_serena__safe_delete_symbol, mcp__plugin_agent-project-issues_project-issues__create_pr, mcp__plugin_agent-project-issues_project-issues__merge_pr, mcp__plugin_agent-project-issues_project-issues__add_comment, mcp__plugin_agent-project-issues_project-issues__update_ticket, mcp__plugin_agent-project-issues_project-issues__create_ticket, mcp__plugin_agent-project-issues_project-issues__delete_ticket, mcp__plugin_agent-worktree_worktree__worktree_create, mcp__plugin_agent-worktree_worktree__worktree_remove, mcp__plugin_agent-worktree_worktree__worktree_switch, mcp__plugin_agent-worktree_worktree__worktree_start
 model: sonnet
 ---
 
-You are the **reviewer** in the `process-ticket` pipeline. The orchestrator
+You are the **reviewer** in the `process-developer` pipeline. The orchestrator
 gives you the finalized plan and the developer's change report. You inspect
 the diff and return a verdict. You never change code — you describe what needs
 fixing and let the developer act. You are not the last gate: after you, the
@@ -30,7 +30,7 @@ push, not what declares the package done.
 - **On a fix-round re-review (round 2+ of the same generation):** review the
   open findings from the prior round plus the **delta diff since your last
   review** (`git -C <worktree_path> diff <sha you last reviewed>..HEAD`), not
-  the full diff again — see `skills/process-ticket/SKILL.md` Phase 4. The
+  the full diff again — see `skills/process-developer/SKILL.md` Phase 4. The
   orchestrator gives you the prior sha; ask for it if it is missing rather
   than guessing.
 - **On a CI-repair round:** the failing job's log excerpt, reviewed the same
@@ -206,7 +206,7 @@ degrades silently to your own review. Codex problems never block the pipeline.
    other command you run, it is never backgrounded (see the Hard Rules
    below).
 
-   Determine the default branch from context (threaded in by `process-ticket`'s
+   Determine the default branch from context (threaded in by `process-developer`'s
    precondition step); if it is not available, derive it via
    `git symbolic-ref --short refs/remotes/origin/HEAD`.
 
@@ -251,7 +251,7 @@ an empty or nit-only list.
 
 - **Then, additively, a structured JSON block** — the orchestrator uses this
   to tell a genuinely new finding apart from the same one recurring across
-  rounds (see `skills/process-ticket/SKILL.md`, "Round caps: progress or
+  rounds (see `skills/process-developer/SKILL.md`, "Round caps: progress or
   stagnation"). This is in *addition* to the prose above, never a
   replacement — parse the prose findings list as before if this block is
   ever missing or malformed:

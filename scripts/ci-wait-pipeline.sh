@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI wait for process-ticket Phase 6: resolve the project-issues CLI by
+# CI wait for process-developer Phase 6: resolve the project-issues CLI by
 # EXECUTING a candidate (on Windows / Git Bash the bare name can resolve to a
 # Linux ELF next to project-issues.exe -> rc 126/127), then pass the CLI's
 # stdout and exit code through unchanged. If no candidate is executable, exit 4
