@@ -8,8 +8,10 @@ Requirements covered (ids from the plan's test strategy):
 * R2 - a package that adds no CI job is ``ok`` (no extra round).
 * R3 - only a *successful* run for the workflow that gained the job clears it.
 * R4 - unusable input never yields ``verdict: ok`` (exit 1, stderr).
-* R5 - the script is model-free, allowlisted in SKILL.md, consulted on both
-  ``ci-green`` lanes, and discovered by the release-payload gate.
+* R5 - the script is offline/model-free (AST import check), allowlisted in
+  SKILL.md's Hard rules, and named by both ``ci-green`` lane bullets of
+  Phase 6 step 2. Release-payload discovery is not re-tested here: the
+  payload gate already runs in CI on the real tree.
 
 Exit-code contract of ``scripts/ci-promised-check.py``: 0 = ok, 2 = gap,
 1 = unusable input (never ok). Phase 6's routing of exit 1 (retry once, then
@@ -233,10 +235,15 @@ def test_unusable_input_never_reports_ok(tmp_path):
             "worktree": str(repo), "base": "main", "runs": []}),
         "unresolvable-base": _run(repo, [], base="no-such-branch"),
     }
+    cause = {"malformed-json": "json", "missing-key": "head",
+             "unresolvable-base": "no-such-branch"}
     for label, res in cases.items():
         assert res.returncode == 1, (label, res.stdout, res.stderr)
         assert "verdict: ok" not in res.stdout, label
-        assert res.stderr.strip(), f"{label}: diagnostic must go to stderr"
+        # A deliberate diagnostic, not an uncaught exception: Phase 6 quotes
+        # this stderr into a `blocked` event.
+        assert "Traceback" not in res.stderr, (label, res.stderr)
+        assert cause[label] in res.stderr.lower(), (label, res.stderr)
 
 
 def test_workflow_without_jobs_block_contributes_no_jobs(tmp_path):
@@ -251,32 +258,71 @@ def test_workflow_without_jobs_block_contributes_no_jobs(tmp_path):
 
 # --- R5: model-free, allowlisted, consulted on both green lanes -------------
 
+SCRIPT_REF = "scripts/ci-promised-check.py"
+# Modules that would make the script talk to a network or a model.
+_FORBIDDEN_IMPORT_ROOTS = {
+    "urllib", "urllib3", "http", "socket", "ssl", "ftplib", "smtplib",
+    "xmlrpc", "requests", "httpx", "aiohttp", "anthropic", "openai",
+}
+
+
 def _phase6(text):
-    m = re.search(r"^## Phase 6\b.*?(?=^## )", text, re.DOTALL | re.MULTILINE)
+    m = re.search(r"^## Phase 6 .*?(?=^## )", text, re.DOTALL | re.MULTILINE)
     assert m, "Phase 6 section not found"
     return m.group(0)
 
 
+def _bullets(block, indent):
+    """Split ``block`` into the list items that start at exactly ``indent``."""
+    items, cur = [], None
+    pat = re.compile(r"^" + " " * indent + r"- ")
+    for line in block.splitlines():
+        if pat.match(line):
+            cur = [line]
+            items.append(cur)
+        elif cur is not None and (line.startswith(" " * (indent + 1))
+                                  or not line.strip()):
+            cur.append(line)
+        else:
+            cur = None
+    return ["\n".join(i) for i in items]
+
+
 def test_script_is_model_free():
+    import ast
     assert SCRIPT.is_file()
-    text = SCRIPT.read_text(encoding="utf-8")
-    code = text.split('"""', 2)[-1]
-    code = "\n".join(l for l in code.splitlines()
-                     if not l.lstrip().startswith("#"))
-    # subprocess is deliberately allowed: the script shells out to git.
-    for token in ("claude", "anthropic", "requests", "urllib"):
-        assert token not in code.lower(), \
-            f"ci-promised-check.py must not invoke a model / network ({token})"
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Attribute) and node.attr in (
+                "system", "popen") and isinstance(node.value, ast.Name) \
+                and node.value.id == "os":
+            roots.add("os." + node.attr)
+    bad = roots & (_FORBIDDEN_IMPORT_ROOTS | {"os.system", "os.popen"})
+    assert not bad, f"ci-promised-check.py must be offline and model-free: {bad}"
 
 
-def test_script_is_allowlisted_and_consulted_on_both_green_lanes():
+def test_script_is_allowlisted_in_the_hard_rules_delegation_bullet():
     text = SKILL.read_text(encoding="utf-8")
-    m = re.search(r"Delegate everything.*?Nothing else", text, re.DOTALL)
-    assert m and "ci-promised-check.py" in m.group(0)
-    assert _phase6(text).count("ci-promised-check.py") >= 2
+    hard = text[text.index("\n## Hard rules"):]
+    bullets = _bullets(hard, 0)
+    delegate = [b for b in bullets if b.startswith("- **Delegate everything.**")]
+    assert len(delegate) == 1, "Hard rules must have one Delegate bullet"
+    assert SCRIPT_REF in delegate[0]
 
 
-def test_payload_gate_discovers_the_new_script():
-    from tools.check_plugin_payload import discover_references
-    paths = {r.path for r in discover_references(REPO_ROOT)}
-    assert "scripts/ci-promised-check.py" in paths
+def test_both_ci_green_lanes_of_phase_6_invoke_the_script():
+    phase6 = _phase6(SKILL.read_text(encoding="utf-8"))
+    step2 = re.search(r"^2\. .*?(?=^3\. )", phase6, re.DOTALL | re.MULTILINE)
+    assert step2, "Phase 6 step 2 not found"
+    lanes = _bullets(step2.group(0), 3)
+    exit0 = [b for b in lanes if b.lstrip("- ").startswith("`0`")]
+    exit4 = [b for b in lanes if b.lstrip("- ").startswith("`4`")]
+    assert len(exit0) == 1 and len(exit4) == 1, "green lane bullets not found"
+    assert "ci-green" in exit0[0] and "ci-green" in exit4[0]
+    assert SCRIPT_REF in exit0[0], "exit-0 lane must consult the check"
+    assert SCRIPT_REF in exit4[0], "degraded exit-4 lane must consult the check"
