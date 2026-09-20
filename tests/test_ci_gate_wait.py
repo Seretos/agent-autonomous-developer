@@ -113,7 +113,8 @@ def test_phase6_waits_with_one_blocking_foreground_wait_call():
     assert re.search(r"timeout\W{0,4}600000|600000\s*ms", item), "the Bash call needs timeout 600000"
     assert re.search(r"foreground", item, re.I) and re.search(r"blocking|in this turn", item, re.I)
     # any mention of subagents / dispatching in the wait step must be a prohibition
-    for x in sentences(item):
+    lead = flat(re.split(r"(?m)^[ 	]*[-*] ", _wait_call_item(), maxsplit=1)[0])  # before the exit-code list
+    for x in sentences(lead):
         if re.search(r"subagent|Agent\(|dispatch|Task\(", x, re.I):
             assert negated(x), f"wait step must not delegate the wait: {x!r}"
     assert not unnegated_hits(item, r"background|nohup|Monitor")
@@ -138,15 +139,25 @@ def test_phase6_routes_each_exit_code_to_its_own_destination():
 
 def test_phase6_round_accounting_45_minutes_three_rounds_failed():
     s = _phase6()
-    assert [x for x in sentences(s) if "45" in x], "the 45-minute round cap must be stated"
+    assert [x for x in sentences(s)
+            if re.search(r"\b45\b", x) and re.search(r"\bmin(ute)?s?\b", x, re.I)
+            and re.search(r"\b(round|cap)s?\b", x, re.I)], \
+        "the 45-minute round cap must be stated as minutes per round/cap"
     related = " ".join(x for x in sentences(s) if "45" in x or re.search(r"`2`|`3`|repeated", x))
     # a repeated 2/3 is charged against the 45 minutes, NOT counted as a new round
     assert re.search(r"(not|never|no)\b[^.;]{0,60}\b(new|another|separate|extra) round|same round", related, re.I)
     assert not unnegated_hits(s, r"(count|open|start)s? (as )?(a |an )?(new|another) round")
     assert [x for x in sentences(s) if re.search(r"\b(three|3)\b[^.;]*round", x, re.I) and "failed" in x], \
         "three CI rounds without green must end in `failed`"
-    for tool in ("list_pipeline_runs", "get_pipeline_run", "get_pipeline_step_log"):
-        assert tool in s, f"{tool} must stay in the diagnosis chain"
+    # the diagnosis chain lives on the exit-1 path, in this order
+    b1 = flat(_exit_bullet(s, 1))
+    assert "get_pipeline_run" in b1 and "get_pipeline_step_log" in b1, \
+        "exit 1 must run get_pipeline_run then get_pipeline_step_log"
+    assert b1.index("get_pipeline_run") < b1.index("get_pipeline_step_log"), \
+        "get_pipeline_run must come before get_pipeline_step_log"
+    # list_pipeline_runs is only the exit-4 fallback, not part of the exit-1 chain
+    assert "list_pipeline_runs" not in b1
+    assert "list_pipeline_runs" in flat(_exit_bullet(s, 4))
 
 
 def test_phase6_has_no_sleep_or_monitor():
@@ -194,9 +205,10 @@ def test_exit4_fallback_classifies_by_conclusion_only():
     block = flat(_exit_bullet(_phase6(), 4))
     assert "list_pipeline_runs" in block and not re.search(r"\bsleep\b", block, re.I)
     assert "conclusion" in block and re.search(r"\bonly\b", block, re.I)
-    for x in sentences(block):
-        if "ci-green" in x and not negated(x):
-            assert "success" in x and "failure" not in x, f"ci-green must hang on success alone: {x!r}"
+    green = [x for x in sentences(block) if "ci-green" in x and not negated(x)]
+    assert green, "the exit-4 fallback must define the ci-green outcome"
+    for x in green:
+        assert "success" in x and "failure" not in x, f"ci-green must hang on success alone: {x!r}"
     assert [x for x in sentences(block) if "failure" in x and re.search(r"ci-red|`1`|failure path", x)], \
         "failure must route to the ci-red / `1` path"
     other = [x for x in sentences(block)

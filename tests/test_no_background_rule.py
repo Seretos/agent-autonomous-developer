@@ -466,7 +466,11 @@ def _turn_end_rule_1() -> str:
 
 _PROHIBIT = re.compile(r"\b(never|no|forbidden|not|without exception|refus\w*|prohibit\w*)\b", re.I)
 _GENERALISING = re.compile(r"for example|e\.g\.|such as|\bany\b|general|class of|internally", re.I)
-_MARKER_PERMIT = re.compile(r"allowed|permitted|exempt|may be used|is fine|is acceptable", re.I)
+_MARKER_PERMIT = re.compile(
+    r"(?<!not )(?<!never )(?<!n't )\b(allowed|permitted|exempt\w*|may be used|is fine|is acceptable)\b", re.I
+)
+# a clause carrying one of these relaxes a prohibition instead of stating it
+_RELAXER = re.compile(r"no longer (forbidden|prohibited|refused|banned|blocked|disallowed)|not (forbidden|prohibited)|\bexcept\b|\bunless\b|\bwhen waiting\b|\bfor CI\b", re.I)
 _PERMIT = re.compile(r"allowed|permitted|sanction|exempt|the one|the only|may be used|is fine", re.I)
 
 
@@ -475,12 +479,21 @@ def _permit_sentences(text: str) -> list[str]:
     return [x for x in sentences(text) if "wait-pipeline" in x and _PERMIT.search(x) and not negated(x)]
 
 
+def _clauses(text: str) -> list[str]:
+    """Sentences further split at dashes and contrast words, so a prohibition
+    has to sit in the same clause as the marker it prohibits."""
+    return [c.strip() for x in sentences(text)
+            for c in re.split(r"\s[\u2014\u2013-]+\s|;|\b(?:but|however|although)\b", x) if c.strip()]
+
+
 def _assert_markers_prohibited_not_sanctioned(text: str) -> None:
     for marker in _MARKERS:
-        mentions = [x for x in sentences(text) if marker in x]
-        assert any(_PROHIBIT.search(x) for x in mentions), f"{marker} must stay listed as prohibited"
-        # no sentence may pair a marker with a permission
-        assert not [x for x in mentions if _MARKER_PERMIT.search(x) and not negated(x)],             f"{marker} must not be sanctioned"
+        mentions = [c for c in _clauses(text) if marker in c]
+        assert mentions, f"{marker} must stay named as prohibited"
+        assert any(_PROHIBIT.search(c) and not _RELAXER.search(c) for c in mentions), \
+            f"{marker} must be prohibited in the same clause that names it"
+        assert not [c for c in mentions if _MARKER_PERMIT.search(c) or _RELAXER.search(c)], \
+            f"{marker} must not be sanctioned or relaxed"
 
 
 def test_turn_end_rule_names_wait_pipeline_and_not_sleep_poll():
@@ -505,9 +518,15 @@ def test_agents_md_names_wait_pipeline_as_the_one_permitted_wait():
 
 def test_agents_md_ci_verdict_uses_wait_pipeline_and_records_no_verdict_policy():
     verdict = _md_section(_read(AGENTS_MD), "CI is the verdict", "## ")
-    assert [x for x in sentences(verdict) if "wait-pipeline" in x and not negated(x)]
+    assert [x for x in sentences(verdict)
+            if "wait-pipeline" in x and re.search(r"\bwait", x, re.I)
+            and not re.search(r"\b(never|not|no)\b[^.]{0,30}wait-pipeline", x, re.I)
+            and re.search(r"foreground|blocking|the one|the only|permitted|in[- ]turn", x, re.I)], \
+        "CI is the verdict must prescribe the foreground wait-pipeline call as the way to wait"
     assert not unnegated_hits(verdict, r"\bsleep\b"), "no sleep poll may be described as the wait"
-    policy = [x for x in sentences(verdict) if re.search(r"no[- ]verdict|exit `?5`?", x, re.I)]
+    policy = [x for x in sentences(verdict) if re.search(r"no[- ]verdict|exit `?5`?|retrigger", x, re.I)]
     assert policy, "AGENTS.md must record the no-verdict policy"
-    joined = " ".join(policy)
-    assert re.search(r"once|one retrigger|single retrigger", joined, re.I) and "blocked" in joined
+    assert [x for x in policy if re.search(r"retrigger", x, re.I)
+            and re.search(r"\bonce\b|\bone\b|single|first", x, re.I)], "first no-verdict: one retrigger"
+    assert [x for x in policy if "blocked" in x
+            and re.search(r"second|twice|again|already|repeat", x, re.I)], "second no-verdict: blocked"
