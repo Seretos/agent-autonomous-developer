@@ -63,6 +63,20 @@ def unnegated_hits(text: str, pattern: str) -> list[str]:
     return [x for x in sentences(text) if re.search(pattern, x, re.I) and not negated(x)]
 
 
+def clauses(text: str) -> list[str]:
+    """Sentences further split at commas, semicolons, dashes and brackets, so
+    a negation only poisons the clause it sits in."""
+    out: list[str] = []
+    for x in sentences(text):
+        out += [c.strip() for c in re.split(r"[,;()]| [—–] |, ", x) if c.strip()]
+    return out
+
+
+def clause_hit(text: str, *patterns: str) -> bool:
+    """True if one un-negated clause of `text` matches every pattern."""
+    return any(all(re.search(p, c, re.I) for p in patterns) and not negated(c) for c in clauses(text))
+
+
 def _section(text: str, heading_prefix: str, level: str = "## ") -> str:
     """Body of the heading starting with `heading_prefix`, up to the next
     heading of the same level."""
@@ -104,24 +118,53 @@ def _exit_bullet(section: str, code: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _wait_call_item() -> str:
-    """The single top-level Phase 6 numbered step prescribing the wait call."""
-    items = re.split(r"(?m)^(?=\d+\. )", _phase6())
-    hits = [i for i in items if re.search(r"`[^`]*project-issues wait-pipeline[^`]*`", flat(i))]
-    assert len(hits) == 1, "exactly one Phase 6 step must prescribe the wait-pipeline call"
-    return hits[0]
+def _call_window(item: str, call: str) -> str:
+    """The sentence that carries the call span, plus the next sentence only
+    when it opens with a pronoun/the-call (a continuation of the same thought)."""
+    sents = sentences(item)
+    for i, x in enumerate(sents):
+        if call in x:
+            nxt = sents[i + 1] if i + 1 < len(sents) else ""
+            return x + (" " + nxt if re.match(r"(It|This|That|The call|The wait)\b", nxt) else "")
+    raise AssertionError("call span not found in a sentence")
 
 
 def test_phase6_waits_with_one_blocking_foreground_wait_call():
-    item = flat(_wait_call_item())
+    items = re.split(r"(?m)^(?=\d+\. )", _phase6())
+    hits = [i for i, it in enumerate(items) if re.search(r"`[^`]*project-issues wait-pipeline[^`]*`", flat(it))]
+    assert len(hits) == 1, "exactly one Phase 6 step must prescribe the wait-pipeline call"
+    idx = hits[0]
+    item = flat(items[idx])
     spans = [c for c in re.findall(r"`([^`]+)`", item) if "wait-pipeline" in c and "--project" in c]
     assert len(spans) == 1, "exactly one call span carrying --project"
     call = spans[0]
     assert "--sha" in call and re.search(r"--timeout[ =]540\b", call), "call needs --sha and --timeout 540"
-    assert re.search(r"timeout\W{0,4}600000|600000\s*ms", item), "the Bash call needs timeout 600000"
-    assert re.search(r"foreground", item, re.I) and re.search(r"blocking|in this turn", item, re.I)
+    window = _call_window(item, call)
+    # F1: the Bash timeout of 600000 sits in the same clause/parenthesis as the
+    # invocation (Bash( ... call ... timeout: 600000 )), or in an un-negated
+    # Bash-naming clause of the same window. A stray mention of the number
+    # ("the harness caps a call at 600000 ms") does not count.
+    tclause = r"timeout\W{0,4}(?:to |of |at )?600000\b"
+    in_paren = (re.search(r"\bBash\(", call) and re.search(tclause, call)) or \
+        re.search(r"\bBash\([^()]*" + re.escape(call) + r"[^()]*" + tclause + r"[^()]*\)", window)
+    assert in_paren or clause_hit(window, r"\bBash\b", tclause), \
+        "the Bash call itself must carry timeout 600000 (not a stray mention of the number)"
+    # ...and 'foreground' / 'blocking' attach, un-negated, to the call's sentence
+    assert clause_hit(window, r"\bforeground\b"), "the call must be described as a foreground call, un-negated"
+    assert clause_hit(window, r"\bblocking\b|\bin this turn\b|\bown turn\b"), \
+        "the call must be described as blocking / in this turn, un-negated"
+    # F3: how <head> is obtained: `git -C <worktree_path> rev-parse HEAD`, in
+    # this step or the step just above, stated before the --sha call
+    ctx = flat((items[idx - 1] if idx > 0 else "") + " " + items[idx])
+    rp = list(re.finditer(r"rev-parse\s+HEAD", ctx))
+    assert rp, "the wait step (or the one above) must say how <head> is obtained: rev-parse HEAD"
+    assert any(m.start() < ctx.index(call) for m in rp), "rev-parse HEAD must precede the --sha call"
+    assert [x for x in sentences(ctx)
+            if re.search(r"rev-parse\s+HEAD", x) and re.search(r"\bgit\b.*-C\b|-C\b.*\bgit\b", x)
+            and re.search(r"\bhead\b", x, re.I) and not negated(x)], \
+        "rev-parse must be an un-negated `git -C <worktree_path> rev-parse HEAD` bound to head"
     # any mention of subagents / dispatching in the wait step must be a prohibition
-    lead = flat(re.split(r"(?m)^[ 	]*[-*] ", _wait_call_item(), maxsplit=1)[0])  # before the exit-code list
+    lead = flat(re.split(r"(?m)^[ 	]*[-*] ", items[idx], maxsplit=1)[0])  # before the exit-code list
     for x in sentences(lead):
         if re.search(r"subagent|Agent\(|dispatch|Task\(", x, re.I):
             assert negated(x), f"wait step must not delegate the wait: {x!r}"
@@ -219,7 +262,12 @@ def test_exit5_first_retrigger_then_second_blocked_never_green_red_or_fix():
     first, second = block[: m.start()], block[m.start():]
     # first occurrence: one retrigger (empty commit, push, re-read head, `i` round)
     assert re.search(r"first|once", first, re.I)
-    assert "--allow-empty" in first and "push" in first
+    # F2: each token is bound to an un-negated clause of a sentence about the
+    # retrigger (a prohibition of these very commands must not satisfy it)
+    retrig = r"re-?trigger|empty commit|--allow-empty|re-?run"
+    assert [x for x in sentences(first) if re.search(retrig, x, re.I)
+            and clause_hit(x, r"--allow-empty", r"\bpush")], \
+        "the retrigger sentence must instruct an empty commit (--allow-empty) and a push, not prohibit them"
     # the retrigger is followed by a re-read of head/sha and a fresh wait on it
     assert [x for x in sentences(first)
             if re.search(r"\b(head|sha)\b", x, re.I)
@@ -227,11 +275,22 @@ def test_exit5_first_retrigger_then_second_blocked_never_green_red_or_fix():
             and re.search(r"wait|again|re-?run", x, re.I)
             and not re.search(r"\bsame (head|sha|commit)\b", x, re.I)], \
         "the retrigger must re-read head/the new sha and wait again on it (not the old head)"
-    assert "`i`" in first, "the retrigger is an infrastructure round"
-    # second occurrence: blocked, quoting state and the run urls; no third attempt
-    assert "blocked" in second
-    assert re.search(r"\burls?\b", second, re.I) and re.search(r"\bstate\b", second)
-    assert "--allow-empty" not in second
+    fs = sentences(first)
+    assert [x for k, x in enumerate(fs)
+            if clause_hit(x, r"`i`|\bi[- ]round|infrastructure round")
+            and (re.search(retrig, x, re.I) or (k > 0 and re.search(retrig, fs[k - 1], re.I)))], \
+        "the retrigger must be counted as an infrastructure (`i`) round, in a sentence about the retrigger"
+    # second occurrence: `blocked`, no continued wait / retrigger, state + url quoted
+    ss = sentences(second)
+    again = r"wait again|re-?wait|re-?trigger|--allow-empty|re-?run|poll again|try again|another (attempt|wait|retrigger)"
+    bk = [k for k, x in enumerate(ss) if clause_hit(x, r"\bblocked\b")]
+    assert bk, "the second occurrence must be `blocked` (un-negated)"
+    assert not [x for x in ss if [c for c in clauses(x) if re.search(again, c, re.I) and not negated(c)]], \
+        "the second occurrence must not wait again or retrigger again"
+    k = bk[0]
+    window = " ".join(ss[k: k + 2])
+    assert clause_hit(window, r"\bstate\b") and clause_hit(window, r"\burls?\b"), \
+        "the blocked sentence (or its continuation) must quote state and the run urls, un-negated"
     # never a verdict event or a fix round as an action
     assert not unnegated_hits(block, r"ci-green|ci-red")
     assert not unnegated_hits(block, r"developer|fix round")
@@ -241,7 +300,16 @@ def test_exit5_first_retrigger_then_second_blocked_never_green_red_or_fix():
 
 def test_exit4_fallback_classifies_by_conclusion_only():
     block = flat(_exit_bullet(_phase6(), 4))
-    assert "list_pipeline_runs" in block and not re.search(r"\bsleep\b", block, re.I)
+    assert not re.search(r"\bsleep\b", block, re.I)
+    # F4: list_pipeline_runs with commit_sha, called once (not a polling loop)
+    lpr = [x for x in sentences(block) if "list_pipeline_runs" in x]
+    assert [x for x in lpr if "commit_sha" in x
+            and re.search(r"\b(one|a single|single|once)\b", x, re.I) and not negated(x)
+            and re.search(r"\b(one|a single|single) (call|lookup|request|query)\b|\bonce\b|\bone[- ]shot\b", x, re.I)], \
+        "list_pipeline_runs(commit_sha=...) must be prescribed as a single call, un-negated"
+    loop = r"repeat\w*|\buntil\b|poll\w*|\bloops?\b|looping|re-?read\w*|keep (re-?)?(read|call|check|query)\w*"
+    assert not [c for x in lpr for c in clauses(x) if re.search(loop, c, re.I) and not negated(c)], \
+        "list_pipeline_runs on the exit-4 path must not be attached to repeat/until/poll/loop language"
     assert "conclusion" in block and re.search(r"\bonly\b", block, re.I)
     green = [x for x in sentences(block) if "ci-green" in x and not negated(x)]
     assert green, "the exit-4 fallback must define the ci-green outcome"
