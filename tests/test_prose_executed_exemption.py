@@ -152,18 +152,29 @@ def test_fixture_prose_only_diff_is_all_prose():
 
 
 def test_diff_without_hunks_and_unparseable_diff_exit_2(tmp_path):
+    # --repo-root is always supplied: exit 2 must come from the diff content,
+    # not from a script that merely requires the option.
     empty = tmp_path / "empty.diff"
     empty.write_text("", encoding="utf-8")
-    assert _role_check("--diff", str(empty)).returncode == 2
     garbage = tmp_path / "garbage.diff"
     garbage.write_text("this is not a diff\n@@ nonsense @@\n", encoding="utf-8")
-    assert _role_check("--diff", str(garbage)).returncode == 2
+    # A missing script also exits 2 (interpreter cannot open it); require the
+    # script so that exit code cannot be mistaken for diff handling.
+    assert ROLE_CHECK.is_file(), "scripts/critic/prose-role-check.py does not exist"
+    for diff_file in (empty, garbage):
+        result = _role_check("--diff", str(diff_file), "--repo-root", str(REPO_ROOT))
+        assert result.returncode == 2, (diff_file.name, result.stdout, result.stderr)
+        assert result.stderr.strip(), f"{diff_file.name}: exit 2 must explain itself on stderr"
+        assert not _lines(result.stdout, "PROSE"), result.stdout
 
 
 def test_prose_path_missing_under_repo_root_is_still_prose(tmp_path):
     result = _role_check("--diff", "-", "--repo-root", str(tmp_path),
                          stdin=_hunk("agents/does-not-exist.md", 1, 2))
     assert result.returncode == 0, result.stdout + result.stderr
+    prose = _lines(result.stdout, "PROSE")
+    assert any("agents/does-not-exist.md:1-2" in l for l in prose), result.stdout
+    assert not _lines(result.stdout, "CODE"), result.stdout
 
 
 def test_claude_and_agents_md_at_any_depth_and_constraints_are_prose():
@@ -195,6 +206,10 @@ def test_code_hunks_exit_1_and_are_named_while_prose_hunk_stays_prose():
     assert any(f"scripts/critic/plan-critic-package.sh:{set_line}-{set_line + 1}" in l
                for l in code), result.stdout
     assert any("agents/reviewer.md:30-32" in l for l in _lines(result.stdout, "PROSE")), result.stdout
+    # Format: `CODE <path>:<start>-<end> <reason>` -- every CODE line names why.
+    for line in _lines(result.stdout, "CODE"):
+        parts = line.split(None, 2)
+        assert len(parts) == 3 and parts[2].strip(), f"CODE line without a reason: {line!r}"
 
 
 def test_pure_deletion_in_package_script_fails_closed():
@@ -267,6 +282,21 @@ def _role_verdict_for_declared_paths(plan_text: str):
     return _role_check("--diff", "-", "--repo-root", str(REPO_ROOT), stdin=diff)
 
 
+def _assert_exemption_names_the_mechanical_gate(paragraph: str, lens: str) -> None:
+    """The exemption's condition must refer to the mechanical role check: the
+    paragraph must name a script that exists under scripts/critic/, so a
+    bare token insertion that refers to nothing fails. Residual inherent
+    weakness (stated, not hidden): no packager can prove a model obeys the
+    sentence, so wording that names the script but still demands the opposite
+    is not caught here -- that is a review-time judgement."""
+    named = re.findall(r"[\w./-]*prose-role-check\.py", paragraph)
+    assert named, f"{lens}: exemption does not name the mechanical gate prose-role-check.py"
+    for ref in named:
+        assert (CRITIC / pathlib.PurePosixPath(ref).name).is_file(), (
+            f"{lens}: names {ref} but it does not exist under scripts/critic/"
+        )
+
+
 def test_exemption_sits_inside_the_108_exemption_list_of_the_owning_lens(tmp_path):
     """Driving test for R3. Assembly is checked structurally, in the paragraph
     that carries each #108 clause: the prose-executed item must be a member of
@@ -288,6 +318,7 @@ def test_exemption_sits_inside_the_108_exemption_list_of_the_owning_lens(tmp_pat
     for sibling in SIBLING_EXEMPTIONS:
         assert sibling in taut_para
     assert taut_para.index("critical") < EXEMPTION_RE.search(taut_para).start()
+    _assert_exemption_names_the_mechanical_gate(taut_para, "tautology")
 
     blocks, heads = {}, {}
     for lens in ("missed", "misread", "untestable", "simplifier"):
@@ -305,6 +336,7 @@ def test_exemption_sits_inside_the_108_exemption_list_of_the_owning_lens(tmp_pat
         "prose-executed exemption is not inside the untestable #108 carve-out's exemption list"
     )
     assert "Substitute execution" in unt_para and "ci-evidence" in unt_para
+    _assert_exemption_names_the_mechanical_gate(unt_para, "untestable")
 
     for lens in ("missed", "misread", "simplifier"):
         assert not EXEMPTION_RE.search(blocks[lens]), f"{lens} lens block must not carry it"
