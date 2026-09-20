@@ -17,6 +17,14 @@ event and must NOT contain the wrong one. Keyword sets tolerate rewording
        artefacts.
   R3 - exit 5 (no verdict) and a non-success/non-failure conclusion on the
        exit-4 path never map to green/red; retrigger once (`i`), then blocked.
+
+Scope note (test-critic F1, by design not tightenable): the criterion "the
+gate waits" is ultimately a live behaviour of the `project-issues
+wait-pipeline` CLI, which is not installed in this repo and cannot be invoked
+by an in-repo test; the plan records the live check as a post-release
+Dependency. This contract is therefore PROSE-VERIFIED here (structure and
+routing of SKILL.md) and the live invocation is a post-release observation.
+No fake CLI harness is built on purpose: it would only test itself.
 """
 
 from __future__ import annotations
@@ -125,6 +133,10 @@ def test_phase6_routes_each_exit_code_to_its_own_destination():
     # 0 -> ci-green only
     b0 = flat(_exit_bullet(s, 0))
     assert "ci-green" in b0 and "ci-red" not in b0 and not re.search(r"developer|fix round", b0, re.I)
+    # the run id comes from the command's own stdout JSON, not from a lookup
+    assert "ci_run" in b0 and re.search(r"\bruns\b", b0) and re.search(r"json|stdout", b0, re.I), \
+        "exit 0 must take ci_run (the run id) from `runs` in the command's stdout JSON"
+    assert "list_pipeline_runs" not in b0, "exit 0 must not re-look-up the run"
     # 1 -> ci-red (failure path), never ci-green
     b1 = flat(_exit_bullet(s, 1))
     assert "ci-red" in b1 and "ci-green" not in b1
@@ -146,6 +158,12 @@ def test_phase6_round_accounting_45_minutes_three_rounds_failed():
     related = " ".join(x for x in sentences(s) if "45" in x or re.search(r"`2`|`3`|repeated", x))
     # a repeated 2/3 is charged against the 45 minutes, NOT counted as a new round
     assert re.search(r"(not|never|no)\b[^.;]{0,60}\b(new|another|separate|extra) round|same round", related, re.I)
+    # ...and the sentence that says so ties the repeat to the 45-minute budget
+    assert [x for x in sentences(s)
+            if re.search(r"\b45\b", x) and re.search(r"\bmin", x, re.I)
+            and re.search(r"`2`|`3`|repeat|again", x, re.I)
+            and re.search(r"charg|count|against|budget|within|toward|consum|deduct", x, re.I)], \
+        "a repeated `2`/`3` must be stated as charged against the 45 minutes"
     assert not unnegated_hits(s, r"(count|open|start)s? (as )?(a |an )?(new|another) round")
     assert [x for x in sentences(s) if re.search(r"\b(three|3)\b[^.;]*round", x, re.I) and "failed" in x], \
         "three CI rounds without green must end in `failed`"
@@ -174,6 +192,12 @@ def test_phase5_step4_instructs_linking_run_dir_and_event_comments():
     assert [x for x in hits if re.search(r"\b(link|include|add|append|list|Run artefacts)", x, re.I)
             and not negated(x)], "that sentence must be a positive instruction, not a prohibition"
     assert [x for x in hits if re.search(r"URL|link", x, re.I)], "event comments must be linked by URL"
+    # the artefacts line precedes the `Closes #<n>` lines in the composed body
+    step = flat(m.group(0))
+    closes = step.find("Closes #")
+    assert closes >= 0, "step 4 must still name the Closes lines"
+    assert any(step.find(x) < closes or re.search(r"before[^.;]*Closes", x) for x in hits), \
+        "the run-artefacts link must come before the Closes lines"
 
 
 # ---------------------------------------------------------------------------

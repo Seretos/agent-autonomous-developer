@@ -504,6 +504,13 @@ def test_turn_end_rule_names_wait_pipeline_and_not_sleep_poll():
     _assert_markers_prohibited_not_sanctioned(rule)
 
 
+def test_skill_hard_rules_bash_allowance_names_wait_pipeline_not_sleep():
+    hard = _md_section(_read(SKILL_MD), "Hard rules", "## ")
+    assert "wait-pipeline" in hard, "the Bash allowance must name the wait-pipeline call"
+    assert not re.search(r"\bsleep\b|Start-Sleep", hard, re.I), "no sleep may remain in the Bash allowance"
+    assert not unnegated_hits(hard, r"\bMonitor\b"), "Monitor must not be allowed"
+
+
 def test_agents_md_names_wait_pipeline_as_the_one_permitted_wait():
     text = _read(AGENTS_MD)
     nothing = _md_section(text, "Nothing runs in the background", "## ")
