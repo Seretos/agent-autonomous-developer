@@ -812,18 +812,19 @@ A local PASS was a pre-filter. The pipeline decides.
      be used here (missing, too old for `wait-pipeline`, or not executable —
      the wrapper's stderr lists the candidates it tried). This is the
      degraded-wait path, never a terminal blocker on first occurrence and never
-     a diagnosis of the platform. Make one
-     `list_pipeline_runs(project_id, commit_sha=head, limit=20)` and classify
+     a diagnosis of the platform. Once the CLI proved unusable in a round, do
+     not run the wrapper again in that round: every later wait goes straight to
+     `list_pipeline_runs(project_id, commit_sha=head, limit=20)`, classified
      by `conclusion`, not by completion: all `success` → `ci-green`; any
      `failure` → the `1` path; a run that ended with another conclusion
      (cancelled, timed out, skipped, neutral) → the no-verdict path below;
-     nothing completed → an `i` round and a retrigger (step 5). A second
-     consecutive exit `4` in the same round, or a lookup that fails as well,
-     → `blocked`, naming what you tried and asking for the CLI to be
-     installed or updated. Within the round's 45-minute budget you may repeat
-     the `list_pipeline_runs` check while runs are still in progress, but
-     with no pacing command and never detached; `blocked` is posted only after the
-     fallback itself also fails. Never fall back to a sleeping poll.
+     runs still in progress → repeat the lookup inside the round's 45-minute
+     budget, with no pacing command and never detached; nothing registered
+     and the budget spent → an `i` round and a retrigger (step 5). Post
+     `blocked`, naming what you tried and asking for the CLI to be installed
+     or updated, only when that lookup itself fails or the round budget or the
+     `i`-round cap runs out without a verdict — never after the wrapper's
+     failure alone. Never fall back to a sleeping poll.
    - `5` — no verdict: the runs ended without success or failure. Never
      `ci-green`, never `ci-red`, never a fix round. The first time this
      attempt: retrigger once (step 5), one `i` round. The second time this
