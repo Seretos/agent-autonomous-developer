@@ -1,0 +1,16 @@
+diff --git a/scripts/critic/plan-critic-merge.py b/scripts/critic/plan-critic-merge.py
+index 1111111..2222222 100644
+--- a/scripts/critic/plan-critic-merge.py
++++ b/scripts/critic/plan-critic-merge.py
+@@ -5,2 +5,3 @@ context
+ unchanged line
++x = 1
+ unchanged line
+diff --git a/agents/reviewer.md b/agents/reviewer.md
+index 1111111..2222222 100644
+--- a/agents/reviewer.md
++++ b/agents/reviewer.md
+@@ -30,2 +30,3 @@ context
+ unchanged line
++added prose line
+ unchanged line

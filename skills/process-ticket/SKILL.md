@@ -716,7 +716,12 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    append a `## Codex notes (not blocking)` section listing each such finding
    (title + `what`, file when available) — a waived second opinion stays
    visible to a human in the PR instead of silently disappearing. Omit the
-   section entirely when there are none. **Then check the aggregate length
+   section entirely when there are none. Likewise append a
+   `## Not covered by tests` section (ticket #123) with one line per plan
+   requirement declared `none`, `ci-evidence` or `Prose-executed:` —
+   `<requirement> — <kind> — <reason>` — so a human sees at merge time what
+   went through without a driving test. Omit it when every requirement is
+   `driving-test` or `existing-suite`. **Then check the aggregate length
    of the whole composed body.** The per-item cap
    above bounds each requirement's own output but not their sum: a package
    with several driving-test requirements, each near its per-item cap, can
