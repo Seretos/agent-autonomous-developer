@@ -2,7 +2,7 @@
  * hooks/check-session-turn-end.mjs
  *
  * Stop hook: the mechanical backstop for ticket #23 — the top-level
- * `process-ticket` session ending its turn while work is still outstanding.
+ * `process-developer` session ending its turn while work is still outstanding.
  *
  * ## Why this exists one level above the #93 hook
  *
@@ -26,7 +26,7 @@
  *
  * ## What it checks
  *
- * Two independent conditions, both scoped to a live `process-ticket` run:
+ * Two independent conditions, both scoped to a live `process-developer` run:
  *
  *   A. **Unresolved backgrounded command** — the #23 anti-pattern proper.
  *      Same detection as the #93 SubagentStop hook (shared in lib/), because
@@ -50,7 +50,7 @@
  *
  * A Stop hook fires on *every* turn end of *every* session that loads this
  * plugin, including a human's interactive one. Blocking those would be
- * intolerable. The gate is the presence of `<cwd>/.adev/`: `process-ticket`
+ * intolerable. The gate is the presence of `<cwd>/.adev/`: `process-developer`
  * creates `<worktree_path>/.adev/<package>-<attempt>/` in its preconditions,
  * and `start-package-session.sh` starts the session with cwd = the worktree.
  * No `.adev/` directory, no pipeline run, no hook.
@@ -108,7 +108,7 @@ async function main() {
   // --- 2. Never block twice on the same turn ---
   if (payload.stop_hook_active === true) process.exit(0);
 
-  // --- 3. Scope gate: only inside a live process-ticket run ---
+  // --- 3. Scope gate: only inside a live process-developer run ---
   const cwd = String(payload.cwd ?? "");
   if (!cwd || !existsSync(path.join(cwd, ".adev"))) process.exit(0);
 
@@ -117,7 +117,7 @@ async function main() {
   const unresolved = unresolvedBackgroundCommand(lines);
   if (unresolved) {
     block(
-      "process-ticket: the turn is ending with a backgrounded command still " +
+      "process-developer: the turn is ending with a backgrounded command still " +
         `unresolved (${unresolved}). This is the ticket #23 anti-pattern. ` +
         "This session is headless (claude -p): there is no loop that wakes it " +
         "after the turn ends, so ENDING THE TURN ENDS THE PROCESS and that " +
@@ -142,7 +142,7 @@ async function main() {
     const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) ?? "(unknown)";
     const changed = dirty === "" ? 0 : dirty.split(/\r?\n/).length;
     block(
-      "process-ticket: the turn is ending with work that no remote has " +
+      "process-developer: the turn is ending with work that no remote has " +
         `(branch ${branch}: ${changed} changed path(s), ${unpushedCount} ` +
         "unpushed commit(s)). The caller removes this worktree after a failed " +
         "attempt, so anything not pushed is destroyed and the retry pays for " +

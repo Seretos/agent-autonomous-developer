@@ -11,7 +11,7 @@ import pathlib
 import re
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKILL = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+SKILL = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
 AGENTS = REPO_ROOT / "agents"
 CRITIC = REPO_ROOT / "scripts" / "critic"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
@@ -45,14 +45,14 @@ def _frontmatter(text: str) -> dict:
 
 # --- skill surface ----------------------------------------------------------
 
-def test_only_skill_is_process_ticket():
+def test_only_skill_is_process_developer():
     skills = sorted(p.name for p in (REPO_ROOT / "skills").iterdir() if p.is_dir())
-    assert skills == ["process-ticket"]
+    assert skills == ["process-developer"]
 
 
-def test_process_ticket_is_not_model_invocable():
+def test_process_developer_is_not_model_invocable():
     fm = _frontmatter(_read(SKILL))
-    assert fm.get("name") == "process-ticket"
+    assert fm.get("name") == "process-developer"
     assert fm.get("disable-model-invocation") == "true"
 
 

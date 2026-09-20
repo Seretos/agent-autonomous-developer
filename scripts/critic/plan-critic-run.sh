@@ -46,7 +46,7 @@
 # EFFORT PER LENS (ticket #105)
 #
 # Only the missed/misread lenses can produce a blocking finding (see plan-critic-merge.py and
-# skills/process-ticket/SKILL.md's Phase 2); untestable/simplifier are always notes. Effort is
+# skills/process-developer/SKILL.md's Phase 2); untestable/simplifier are always notes. Effort is
 # split accordingly: missed/misread run at --effort high, untestable/simplifier at --effort medium.
 # --effort is not one of the isolation flags check-critic-isolation.sh enforces (see that script's
 # FLAGS list), so varying it per lens does not touch isolation.

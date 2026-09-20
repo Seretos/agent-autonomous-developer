@@ -21,7 +21,7 @@ the tests-only RED phase):
      `severity == "blocking"` and `kind != "codex"`. Nothing extra is printed
      for gates `plan-critic`/`test-critic`.
 
-`skills/process-ticket/SKILL.md` Phase 4 will read `REVIEW_OWN_BLOCKING` to
+`skills/process-developer/SKILL.md` Phase 4 will read `REVIEW_OWN_BLOCKING` to
 decide routing (implement phase, not here).
 
 Requirement 3 (the cross-file "kind":"codex" token contract between
@@ -52,7 +52,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 AGENTS = REPO_ROOT / "agents"
 CRITIC = REPO_ROOT / "scripts" / "critic"
-SKILL = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+SKILL = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
 SCRIPT = CRITIC / "stagnation-check.py"
 
 
@@ -234,7 +234,7 @@ RECORDED_SEQUENCES = {
 
 def _walk_sequence(sequence: str, tmp_path: pathlib.Path, seq_name: str):
     """Replays one recorded round sequence through the real script, one
-    shared history file for the whole sequence (matching how process-ticket
+    shared history file for the whole sequence (matching how process-developer
     reuses one generation history file across rounds). Returns the list of
     (result, own_blocking_count) tuples, one per round."""
     history_path = tmp_path / f"{seq_name}-history.json"

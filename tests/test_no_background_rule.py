@@ -59,7 +59,7 @@ LIB_PATH = REPO_ROOT / "hooks" / "lib" / "turn-end-scan.mjs"
 HOOKS_JSON = REPO_ROOT / "hooks" / "hooks.json"
 DEVELOPER_MD = REPO_ROOT / "agents" / "developer.md"
 REVIEWER_MD = REPO_ROOT / "agents" / "reviewer.md"
-SKILL_MD = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+SKILL_MD = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
 
 MARKER = "[adev-no-background]"

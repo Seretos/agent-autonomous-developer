@@ -1,10 +1,10 @@
 ---
-name: process-ticket
+name: process-developer
 disable-model-invocation: true
-description: Takes ONE work package (a ticket id or an epic id = all its child tickets) from a prepared worktree on a feature branch all the way to a pull request with a GREEN CI pipeline — orients on the branch first (a fresh branch runs the full pipeline; a branch that already has an open, CI-green PR and a moved base runs a rebase-and-repair pass instead), planner, isolated plan critique, test-first developer, isolated test critique, reviewer (+ optional Codex pass), push (reusing an existing open PR for its head rather than opening a second), CI gate with self-repair, every step reported as a machine-readable ticket comment. The plan-critic/test-critic/review gates keep going past their nominal 3-round cap as long as each round surfaces a genuinely new finding (fingerprinted, deterministic check); once a gate only repeats findings already seen this generation, it either triggers one replan (a fresh planner dispatch with the full findings history folded in, round counters reset) or, past generation 2, fails. Never asks a human; escalates by writing a `blocked` event and ending. Invoked as "/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>". Never creates worktrees or branches, never touches board columns, never selects tickets — the caller owns those.
+description: Takes ONE work package (a ticket id or an epic id = all its child tickets) from a prepared worktree on a feature branch all the way to a pull request with a GREEN CI pipeline — orients on the branch first (a fresh branch runs the full pipeline; a branch that already has an open, CI-green PR and a moved base runs a rebase-and-repair pass instead), planner, isolated plan critique, test-first developer, isolated test critique, reviewer (+ optional Codex pass), push (reusing an existing open PR for its head rather than opening a second), CI gate with self-repair, every step reported as a machine-readable ticket comment. The plan-critic/test-critic/review gates keep going past their nominal 3-round cap as long as each round surfaces a genuinely new finding (fingerprinted, deterministic check); once a gate only repeats findings already seen this generation, it either triggers one replan (a fresh planner dispatch with the full findings history folded in, round counters reset) or, past generation 2, fails. Never asks a human; escalates by writing a `blocked` event and ending. Invoked as "/agent-autonomous-developer:process-developer package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>". Never creates worktrees or branches, never touches board columns, never selects tickets — the caller owns those.
 ---
 
-# process-ticket — one work package → one green PR
+# process-developer — one work package → one green PR
 
 You drive one **work package** from a prepared worktree to a pull request whose
 CI pipeline is green. You do it exclusively through subagents and the bundled
@@ -305,7 +305,7 @@ Triggered by `stagnation` on **plan-critic**, **test-critic**, or **review**
    later `failed` needs to see *what* kept recurring, not just that
    something did), and the new `generation` value.
 5. Continue the pipeline at **Phase 2** (plan-critic against the new plan) in
-   the **same turn** — this is not a new dispatch of `process-ticket`, it is
+   the **same turn** — this is not a new dispatch of `process-developer`, it is
    this session continuing. If the process dies mid-replan, the latest event
    is `replan-triggered`, which is non-terminal — the caller's existing
    "no terminal event" handling applies unchanged (see the caller's own
@@ -718,7 +718,7 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    visible to a human in the PR instead of silently disappearing. Omit the
    section entirely when there are none. Likewise append a
    `## Not covered by tests` section (ticket #123) with one line per plan
-   requirement declared `none`, `ci-evidence` or `Prose-executed:` —
+   requirement declared `none` or `ci-evidence` —
    `<requirement> — <kind> — <reason>` — so a human sees at merge time what
    went through without a driving test. Omit it when every requirement is
    `driving-test` or `existing-suite`. **Then check the aggregate length

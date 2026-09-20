@@ -205,13 +205,11 @@ def test_discover_references_ignores_bare_plugin_root_mention():
     """
     references = cpp.discover_references(REPO_ROOT)
     reviewer_refs = [r for r in references if r.source_file == "agents/reviewer.md"]
-    # Only the real "${CLAUDE_PLUGIN_ROOT}/<path>" references should be found:
-    # the Codex pass and (ticket #123) the prose-role check.
-    expected = {"scripts/codex-review.mjs", "scripts/critic/prose-role-check.py"}
-    assert {r.path for r in reviewer_refs} == expected, (
+    # Only the one real, fenced-code-block reference should be found.
+    assert all(r.path == "scripts/codex-review.mjs" for r in reviewer_refs), (
         f"Unexpected references discovered in agents/reviewer.md: {reviewer_refs!r}"
     )
-    assert len(reviewer_refs) == len(expected)
+    assert len(reviewer_refs) == 1
 
 
 def test_discover_references_finds_reference_inside_fenced_code_block():

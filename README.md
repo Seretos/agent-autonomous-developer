@@ -16,7 +16,7 @@ agent-project-issues MCP (see [Dependencies](#dependencies)).
 One skill, not model-invocable — the caller invokes it by slash command from a worktree:
 
 ```
-/agent-autonomous-developer:process-ticket package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>
+/agent-autonomous-developer:process-developer package=<id> project_id=<project> worktree_path=<abs path> base_branch=<branch>
 ```
 
 | Phase | Agent | Result |
@@ -103,8 +103,13 @@ prepares a worktree per package and starts a headless session in it. To drive on
 hand, prepare a worktree on a feature branch and run, from inside it:
 
 ```
-/agent-autonomous-developer:process-ticket package=42 project_id=<project> worktree_path=<abs path> base_branch=main
+/agent-autonomous-developer:process-developer package=42 project_id=<project> worktree_path=<abs path> base_branch=main
 ```
+
+> **Breaking change (ticket #126):** the entry skill was called `process-ticket` until this
+> release. There is no alias for the old name — a caller that dispatches by slash command
+> (`agent-ticket-orchestrator`, `agent-batch-reviewer`, your own scripts) needs the matching
+> version that invokes `process-developer`. Parameters, events and behaviour are unchanged.
 
 > **Scope:** any language — the worker agents **auto-detect** the project's stack and test
 > command (`python -m pytest`, `npm test`, `go test`, `cargo test`, …) from its config files.

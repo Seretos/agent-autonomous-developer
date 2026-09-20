@@ -1,6 +1,6 @@
 ---
 name: plan-critic
-description: Obtains an independent critique of the planner's PLAN_FINAL by running the bundled isolated four-lens plan-critique runner (four separate Claude CLI processes with no project context, no tools, no MCP, merged by a model-free script) and returns the merged findings with a severity summary. Never decides what happens next, never edits the plan, never writes code. Invoked by process-ticket after PLAN_FINAL, as a fresh unnamed synchronous dispatch on every critique round.
+description: Obtains an independent critique of the planner's PLAN_FINAL by running the bundled isolated four-lens plan-critique runner (four separate Claude CLI processes with no project context, no tools, no MCP, merged by a model-free script) and returns the merged findings with a severity summary. Never decides what happens next, never edits the plan, never writes code. Invoked by process-developer after PLAN_FINAL, as a fresh unnamed synchronous dispatch on every critique round.
 tools: Read, Write, Bash
 model: sonnet
 ---

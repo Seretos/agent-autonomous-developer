@@ -20,10 +20,7 @@ against.
   config, a right heading over the wrong behaviour, or a present-but-unused JSON key can satisfy
   it as easily as a correct implementation. Such a requirement should have been declared
   `ci-evidence` or `none`, not `driving-test` (the plan misdeclared the requirement, not that
-  the test author wrote it badly). A prose file a model executes (a skill, an agent
-  definition, a prompt, AGENTS.md) is the same case: its requirement is declared `none` or
-  `ci-evidence` with a `Prose-executed:` line and its decidable part lives in a script with real
-  behaviour tests, so a `driving-test` requirement is never a string check on such a file.
+  the test author wrote it badly).
 - One driving test per requirement the plan declares evidence kind `driving-test` for is the
   minimum; additional coverage of behaviour that already exists may be present and may already
   pass. A passing test for existing behaviour is not a defect, and a driving test is not weaker for

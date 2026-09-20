@@ -1,5 +1,5 @@
 """
-Regression tests for ticket #23: the top-level `process-ticket` session ends
+Regression tests for ticket #23: the top-level `process-developer` session ends
 its turn while work is still outstanding.
 
 #93 established the rule for *subagents* (a subagent's turn ending terminates
@@ -58,7 +58,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 HOOK_PATH = REPO_ROOT / "hooks" / "check-session-turn-end.mjs"
 LIB_PATH = REPO_ROOT / "hooks" / "lib" / "turn-end-scan.mjs"
 HOOKS_JSON = REPO_ROOT / "hooks" / "hooks.json"
-SKILL_MD = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
+SKILL_MD = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
 
 

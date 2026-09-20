@@ -20,7 +20,7 @@
  * A backgrounded command is wrong the moment it is *issued*, not the moment
  * the turn ends. So this hook refuses it up front: there is no case in
  * this pipeline where backgrounding is right (agents/developer.md step 4,
- * skills/process-ticket/SKILL.md "Turn-end discipline"). A suite that does
+ * skills/process-developer/SKILL.md "Turn-end discipline"). A suite that does
  * not fit one Bash call is run as synchronous chunks, one foreground call
  * each, with an explicit `timeout`.
  *
@@ -39,8 +39,8 @@
  * A PreToolUse hook fires in every session that loads this plugin,
  * including a human's interactive one, where `Monitor` and background
  * commands are legitimate. The hook activates only when
- *   (a) `<cwd>/.adev/` exists — a live `process-ticket` run (same gate as
- *       the Stop hook; `process-ticket` creates it in its preconditions and
+ *   (a) `<cwd>/.adev/` exists — a live `process-developer` run (same gate as
+ *       the Stop hook; `process-developer` creates it in its preconditions and
  *       the caller starts the session with cwd = the worktree), or
  *   (b) the payload's `agent_type` names one of this plugin's subagents
  *       (`developer`, `reviewer`, …), which never have a legitimate use.
