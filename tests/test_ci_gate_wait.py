@@ -125,6 +125,13 @@ def test_phase6_waits_with_one_blocking_foreground_wait_call():
     for x in sentences(lead):
         if re.search(r"subagent|Agent\(|dispatch|Task\(", x, re.I):
             assert negated(x), f"wait step must not delegate the wait: {x!r}"
+    # ...and the step must positively say who runs the wait: this session's own
+    # turn, or a stated prohibition on delegating it (silence is not enough)
+    assert [x for x in sentences(lead)
+            if (re.search(r"\b(in|within|during) (this|your|its|the session'?s?|this session'?s?)( own)? (own )?turn\b"
+                          r"|\bown turn\b", x, re.I) and not negated(x))
+            or (re.search(r"subagent", x, re.I) and negated(x))], \
+        "the wait step must state it runs in this session's own turn / never in a subagent"
     assert not unnegated_hits(item, r"background|nohup|Monitor")
 
 
@@ -212,7 +219,14 @@ def test_exit5_first_retrigger_then_second_blocked_never_green_red_or_fix():
     first, second = block[: m.start()], block[m.start():]
     # first occurrence: one retrigger (empty commit, push, re-read head, `i` round)
     assert re.search(r"first|once", first, re.I)
-    assert "--allow-empty" in first and "push" in first and re.search(r"\bhead\b", first)
+    assert "--allow-empty" in first and "push" in first
+    # the retrigger is followed by a re-read of head/sha and a fresh wait on it
+    assert [x for x in sentences(first)
+            if re.search(r"\b(head|sha)\b", x, re.I)
+            and re.search(r"re-?read|re-?resolv|rev-parse|\b(new|fresh|updated|resulting)\b", x, re.I)
+            and re.search(r"wait|again|re-?run", x, re.I)
+            and not re.search(r"\bsame (head|sha|commit)\b", x, re.I)], \
+        "the retrigger must re-read head/the new sha and wait again on it (not the old head)"
     assert "`i`" in first, "the retrigger is an infrastructure round"
     # second occurrence: blocked, quoting state and the run urls; no third attempt
     assert "blocked" in second

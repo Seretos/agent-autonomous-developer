@@ -506,9 +506,16 @@ def test_turn_end_rule_names_wait_pipeline_and_not_sleep_poll():
 
 def test_skill_hard_rules_bash_allowance_names_wait_pipeline_not_sleep():
     hard = _md_section(_read(SKILL_MD), "Hard rules", "## ")
-    assert "wait-pipeline" in hard, "the Bash allowance must name the wait-pipeline call"
-    assert not re.search(r"\bsleep\b|Start-Sleep", hard, re.I), "no sleep may remain in the Bash allowance"
-    assert not unnegated_hits(hard, r"\bMonitor\b"), "Monitor must not be allowed"
+    items = [x for x in re.split(r"(?m)^(?=- )", hard) if "`Bash`" in x]
+    assert len(items) == 1, "exactly one Hard-rules item must carry the `Bash` allowance"
+    item = items[0]
+    # from `Bash` to the end of its sentence, parentheticals dropped
+    scoped = [re.split(r"\s[—–]\s|Nothing else", re.sub(r"\([^)]*\)", "", x[x.index("`Bash`"):]))[0]
+              for x in sentences(item) if "`Bash`" in x]
+    assert [t for t in scoped if "wait-pipeline" in t and not negated(t)], \
+        "the `Bash` allowance itself must name wait-pipeline as an allowed call (not in a parenthetical or prohibition)"
+    assert not unnegated_hits(item, r"\bsleep\b|Start-Sleep"), "no sleep may remain in the Bash allowance"
+    assert not unnegated_hits(item, r"\bMonitor\b"), "Monitor must not be allowed"
 
 
 def test_agents_md_names_wait_pipeline_as_the_one_permitted_wait():
