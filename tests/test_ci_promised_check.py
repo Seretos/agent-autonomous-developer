@@ -8,10 +8,13 @@ Requirements covered (ids from the plan's test strategy):
 * R2 - a package that adds no CI job is ``ok`` (no extra round).
 * R3 - only a *successful* run for the workflow that gained the job clears it.
 * R4 - unusable input never yields ``verdict: ok`` (exit 1, stderr).
-* R5 - the script is offline/model-free (AST import check), allowlisted in
-  SKILL.md's Hard rules, and named by both ``ci-green`` lane bullets of
-  Phase 6 step 2. Release-payload discovery is not re-tested here: the
-  payload gate already runs in CI on the real tree.
+* R5 - the script is offline/model-free (AST: no network/model imports, every
+  subprocess call is a literal ``["git", ...]`` argv) and allowlisted in
+  SKILL.md's Hard rules (same pin shape as
+  test_pipeline_contract's stagnation-check allowlist test). Release-payload
+  discovery is not re-tested here: the payload gate already runs in CI.
+  Phase 6 lane routing (gap -> ci-red, never ci-green) is declared manual
+  with substitute execution, not pinned by wording.
 
 Exit-code contract of ``scripts/ci-promised-check.py``: 0 = ok, 2 = gap,
 1 = unusable input (never ok). Phase 6's routing of exit 1 (retry once, then
@@ -266,12 +269,6 @@ _FORBIDDEN_IMPORT_ROOTS = {
 }
 
 
-def _phase6(text):
-    m = re.search(r"^## Phase 6 .*?(?=^## )", text, re.DOTALL | re.MULTILINE)
-    assert m, "Phase 6 section not found"
-    return m.group(0)
-
-
 def _bullets(block, indent):
     """Split ``block`` into the list items that start at exactly ``indent``."""
     items, cur = [], None
@@ -288,22 +285,39 @@ def _bullets(block, indent):
     return ["\n".join(i) for i in items]
 
 
+def _is_git_argv(call):
+    """True when the call's first argument is a literal list/tuple led by "git"."""
+    import ast
+    if not call.args:
+        return False
+    first = call.args[0]
+    return (isinstance(first, (ast.List, ast.Tuple)) and first.elts
+            and isinstance(first.elts[0], ast.Constant)
+            and first.elts[0].value == "git")
+
+
 def test_script_is_model_free():
     import ast
     assert SCRIPT.is_file()
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
     roots = set()
+    spawns = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             roots.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             roots.add(node.module.split(".")[0])
-        elif isinstance(node, ast.Attribute) and node.attr in (
-                "system", "popen") and isinstance(node.value, ast.Name) \
-                and node.value.id == "os":
-            roots.add("os." + node.attr)
-    bad = roots & (_FORBIDDEN_IMPORT_ROOTS | {"os.system", "os.popen"})
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)                 and isinstance(node.func.value, ast.Name):
+            owner, attr = node.func.value.id, node.func.attr
+            if owner == "os" and (attr in ("system", "popen")
+                                  or attr.startswith(("exec", "spawn"))):
+                roots.add("os." + attr)
+            elif owner == "subprocess" and not _is_git_argv(node):
+                spawns.append(f"subprocess.{attr} at line {node.lineno}")
+    bad = roots & _FORBIDDEN_IMPORT_ROOTS | {r for r in roots if r.startswith("os.")}
     assert not bad, f"ci-promised-check.py must be offline and model-free: {bad}"
+    assert not spawns, ("every subprocess call must be a literal git argv list: "
+                        f"{spawns}")
 
 
 def test_script_is_allowlisted_in_the_hard_rules_delegation_bullet():
@@ -313,16 +327,3 @@ def test_script_is_allowlisted_in_the_hard_rules_delegation_bullet():
     delegate = [b for b in bullets if b.startswith("- **Delegate everything.**")]
     assert len(delegate) == 1, "Hard rules must have one Delegate bullet"
     assert SCRIPT_REF in delegate[0]
-
-
-def test_both_ci_green_lanes_of_phase_6_invoke_the_script():
-    phase6 = _phase6(SKILL.read_text(encoding="utf-8"))
-    step2 = re.search(r"^2\. .*?(?=^3\. )", phase6, re.DOTALL | re.MULTILINE)
-    assert step2, "Phase 6 step 2 not found"
-    lanes = _bullets(step2.group(0), 3)
-    exit0 = [b for b in lanes if b.lstrip("- ").startswith("`0`")]
-    exit4 = [b for b in lanes if b.lstrip("- ").startswith("`4`")]
-    assert len(exit0) == 1 and len(exit4) == 1, "green lane bullets not found"
-    assert "ci-green" in exit0[0] and "ci-green" in exit4[0]
-    assert SCRIPT_REF in exit0[0], "exit-0 lane must consult the check"
-    assert SCRIPT_REF in exit4[0], "degraded exit-4 lane must consult the check"
