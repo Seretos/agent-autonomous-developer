@@ -718,7 +718,7 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    visible to a human in the PR instead of silently disappearing. Omit the
    section entirely when there are none. Likewise append a
    `## Not covered by tests` section (ticket #123) with one line per plan
-   requirement declared `none`, `ci-evidence` or `Prose-executed:` —
+   requirement declared `none` or `ci-evidence` —
    `<requirement> — <kind> — <reason>` — so a human sees at merge time what
    went through without a driving test. Omit it when every requirement is
    `driving-test` or `existing-suite`. **Then check the aggregate length

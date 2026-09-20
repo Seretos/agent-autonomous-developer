@@ -134,21 +134,6 @@ round is a brand-new process with no memory of the last one.
        `ci-evidence` instead and say what a real run of it demonstrates.
      - **`none`** — no observable behaviour (pure docs, comments, a rename with
        no behavioural change). Say so in one line; nothing further is owed.
-     **A requirement whose only executor is a model reading a prose file**
-     (a `skills/**` or `agents/**` file, a prompt, `AGENTS.md`, a critic's
-     constraints or lens text) is never `driving-test`: no assertion can run a
-     model following a paragraph, any test on it is a string comparison, and
-     the two critic gates then demand opposite things. Declare it `none` (or
-     `ci-evidence`, naming the run) and add the line `Prose-executed: <paths>
-     — decidable part extracted into <script>, covered by <tests>`. Whatever
-     in that requirement *is* decidable (a classification, a threshold, a
-     routing choice) is extracted into a script that gets its own
-     `driving-test` requirements with real behaviour tests. The declaration is
-     only valid while the diff for that requirement touches prose files alone
-     — `scripts/critic/prose-role-check.py` decides that per hunk, and the
-     reviewer runs it; a requirement that changes executable code is tested
-     as usual, whatever it is called. Never add a test that only asserts a
-     sentence is present in a prose file.
      A **bug/defect** requirement's `driving-test` is a regression test that
      reproduces the reported problem (fails on current code, passes once
      fixed); a **feature** requirement's is a test of the new behaviour — the

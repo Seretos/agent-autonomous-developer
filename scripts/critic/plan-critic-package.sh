@@ -168,17 +168,7 @@ applies equally to `ci-evidence`: naming an unrelated lint/build job, or an exis
 does not cover the symptom, does not qualify. `ci-evidence` is exempt only from the ordinary
 driving-test derivability judgment above — merely declaring the kind and naming *some* CI run is not
 by itself an exemption from this symptom carve-out; the named run still has to plausibly cover the
-symptom. A further exemption belongs to this same list (ticket #123): a requirement whose only
-executor is a model reading a prose file (a skill, an agent definition, a prompt, AGENTS.md), declared
-`none` or `ci-evidence` with a `Prose-executed: <paths> — <decidable part extracted into which
-script, covered by which tests>` line, is not a finding under this carve-out — no assertion can
-execute a model following a paragraph, and demanding one is what deadlocks the two critic gates. The
-exemption is for prose only and is never available to a requirement covering executable code. You
-cannot see a diff, so you do not judge whether the declared paths really are prose:
-`scripts/critic/prose-role-check.py` decides that mechanically against the real diff at review
-time. A `Prose-executed:` line that names no script for the decidable part does not qualify, and
-neither does one that names a path plainly executable code by its own name (a test file, a hook, a
-non-critic script); report the same `critical` finding, kind `gap`, as for an absent line.
+symptom.
 LENS_UNTESTABLE
       ;;
     simplifier)
