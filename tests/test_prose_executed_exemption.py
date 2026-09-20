@@ -256,6 +256,35 @@ def test_code_hunks_exit_1_and_are_named_while_prose_hunk_stays_prose():
     assert merge_reason != shell_reason, result.stdout
 
 
+def test_one_file_with_a_heredoc_hunk_and_a_shell_hunk_is_split_per_hunk():
+    """Same file, same file header, two hunks of different role: a per-file
+    classifier can only give both hunks one verdict, a per-hunk one splits."""
+    path = "scripts/critic/plan-critic-package.sh"
+    start, _ = _heredoc_body_range(PLAN_CRITIC_PACKAGE, "LENS_UNTESTABLE")
+    pkg = PLAN_CRITIC_PACKAGE.read_text(encoding="utf-8").splitlines()
+    set_line = next(i for i, l in enumerate(pkg, 1) if l.strip() == "set -euo pipefail")
+    hs = start + 2
+    assert set_line < hs
+    diff = (
+        f"diff --git a/{path} b/{path}\n"
+        "index 1111111..2222222 100644\n"
+        f"--- a/{path}\n"
+        f"+++ b/{path}\n"
+        f"@@ -{set_line},1 +{set_line},2 @@\n"
+        " context line\n"
+        "+added shell line\n"
+        f"@@ -{hs},1 +{hs},2 @@\n"
+        " context line\n"
+        "+added heredoc line\n"
+    )
+    result = _role_check("--diff", "-", "--repo-root", str(REPO_ROOT), stdin=diff)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert any(f"{path}:{hs}-{hs + 1}" in l for l in _lines(result.stdout, "PROSE")), result.stdout
+    assert any(f"{path}:{set_line}-{set_line + 1}" in l for l in _lines(result.stdout, "CODE")), result.stdout
+    assert not any(f"{path}:{hs}-{hs + 1}" in l for l in _lines(result.stdout, "CODE")), result.stdout
+    assert not any(f"{path}:{set_line}-{set_line + 1}" in l for l in _lines(result.stdout, "PROSE")), result.stdout
+
+
 def test_pure_deletion_in_package_script_fails_closed():
     start, _ = _heredoc_body_range(PLAN_CRITIC_PACKAGE, "LENS_UNTESTABLE")
     result = _role_check("--diff", "-", "--repo-root", str(REPO_ROOT),
