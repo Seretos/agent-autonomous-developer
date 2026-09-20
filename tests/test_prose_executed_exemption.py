@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -64,10 +65,16 @@ def _run_bash(script: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+# Every role-check run happens from a directory unrelated to the repo, so a
+# script that ignores --repo-root and falls back to os.getcwd() cannot pass.
+UNRELATED_CWD = pathlib.Path(tempfile.mkdtemp(prefix="adev-role-check-cwd-"))
+
+
 def _role_check(*args: str, stdin=None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(ROLE_CHECK), *args],
         capture_output=True, text=True, encoding="utf-8", input=stdin,
+        cwd=str(UNRELATED_CWD),
     )
 
 
@@ -145,6 +152,35 @@ def test_diff_can_be_read_from_stdin():
     assert any("skills/process-ticket/SKILL.md:5-6" in l for l in _lines(result.stdout, "PROSE"))
 
 
+def test_repo_root_decides_heredoc_ranges_not_the_working_directory(tmp_path):
+    """--repo-root must be honoured: a minimal tree whose package script has a
+    different heredoc range than the real repo's, run from an unrelated cwd."""
+    root = tmp_path / "mini"
+    (root / "scripts" / "critic").mkdir(parents=True)
+    (root / "scripts" / "critic" / "plan-critic-package.sh").write_text(
+        "\n".join([
+            "#!/usr/bin/env bash",   # 1
+            "set -euo pipefail",     # 2
+            "cat <<'LENS_X'",        # 3
+            "body a",                # 4
+            "body b",                # 5
+            "body c",                # 6
+            "LENS_X",                # 7
+            "echo done",             # 8
+        ]) + "\n",
+        encoding="utf-8")
+    pkg = "scripts/critic/plan-critic-package.sh"
+    inside = _role_check("--diff", "-", "--repo-root", str(root), stdin=_hunk(pkg, 4, 3))
+    assert inside.returncode == 0, inside.stdout + inside.stderr
+    assert any(f"{pkg}:4-6" in l for l in _lines(inside.stdout, "PROSE")), inside.stdout
+    outside = _role_check("--diff", "-", "--repo-root", str(root), stdin=_hunk(pkg, 2, 2))
+    assert outside.returncode == 1, outside.stdout + outside.stderr
+    assert any(f"{pkg}:2-3" in l for l in _lines(outside.stdout, "CODE")), outside.stdout
+    # Same 4-6 range against the REAL repo tree is not inside any heredoc body.
+    real = _role_check("--diff", "-", "--repo-root", str(REPO_ROOT), stdin=_hunk(pkg, 4, 3))
+    assert real.returncode == 1, real.stdout + real.stderr
+
+
 def test_fixture_prose_only_diff_is_all_prose():
     result = _role_check("--diff", str(PROSE_ONLY_DIFF), "--repo-root", str(REPO_ROOT))
     assert result.returncode == 0, result.stdout + result.stderr
@@ -207,9 +243,17 @@ def test_code_hunks_exit_1_and_are_named_while_prose_hunk_stays_prose():
                for l in code), result.stdout
     assert any("agents/reviewer.md:30-32" in l for l in _lines(result.stdout, "PROSE")), result.stdout
     # Format: `CODE <path>:<start>-<end> <reason>` -- every CODE line names why.
+    reasons = {}
     for line in _lines(result.stdout, "CODE"):
         parts = line.split(None, 2)
         assert len(parts) == 3 and parts[2].strip(), f"CODE line without a reason: {line!r}"
+        reasons[parts[1]] = parts[2].strip()
+    # The two hunks are code for different reasons (path outside the role
+    # table vs. a package-script region outside any heredoc body); the reason
+    # must say which rule rejected the hunk, not be a constant tag.
+    merge_reason = reasons["scripts/critic/plan-critic-merge.py:5-7"]
+    shell_reason = reasons[f"scripts/critic/plan-critic-package.sh:{set_line}-{set_line + 1}"]
+    assert merge_reason != shell_reason, result.stdout
 
 
 def test_pure_deletion_in_package_script_fails_closed():
