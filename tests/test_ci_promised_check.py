@@ -8,14 +8,15 @@ Requirements covered (ids from the plan's test strategy):
 * R2 - a package that adds no CI job is ``ok`` (no extra round).
 * R3 - only a *successful* run for the workflow that gained the job clears it.
 * R4 - unusable input never yields ``verdict: ok`` (exit 1, stderr).
-* R5 - the script is offline/model-free (AST: no network/model imports, every
-  subprocess call is a literal ``["git", ...]`` argv) and allowlisted in
-  SKILL.md's Hard rules (same pin shape as
-  test_pipeline_contract's stagnation-check allowlist test). Release-payload
-  discovery is not re-tested here: the payload gate already runs in CI.
-* R6 - allowlisted in SKILL.md's Hard rules (see R5 note above).
-* R7 - both Phase 6 green lanes (exit 0 bullet, exit 4 fallback bullet) each
-  consult the script and route its exit 2 to ci-red (structural, per bullet).
+* R5 - the script is offline/model-free (AST: no network/model/dynamic-import
+  modules, no `from subprocess import ...`, every subprocess call is a literal
+  ``["git", ...]`` argv). Release-payload discovery is not re-tested here: the
+  payload gate already runs in CI.
+
+The Phase 6 wiring in skills/process-ticket/SKILL.md is prose a model executes;
+by maintainer decision (#122, comment 5752466363) it is deliberately not pinned
+by a text test -- the reviewer checks it against the diff and the PR lists it
+under "Not covered by tests".
 
 Exit-code contract of ``scripts/ci-promised-check.py``: 0 = ok, 2 = gap,
 1 = unusable input (never ok). Phase 6's routing of exit 1 (retry once, then
@@ -24,7 +25,6 @@ Exit-code contract of ``scripts/ci-promised-check.py``: 0 = ok, 2 = gap,
 
 import json
 import pathlib
-import re
 import subprocess
 import sys
 
@@ -32,7 +32,6 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "ci-promised-check.py"
-SKILL = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
 
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -260,30 +259,14 @@ def test_workflow_without_jobs_block_contributes_no_jobs(tmp_path):
     assert "verdict: ok" in res.stdout
 
 
-# --- R5: model-free, allowlisted, consulted on both green lanes -------------
+# --- R5: model-free ----------------------------------------------------------
 
-SCRIPT_REF = "scripts/ci-promised-check.py"
 # Modules that would make the script talk to a network or a model.
 _FORBIDDEN_IMPORT_ROOTS = {
     "urllib", "urllib3", "http", "socket", "ssl", "ftplib", "smtplib",
     "xmlrpc", "requests", "httpx", "aiohttp", "anthropic", "openai",
+    "importlib", "runpy", "pkgutil",
 }
-
-
-def _bullets(block, indent):
-    """Split ``block`` into the list items that start at exactly ``indent``."""
-    items, cur = [], None
-    pat = re.compile(r"^" + " " * indent + r"- ")
-    for line in block.splitlines():
-        if pat.match(line):
-            cur = [line]
-            items.append(cur)
-        elif cur is not None and (line.startswith(" " * (indent + 1))
-                                  or not line.strip()):
-            cur.append(line)
-        else:
-            cur = None
-    return ["\n".join(i) for i in items]
 
 
 def _is_git_argv(call):
@@ -297,55 +280,58 @@ def _is_git_argv(call):
             and first.elts[0].value == "git")
 
 
-def test_script_is_model_free():
+def _violations(source):
+    """Everything in ``source`` that makes a script non-offline / non-model-free."""
     import ast
-    assert SCRIPT.is_file()
-    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
-    roots = set()
-    spawns = []
+    tree = ast.parse(source)
+    found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            roots.update(a.name.split(".")[0] for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            roots.add(node.module.split(".")[0])
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)                 and isinstance(node.func.value, ast.Name):
-            owner, attr = node.func.value.id, node.func.attr
-            if owner == "os" and (attr in ("system", "popen")
-                                  or attr.startswith(("exec", "spawn"))):
-                roots.add("os." + attr)
-            elif owner == "subprocess" and not _is_git_argv(node):
-                spawns.append(f"subprocess.{attr} at line {node.lineno}")
-    bad = roots & _FORBIDDEN_IMPORT_ROOTS | {r for r in roots if r.startswith("os.")}
-    assert not bad, f"ci-promised-check.py must be offline and model-free: {bad}"
-    assert not spawns, ("every subprocess call must be a literal git argv list: "
-                        f"{spawns}")
+            for a in node.names:
+                if a.name.split(".")[0] in _FORBIDDEN_IMPORT_ROOTS:
+                    found.append(f"import {a.name} at line {node.lineno}")
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in _FORBIDDEN_IMPORT_ROOTS:
+                found.append(f"from {node.module} import ... at line {node.lineno}")
+            elif root in ("subprocess", "os"):
+                # `from subprocess import run` would hide the call from the
+                # `subprocess.<attr>` check below.
+                found.append(f"from {root} import ... at line {node.lineno}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in ("__import__", "exec", "eval"):
+                found.append(f"{func.id}() at line {node.lineno}")
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                owner, attr = func.value.id, func.attr
+                if owner == "os" and (attr in ("system", "popen")
+                                      or attr.startswith(("exec", "spawn"))):
+                    found.append(f"os.{attr} at line {node.lineno}")
+                elif owner == "subprocess" and not _is_git_argv(node):
+                    found.append(f"subprocess.{attr} without a literal git argv "
+                                 f"at line {node.lineno}")
+    return found
 
 
-def test_script_is_allowlisted_in_the_hard_rules_delegation_bullet():
-    text = SKILL.read_text(encoding="utf-8")
-    hard = text[text.index("\n## Hard rules"):]
-    bullets = _bullets(hard, 0)
-    delegate = [b for b in bullets if b.startswith("- **Delegate everything.**")]
-    assert len(delegate) == 1, "Hard rules must have one Delegate bullet"
-    assert SCRIPT_REF in delegate[0]
+def test_script_is_model_free():
+    assert SCRIPT.is_file()
+    violations = _violations(SCRIPT.read_text(encoding="utf-8"))
+    assert not violations, f"ci-promised-check.py must be offline and model-free: {violations}"
 
 
-def _phase6_step2_bullets():
-    text = SKILL.read_text(encoding="utf-8")
-    phase = text[text.index("\n## Phase 6"):]
-    nxt = phase.find("\n## ", 1)
-    if nxt != -1:
-        phase = phase[:nxt]
-    start = phase.index("\n2. Wait ")
-    end = phase.index("\n3. ", start)
-    return _bullets(phase[start:end], 3)
+@pytest.mark.parametrize("source", [
+    "from subprocess import run\nrun(['curl', 'x'])\n",
+    "import importlib\nimportlib.import_module('urllib.request')\n",
+    "from importlib import import_module\n",
+    "import subprocess\nsubprocess.run(['curl', 'x'])\n",
+    "__import__('urllib.request')\n",
+    "import os\nos.system('curl x')\n",
+], ids=["from-subprocess", "importlib", "from-importlib", "non-git-argv",
+        "dunder-import", "os-system"])
+def test_the_check_recognises_the_shapes_that_slip_past_it(source):
+    """F3/F4 regression: the same function the real script is judged by."""
+    assert _violations(source)
 
 
-@pytest.mark.parametrize("lane", ["`0`", "`4`"], ids=["exit-0", "exit-4"])
-def test_each_green_lane_consults_the_script_and_routes_gap_to_ci_red(lane):
-    bullets = [b for b in _phase6_step2_bullets()
-               if b.startswith("   - " + lane)]
-    assert len(bullets) == 1, f"expected one exit-{lane} bullet"
-    bullet = bullets[0]
-    assert SCRIPT_REF in bullet
-    assert "`2`" in bullet and "ci-red" in bullet
+def test_the_check_accepts_a_literal_git_argv():
+    assert not _violations("import subprocess\nsubprocess.run(['git', '-C', 'x', 'log'])\n")

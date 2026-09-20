@@ -806,8 +806,9 @@ A local PASS was a pre-filter. The pipeline decides.
    elapse; its stdout JSON (`state`, `runs[].id`, `runs[].url`) is this gate's
    data. The tool `timeout` outlives the CLI's, so the CLI always ends first.
    Route on its exit code:
-   - `0` — every run succeeded: post **`ci-green`** with `ci_run:` taken from
-     that JSON, and end. Done.
+   - `0` — every run succeeded: run the **promised-CI check** below on that
+     run list; only on `verdict: ok` post **`ci-green`** with `ci_run:` taken
+     from that JSON, and end. Done.
    - `1` — a run failed: post `ci-red` (`f`), then step 4.
    - `2`, `3` — still waiting (not finished yet / no run registered yet): run
      the same command again, inside the same round. The repeats cost the
@@ -820,7 +821,8 @@ A local PASS was a pre-filter. The pipeline decides.
      a diagnosis of the platform. Once the CLI proved unusable in a round, do
      not run the wrapper again in that round: every later wait goes straight to
      `list_pipeline_runs(project_id, commit_sha=head, limit=20)`, classified
-     by `conclusion`, not by completion: all `success` → `ci-green`; any
+     by `conclusion`, not by completion: all `success` → the promised-CI check
+     below, then `ci-green` on `verdict: ok`; any
      `failure` → the `1` path; a run that ended with another conclusion
      (cancelled, timed out, skipped, neutral) → the no-verdict path below;
      runs still in progress → repeat the lookup inside the round's 45-minute
@@ -836,6 +838,27 @@ A local PASS was a pre-filter. The pipeline decides.
      attempt: post `blocked` quoting each run's `state` and `url`, asking the
      human to decide (re-run by hand, accept, or fix the workflow) — a retry
      is not a decision, so no third retrigger.
+   **Promised-CI check (ticket #122) — before any `ci-green`, on both lanes.**
+   Green conclusions cannot show that a job the package *added* ever ran: a
+   job added to a `workflow_dispatch`-only workflow, or a brand-new workflow
+   file, is absent from the PR's runs rather than red. `Write` the JSON
+   `{"worktree": "<worktree_path>", "base": "<base_branch>", "head": "<head>",
+   "runs": <the runs array of list_pipeline_runs(commit_sha=head)>}` to
+   `<rundir>/ci-promised-input.json`, then run
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/ci-promised-check.py" < <rundir>/ci-promised-input.json`
+   (one foreground `Bash` call). Route on its exit code:
+   - `0` — `verdict: ok`: nothing promised is missing (a package that adds no
+     CI job always lands here, at no cost to any round): continue to `ci-green`.
+   - `2` — `verdict: gap`: treat the round as red — post `ci-red` (`f`) quoting
+     the `gap:` lines, then step 4 as a **finding**: the developer dispatch's
+     failing-job excerpt *is* those lines, and the fix is to wire the job so it
+     runs on the pull request (or to remove the claim). The check itself never
+     consumes a round; the red round it reports does, inside the existing
+     three-round cap.
+   - `1` — unusable input (diagnostic on stderr): fix the input and run it
+     once more; a second `1` is a `blocked` event quoting that stderr. Never
+     read it as `ok`.
+   No new event name: the reaction rides `ci-red`.
 3. Anything else that ends a round without green counts as above; the round
    caps are unchanged: three CI rounds without green → `failed`, the text
    separating `f` from `i` rounds and quoting the last failing job.
@@ -865,7 +888,7 @@ A local PASS was a pre-filter. The pipeline decides.
   `run_in_background: false`, always a fresh call — never `name`, never
   `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git,
   `cp` (round/generation plan archives) and the `scripts/ci-wait-pipeline.sh`
-  call named in Phase 6, and for invoking `scripts/critic/stagnation-check.py` (deterministic, no model —
+  call and the `scripts/ci-promised-check.py` call named in Phase 6, and for invoking `scripts/critic/stagnation-check.py` (deterministic, no model —
   see "Round caps: progress or stagnation"), and these MCP calls:
   `list_projects`, `add_comment`, `create_pr`, `list_prs`, `update_pr`,
   `list_pipeline_runs`, `get_pipeline_run`, `get_pipeline_step_log`. Nothing else
