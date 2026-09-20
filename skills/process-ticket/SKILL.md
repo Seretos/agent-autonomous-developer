@@ -90,8 +90,9 @@ than trying to end the turn again.
    `Monitor`; all of these are forbidden without exception, for you and for
    every subagent you dispatch (ticket #101). Anything long — the CI poll, a
    suite run — runs *inside* the turn as a blocking foreground `Bash` call
-   with an explicit `timeout`: the one foreground `project-issues
-   wait-pipeline` call for the CI wait (see Phase 6), synchronous chunks one
+   with an explicit `timeout`: the one foreground
+   `scripts/ci-wait-pipeline.sh` (`project-issues wait-pipeline`) call for the
+   CI wait (see Phase 6), synchronous chunks one
    after another for a suite (`agents/developer.md` step 4). A
    command that does not fit one call is cut into shorter calls, never
    detached. There is no case in which backgrounding is right — a case that
@@ -792,8 +793,11 @@ A local PASS was a pre-filter. The pipeline decides.
 2. Wait **in this turn** with one blocking foreground call — never from inside
    a subagent, never detached (see *Turn-end discipline*: ending your turn
    ends this process):
-   `Bash("project-issues wait-pipeline --project <project_id> --sha <head> --timeout 540", timeout: 600000)`.
-   The CLI blocks until every run on `head` has finished or its own 540 s
+   `Bash("bash ${CLAUDE_PLUGIN_ROOT}/scripts/ci-wait-pipeline.sh --project <project_id> --sha <head> --timeout 540", timeout: 600000)`.
+   The wrapper resolves the CLI by executing a candidate (`project-issues.exe`
+   first under Git Bash, `project-issues` first elsewhere) and passes the CLI's
+   stdout and exit code through; when no candidate is executable it exits `4`
+   and names each candidate it tried with its rc on stderr. The CLI blocks until every run on `head` has finished or its own 540 s
    elapse; its stdout JSON (`state`, `runs[].id`, `runs[].url`) is this gate's
    data. The tool `timeout` outlives the CLI's, so the CLI always ends first.
    Route on its exit code:
@@ -804,8 +808,11 @@ A local PASS was a pre-filter. The pipeline decides.
      the same command again, inside the same round. The repeats cost the
      round's 45-minute budget, never a new round; hitting the 45 minutes is an
      `i` round.
-   - `4`, an exit code outside 0-5, or the binary not found on `PATH`
-     (the CLI is missing or older than `wait-pipeline`): make one
+   - `4`, or an exit code outside 0-5 (including 126/127): the CLI could not
+     be used here (missing, too old for `wait-pipeline`, or not executable —
+     the wrapper's stderr lists the candidates it tried). This is the
+     degraded-wait path, never a terminal blocker on first occurrence and never
+     a diagnosis of the platform. Make one
      `list_pipeline_runs(project_id, commit_sha=head, limit=20)` and classify
      by `conclusion`, not by completion: all `success` → `ci-green`; any
      `failure` → the `1` path; a run that ended with another conclusion
@@ -813,7 +820,10 @@ A local PASS was a pre-filter. The pipeline decides.
      nothing completed → an `i` round and a retrigger (step 5). A second
      consecutive exit `4` in the same round, or a lookup that fails as well,
      → `blocked`, naming what you tried and asking for the CLI to be
-     installed or updated. Never fall back to a sleeping poll.
+     installed or updated. Within the round's 45-minute budget you may repeat
+     the `list_pipeline_runs` check while runs are still in progress, but
+     with no pacing command and never detached; `blocked` is posted only after the
+     fallback itself also fails. Never fall back to a sleeping poll.
    - `5` — no verdict: the runs ended without success or failure. Never
      `ci-green`, never `ci-red`, never a fix round. The first time this
      attempt: retrigger once (step 5), one `i` round. The second time this
@@ -848,7 +858,7 @@ A local PASS was a pre-filter. The pipeline decides.
 - **Delegate everything.** Your own tools: `Agent` (always unnamed, always
   `run_in_background: false`, always a fresh call — never `name`, never
   `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git,
-  `cp` (round/generation plan archives) and the `project-issues wait-pipeline`
+  `cp` (round/generation plan archives) and the `scripts/ci-wait-pipeline.sh`
   call named in Phase 6, and for invoking `scripts/critic/stagnation-check.py` (deterministic, no model —
   see "Round caps: progress or stagnation"), and these MCP calls:
   `list_projects`, `add_comment`, `create_pr`, `list_prs`, `update_pr`,

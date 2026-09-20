@@ -55,7 +55,13 @@ def _base_env(stubdir: pathlib.Path) -> dict:
     if sys.platform == "win32":
         parts.append(str(pathlib.Path(BASH).parent.parent / "usr" / "bin"))
         parts.append(str(pathlib.Path(BASH).parent))
-    parts.append(env.get("PATH", ""))
+    # Hermetic: drop inherited dirs that hold a real project-issues CLI, or the
+    # "no usable CLI" case would find the developer machine's genuine binary.
+    inherited = [
+        d for d in env.get("PATH", "").split(os.pathsep)
+        if d and not any((pathlib.Path(d) / n).exists() for n in ("project-issues", "project-issues.exe"))
+    ]
+    parts.extend(inherited)
     env["PATH"] = os.pathsep.join(parts)
     return env
 
@@ -139,7 +145,9 @@ def test_no_usable_cli_exits_four_and_reports_candidates(tmp_path):
     r = _run_documented(env)
     assert r.returncode not in (126, 127), f"wrapper leaked rc={r.returncode}: {r.stderr!r}"
     assert r.returncode == 4, f"rc={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
-    assert "project-issues.exe" in r.stderr and "project-issues" in r.stderr
+    import re
+    assert re.search(r"project-issues\.exe\(rc=12[67]\)", r.stderr), r.stderr
+    assert re.search(r"project-issues(?!\.exe)\(rc=12[67]\)", r.stderr), r.stderr
     assert "rc=126" in r.stderr or "rc=127" in r.stderr
 
 
