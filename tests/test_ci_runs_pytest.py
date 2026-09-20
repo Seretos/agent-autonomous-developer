@@ -91,3 +91,10 @@ def test_test_job_uses_setup_python():
         f"{LINT_WORKFLOW}'s 'test' job must set up a Python interpreter "
         "via actions/setup-python before installing/running pytest."
     )
+
+
+def test_windows_job_runs_the_ci_wait_resolution_tests():
+    data = _load_workflow()
+    steps = data["jobs"]["test-windows"].get("steps", [])
+    run_commands = " ".join(step.get("run", "") for step in steps)
+    assert "tests/test_ci_wait_resolution.py" in run_commands
