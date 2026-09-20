@@ -13,8 +13,9 @@ Requirements covered (ids from the plan's test strategy):
   SKILL.md's Hard rules (same pin shape as
   test_pipeline_contract's stagnation-check allowlist test). Release-payload
   discovery is not re-tested here: the payload gate already runs in CI.
-  Phase 6 lane routing (gap -> ci-red, never ci-green) is declared manual
-  with substitute execution, not pinned by wording.
+* R6 - allowlisted in SKILL.md's Hard rules (see R5 note above).
+* R7 - both Phase 6 green lanes (exit 0 bullet, exit 4 fallback bullet) each
+  consult the script and route its exit 2 to ci-red (structural, per bullet).
 
 Exit-code contract of ``scripts/ci-promised-check.py``: 0 = ok, 2 = gap,
 1 = unusable input (never ok). Phase 6's routing of exit 1 (retry once, then
@@ -327,3 +328,24 @@ def test_script_is_allowlisted_in_the_hard_rules_delegation_bullet():
     delegate = [b for b in bullets if b.startswith("- **Delegate everything.**")]
     assert len(delegate) == 1, "Hard rules must have one Delegate bullet"
     assert SCRIPT_REF in delegate[0]
+
+
+def _phase6_step2_bullets():
+    text = SKILL.read_text(encoding="utf-8")
+    phase = text[text.index("\n## Phase 6"):]
+    nxt = phase.find("\n## ", 1)
+    if nxt != -1:
+        phase = phase[:nxt]
+    start = phase.index("\n2. Wait ")
+    end = phase.index("\n3. ", start)
+    return _bullets(phase[start:end], 3)
+
+
+@pytest.mark.parametrize("lane", ["`0`", "`4`"], ids=["exit-0", "exit-4"])
+def test_each_green_lane_consults_the_script_and_routes_gap_to_ci_red(lane):
+    bullets = [b for b in _phase6_step2_bullets()
+               if b.startswith("   - " + lane)]
+    assert len(bullets) == 1, f"expected one exit-{lane} bullet"
+    bullet = bullets[0]
+    assert SCRIPT_REF in bullet
+    assert "`2`" in bullet and "ci-red" in bullet
