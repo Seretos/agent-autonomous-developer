@@ -52,6 +52,7 @@ import subprocess
 import pytest
 
 import tools.check_plugin_payload as cpp
+from tests.test_ci_gate_wait import negated, sentences, unnegated_hits
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 HOOK_PATH = REPO_ROOT / "hooks" / "check-no-background.mjs"
@@ -463,20 +464,50 @@ def _turn_end_rule_1() -> str:
     return m.group(0)
 
 
+_PROHIBIT = re.compile(r"\b(never|no|forbidden|not|without exception|refus\w*|prohibit\w*)\b", re.I)
+_GENERALISING = re.compile(r"for example|e\.g\.|such as|\bany\b|general|class of|internally", re.I)
+_MARKER_PERMIT = re.compile(r"allowed|permitted|exempt|may be used|is fine|is acceptable", re.I)
+_PERMIT = re.compile(r"allowed|permitted|sanction|exempt|the one|the only|may be used|is fine", re.I)
+
+
+def _permit_sentences(text: str) -> list[str]:
+    """Sentences that name `wait-pipeline` as an allowed wait, unnegated."""
+    return [x for x in sentences(text) if "wait-pipeline" in x and _PERMIT.search(x) and not negated(x)]
+
+
+def _assert_markers_prohibited_not_sanctioned(text: str) -> None:
+    for marker in _MARKERS:
+        mentions = [x for x in sentences(text) if marker in x]
+        assert any(_PROHIBIT.search(x) for x in mentions), f"{marker} must stay listed as prohibited"
+        # no sentence may pair a marker with a permission
+        assert not [x for x in mentions if _MARKER_PERMIT.search(x) and not negated(x)],             f"{marker} must not be sanctioned"
+
+
 def test_turn_end_rule_names_wait_pipeline_and_not_sleep_poll():
     rule = _turn_end_rule_1()
-    assert "wait-pipeline" in rule
-    assert 'Bash("sleep' not in rule
-    for marker in _MARKERS:
-        assert marker in rule, f"prohibition of {marker} must stay listed"
+    assert [x for x in sentences(rule) if "wait-pipeline" in x and re.search(r"foreground|blocking", x, re.I)
+            and not negated(x)], "rule 1 must prescribe the foreground wait-pipeline call for the CI wait"
+    assert not unnegated_hits(rule, r"\bsleep\b"), "no sleep-based polling may be prescribed"
+    _assert_markers_prohibited_not_sanctioned(rule)
 
 
-def test_agents_md_names_wait_pipeline_as_the_permitted_wait():
+def test_agents_md_names_wait_pipeline_as_the_one_permitted_wait():
     text = _read(AGENTS_MD)
     nothing = _md_section(text, "Nothing runs in the background", "## ")
-    assert "wait-pipeline" in nothing
-    for marker in _MARKERS:
-        assert marker in nothing
-    verdict = _md_section(text, "CI is the verdict", "## ")
-    assert "wait-pipeline" in verdict
-    assert 'Bash("sleep' not in verdict
+    permit = _permit_sentences(nothing)
+    assert permit, "the rule section must name wait-pipeline as the permitted wait"
+    for x in permit:
+        assert not _GENERALISING.search(x), f"the permission must not generalise beyond the one call: {x!r}"
+        assert not any(m in x for m in _MARKERS), f"permission sentence must not mention prohibited markers: {x!r}"
+    _assert_markers_prohibited_not_sanctioned(nothing)
+    assert not unnegated_hits(nothing, r"\bsleep\b[^.]*\b(poll|wait)"), "no sleep poll may be sanctioned"
+
+
+def test_agents_md_ci_verdict_uses_wait_pipeline_and_records_no_verdict_policy():
+    verdict = _md_section(_read(AGENTS_MD), "CI is the verdict", "## ")
+    assert [x for x in sentences(verdict) if "wait-pipeline" in x and not negated(x)]
+    assert not unnegated_hits(verdict, r"\bsleep\b"), "no sleep poll may be described as the wait"
+    policy = [x for x in sentences(verdict) if re.search(r"no[- ]verdict|exit `?5`?", x, re.I)]
+    assert policy, "AGENTS.md must record the no-verdict policy"
+    joined = " ".join(policy)
+    assert re.search(r"once|one retrigger|single retrigger", joined, re.I) and "blocked" in joined

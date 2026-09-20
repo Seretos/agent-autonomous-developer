@@ -5,12 +5,16 @@ skill forbids `Monitor`/background jobs (#101), so Phase 6's escalating
 way to wait for CI. Phase 6 now waits with one blocking foreground
 `project-issues wait-pipeline` call and routes its exit codes.
 
-These tests slice SKILL.md structurally (by heading / list item), never by
-line number, and pin only what the gate's routing depends on.
+These tests slice SKILL.md structurally (by heading / list item / sentence),
+never by line number. Assertions are per list item and per sentence, not
+whole-section substring presence: an exit code's item must route to the right
+event and must NOT contain the wrong one. Keyword sets tolerate rewording
+(synonyms); they pin the routing semantics, not the phrasing.
 
-  R2 - Phase 6 waits with `wait-pipeline` (--project/--sha/--timeout 540,
-       Bash timeout 600000), routes exit codes 0-5, and contains no
-       sleep/Monitor; Phase 5 step 4 links the run artefacts.
+  R2 - Phase 6 waits with one foreground `wait-pipeline` call
+       (--project/--sha/--timeout 540, Bash timeout 600000), routes exit
+       codes 0-5, contains no sleep/Monitor; Phase 5 step 4 links the run
+       artefacts.
   R3 - exit 5 (no verdict) and a non-success/non-failure conclusion on the
        exit-4 path never map to green/red; retrigger once (`i`), then blocked.
 """
@@ -23,9 +27,32 @@ import re
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKILL_MD = REPO_ROOT / "skills" / "process-ticket" / "SKILL.md"
 
+_NEG = re.compile(
+    r"\b(never|not|no|neither|nor|without|don't|do not|forbidden|refus\w*|prohibit\w*)\b", re.I
+)
+
 
 def _skill() -> str:
     return SKILL_MD.read_text(encoding="utf-8")
+
+
+def flat(text: str) -> str:
+    return re.sub(r"\s+", " ", text)
+
+
+def sentences(text: str) -> list[str]:
+    """Whitespace-flattened clauses, split at sentence end and semicolons."""
+    return [x for x in re.split(r"(?<=[.;!?])\s+", flat(text)) if x]
+
+
+def negated(sentence: str) -> bool:
+    return bool(_NEG.search(re.sub(r"\bno[- ]verdict\b|\bno runs?\b", "", sentence, flags=re.I)))
+
+
+def unnegated_hits(text: str, pattern: str) -> list[str]:
+    """Sentences matching `pattern` that carry no negation/prohibition word,
+    i.e. that would read as an instruction to do it."""
+    return [x for x in sentences(text) if re.search(pattern, x, re.I) and not negated(x)]
 
 
 def _section(text: str, heading_prefix: str, level: str = "## ") -> str:
@@ -69,18 +96,57 @@ def _exit_bullet(section: str, code: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_phase6_waits_with_wait_pipeline_call():
-    s = _phase6()
-    assert "project-issues wait-pipeline" in s
-    for flag in ("--project", "--sha", "--timeout 540"):
-        assert flag in s, f"Phase 6 wait call is missing {flag}"
-    assert "600000" in s, "the wait call needs an explicit Bash timeout of 600000"
+def _wait_call_item() -> str:
+    """The single top-level Phase 6 numbered step prescribing the wait call."""
+    items = re.split(r"(?m)^(?=\d+\. )", _phase6())
+    hits = [i for i in items if re.search(r"`[^`]*project-issues wait-pipeline[^`]*`", flat(i))]
+    assert len(hits) == 1, "exactly one Phase 6 step must prescribe the wait-pipeline call"
+    return hits[0]
 
 
-def test_phase6_routes_every_exit_code():
+def test_phase6_waits_with_one_blocking_foreground_wait_call():
+    item = flat(_wait_call_item())
+    spans = [c for c in re.findall(r"`([^`]+)`", item) if "wait-pipeline" in c and "--project" in c]
+    assert len(spans) == 1, "exactly one call span carrying --project"
+    call = spans[0]
+    assert "--sha" in call and re.search(r"--timeout[ =]540\b", call), "call needs --sha and --timeout 540"
+    assert re.search(r"timeout\W{0,4}600000|600000\s*ms", item), "the Bash call needs timeout 600000"
+    assert re.search(r"foreground", item, re.I) and re.search(r"blocking|in this turn", item, re.I)
+    # any mention of subagents / dispatching in the wait step must be a prohibition
+    for x in sentences(item):
+        if re.search(r"subagent|Agent\(|dispatch|Task\(", x, re.I):
+            assert negated(x), f"wait step must not delegate the wait: {x!r}"
+    assert not unnegated_hits(item, r"background|nohup|Monitor")
+
+
+def test_phase6_routes_each_exit_code_to_its_own_destination():
     s = _phase6()
-    for code in range(6):
-        assert re.search(r"`" + str(code) + r"`", s), f"exit code {code} is not routed"
+    # 0 -> ci-green only
+    b0 = flat(_exit_bullet(s, 0))
+    assert "ci-green" in b0 and "ci-red" not in b0 and not re.search(r"developer|fix round", b0, re.I)
+    # 1 -> ci-red (failure path), never ci-green
+    b1 = flat(_exit_bullet(s, 1))
+    assert "ci-red" in b1 and "ci-green" not in b1
+    # 2 / 3 -> same command again, same round, no verdict event, no new round
+    for code in (2, 3):
+        b = flat(_exit_bullet(s, code))
+        assert re.search(r"same (command|call)|again|re-?run|re-?wait", b, re.I), code
+        assert re.search(r"same round|(not|never|no)\b[^.]{0,40}(new|another) round", b, re.I), code
+        assert "ci-green" not in b and "ci-red" not in b, code
+        assert not unnegated_hits(b, r"developer|fix round"), code
+
+
+def test_phase6_round_accounting_45_minutes_three_rounds_failed():
+    s = _phase6()
+    assert [x for x in sentences(s) if "45" in x], "the 45-minute round cap must be stated"
+    related = " ".join(x for x in sentences(s) if "45" in x or re.search(r"`2`|`3`|repeated", x))
+    # a repeated 2/3 is charged against the 45 minutes, NOT counted as a new round
+    assert re.search(r"(not|never|no)\b[^.;]{0,60}\b(new|another|separate|extra) round|same round", related, re.I)
+    assert not unnegated_hits(s, r"(count|open|start)s? (as )?(a |an )?(new|another) round")
+    assert [x for x in sentences(s) if re.search(r"\b(three|3)\b[^.;]*round", x, re.I) and "failed" in x], \
+        "three CI rounds without green must end in `failed`"
+    for tool in ("list_pipeline_runs", "get_pipeline_run", "get_pipeline_step_log"):
+        assert tool in s, f"{tool} must stay in the diagnosis chain"
 
 
 def test_phase6_has_no_sleep_or_monitor():
@@ -88,20 +154,15 @@ def test_phase6_has_no_sleep_or_monitor():
     assert not re.search(r"\bsleep\b|Start-Sleep|\bMonitor\b", s, re.IGNORECASE)
 
 
-def test_phase5_body_links_run_artefacts():
+def test_phase5_step4_instructs_linking_run_dir_and_event_comments():
     body = _section(_skill(), "Phase 5")
     m = re.search(r"^4\. \*\*Compose the PR body\*\*.*?(?=^5\. )", body, re.MULTILINE | re.DOTALL)
     assert m, "Phase 5 step 4 not found"
-    step4 = m.group(0)
-    assert "<rundir>" in step4
-    assert "adev:event" in step4, "PR body must link this attempt's adev:event comments"
-
-
-def test_phase6_keeps_round_cap_and_diagnosis_tools():
-    s = _phase6()
-    assert "45" in s
-    for tool in ("list_pipeline_runs", "get_pipeline_run", "get_pipeline_step_log"):
-        assert tool in s
+    hits = [x for x in sentences(m.group(0)) if "<rundir>" in x and "adev:event" in x]
+    assert hits, "one sentence must name both <rundir> and the adev:event comments"
+    assert [x for x in hits if re.search(r"\b(link|include|add|append|list|Run artefacts)", x, re.I)
+            and not negated(x)], "that sentence must be a positive instruction, not a prohibition"
+    assert [x for x in hits if re.search(r"URL|link", x, re.I)], "event comments must be linked by URL"
 
 
 # ---------------------------------------------------------------------------
@@ -109,26 +170,39 @@ def test_phase6_keeps_round_cap_and_diagnosis_tools():
 # ---------------------------------------------------------------------------
 
 
-def test_exit5_no_verdict_retriggers_once_then_blocked():
-    block = _exit_bullet(_phase6(), 5)
-    assert "blocked" in block
-    assert re.search(r"\burl\b", block, re.IGNORECASE), "blocked text must quote the run URLs"
-    assert re.search(r"`i`|\bi\b round", block), "the retrigger is an infrastructure round"
-    assert "--allow-empty" in block
-    assert "push" in block
-    assert "head" in block, "the retrigger must re-read head before waiting again"
+def test_exit5_first_retrigger_then_second_blocked_never_green_red_or_fix():
+    block = flat(_exit_bullet(_phase6(), 5))
+    m = re.search(r"\bsecond\b|\btwice\b|already (used|retriggered)", block, re.I)
+    assert m, "exit 5 needs a first-time clause and a distinct second-time clause"
+    first, second = block[: m.start()], block[m.start():]
+    # first occurrence: one retrigger (empty commit, push, re-read head, `i` round)
+    assert re.search(r"first|once", first, re.I)
+    assert "--allow-empty" in first and "push" in first and re.search(r"\bhead\b", first)
+    assert "`i`" in first, "the retrigger is an infrastructure round"
+    # second occurrence: blocked, quoting state and the run urls; no third attempt
+    assert "blocked" in second
+    assert re.search(r"\burls?\b", second, re.I) and re.search(r"\bstate\b", second)
+    assert "--allow-empty" not in second
+    # never a verdict event or a fix round as an action
+    assert not unnegated_hits(block, r"ci-green|ci-red")
+    assert not unnegated_hits(block, r"developer|fix round")
+    assert any(re.search(r"fix round|developer", x) and negated(x) for x in sentences(block)), \
+        "exit 5 must state that it never starts a fix round"
 
 
-def test_exit5_never_routes_to_green_or_red_or_fix_round():
-    block = _exit_bullet(_phase6(), 5)
-    assert "never" in block.lower()
-    assert not re.search(r"post\s+\*{0,2}`?ci-green", block)
-    assert not re.search(r"post\s+\*{0,2}`?ci-red", block)
-
-
-def test_exit4_fallback_classifies_by_conclusion():
-    block = _exit_bullet(_phase6(), 4)
-    assert "list_pipeline_runs" in block
-    assert "success" in block and "failure" in block
-    assert re.search(r"no[- ]verdict|`5`", block), "other conclusions must defer to exit 5's handling"
-    assert not re.search(r"\bsleep\b", block, re.IGNORECASE)
+def test_exit4_fallback_classifies_by_conclusion_only():
+    block = flat(_exit_bullet(_phase6(), 4))
+    assert "list_pipeline_runs" in block and not re.search(r"\bsleep\b", block, re.I)
+    assert "conclusion" in block and re.search(r"\bonly\b", block, re.I)
+    for x in sentences(block):
+        if "ci-green" in x and not negated(x):
+            assert "success" in x and "failure" not in x, f"ci-green must hang on success alone: {x!r}"
+    assert [x for x in sentences(block) if "failure" in x and re.search(r"ci-red|`1`|failure path", x)], \
+        "failure must route to the ci-red / `1` path"
+    other = [x for x in sentences(block)
+             if re.search(r"cancelled|timed_out|skipped|any other|otherwise", x, re.I)]
+    assert other and any(re.search(r"no[- ]verdict|`5`", x, re.I) for x in other), \
+        "other conclusions must defer to the no-verdict (exit 5) handling"
+    assert not unnegated_hits(" ".join(other), r"ci-green|ci-red")
+    assert [x for x in sentences(block) if "blocked" in x and re.search(r"second|consecutive|twice|again", x, re.I)], \
+        "a second consecutive exit 4 must be blocked"
