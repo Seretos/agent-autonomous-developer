@@ -220,38 +220,111 @@ def test_readme_and_unknown_paths_are_code_by_default_deny():
 LENS_BLOCK_MARKER = "This run's lens:"
 EXEMPTION_RE = re.compile(r"prose-executed", re.IGNORECASE)
 
+# Anchors of the two #108 clauses the exemption must live inside. They are the
+# same strings tests/test_untested_symptom_is_critical.py already relies on.
+TAUTOLOGY_CLAUSE_ANCHOR = "the acceptance criterion is exercised by no test"
+UNTESTABLE_CLAUSE_ANCHOR = "A related carve-out (ticket #108)"
+# The #108 exemption-list siblings the new item joins (not a new clause).
+SIBLING_EXEMPTIONS = ("Substitute execution", "ci-evidence")
+
 
 def _lens_block_only(package_text: str) -> str:
     return package_text[package_text.index(LENS_BLOCK_MARKER):]
 
 
-def _plan_package(tmp_path, lens):
-    out = tmp_path / f"plan-package-{lens}.txt"
-    result = _run_bash(PLAN_CRITIC_PACKAGE, str(SPEC), str(SCOPE), str(PLAN), lens, str(out))
+def _paragraph_containing(text: str, needle: str) -> str:
+    paras = re.split(r"\n\s*\n", text)
+    hits = [p for p in paras if needle in p]
+    assert len(hits) == 1, f"expected exactly one paragraph holding {needle!r}, got {len(hits)}"
+    return hits[0]
+
+
+def _plan_package(tmp_path, lens, plan=PLAN):
+    out = tmp_path / f"plan-package-{lens}-{plan.stem}.txt"
+    result = _run_bash(PLAN_CRITIC_PACKAGE, str(SPEC), str(SCOPE), str(plan), lens, str(out))
     return result, out
 
 
-def test_prose_executed_exemption_lands_in_exactly_the_two_owning_lens_blocks(tmp_path):
-    """Driving test for R3. Both packagers already accept the fixture plan
-    (exit 0); the new behaviour is where the exemption is assembled."""
-    tc_out = tmp_path / "test-package.txt"
-    tc = _run_bash(TEST_CRITIC_PACKAGE, str(PLAN), str(TESTS_DIFF), "tautology", str(tc_out))
-    assert tc.returncode == 0, tc.stderr
-    assert EXEMPTION_RE.search(_lens_block_only(tc_out.read_text(encoding="utf-8"))), (
-        "tautology lens block carries no prose-executed exemption"
-    )
+def _test_package(tmp_path, plan=PLAN):
+    out = tmp_path / f"test-package-{plan.stem}.txt"
+    result = _run_bash(TEST_CRITIC_PACKAGE, str(plan), str(TESTS_DIFF), "tautology", str(out))
+    return result, out
 
-    blocks = {}
+
+def _prose_executed_paths(plan_text: str):
+    """Paths named on a plan's `Prose-executed:` lines (text before the first
+    em-dash), parsed the way a reviewer would."""
+    paths = []
+    for m in re.finditer(r"^\s*Prose-executed:\s*(.+?)\s+—", plan_text, re.MULTILINE):
+        paths += re.findall(r"[\w./-]+\.(?:md|txt|sh|py|mjs|json)", m.group(1))
+    return paths
+
+
+def _role_verdict_for_declared_paths(plan_text: str):
+    paths = _prose_executed_paths(plan_text)
+    assert paths, "fixture plan declares no Prose-executed paths"
+    diff = "".join(_hunk(p, 1, 2) for p in paths)
+    return _role_check("--diff", "-", "--repo-root", str(REPO_ROOT), stdin=diff)
+
+
+def test_exemption_sits_inside_the_108_exemption_list_of_the_owning_lens(tmp_path):
+    """Driving test for R3. Assembly is checked structurally, in the paragraph
+    that carries each #108 clause: the prose-executed item must be a member of
+    the SAME exemption list as the existing #108 exemptions (narrowed in place,
+    not a free-floating extra rule), after the `critical` instruction it
+    exempts from, and must not be in any other lens or in PARTs 2-4.
+
+    Inherent limit: the paragraph is prose a model reads; no packager can
+    prove the model honours it. What this pins is that the exemption cannot
+    exist merely as a token elsewhere in the block."""
+    tc, tc_out = _test_package(tmp_path)
+    assert tc.returncode == 0, tc.stderr
+    taut_block = _lens_block_only(tc_out.read_text(encoding="utf-8"))
+    taut_para = _paragraph_containing(taut_block, TAUTOLOGY_CLAUSE_ANCHOR)
+    assert "critical" in taut_para
+    assert EXEMPTION_RE.search(taut_para), (
+        "prose-executed exemption is not inside the tautology #108 clause's exemption list"
+    )
+    for sibling in SIBLING_EXEMPTIONS:
+        assert sibling in taut_para
+    assert taut_para.index("critical") < EXEMPTION_RE.search(taut_para).start()
+
+    blocks, heads = {}, {}
     for lens in ("missed", "misread", "untestable", "simplifier"):
         result, out = _plan_package(tmp_path, lens)
         assert result.returncode == 0, (lens, result.stderr)
-        blocks[lens] = _lens_block_only(out.read_text(encoding="utf-8"))
+        text = out.read_text(encoding="utf-8")
+        blocks[lens] = _lens_block_only(text)
+        # PART 1 legitimately embeds the plan (which uses the declaration);
+        # PARTs 2-4 (constraints, scope, ...) must not carry the exemption.
+        heads[lens] = text[text.index("PART 2"): text.index(LENS_BLOCK_MARKER)]
 
-    assert EXEMPTION_RE.search(blocks["untestable"]), (
-        "untestable lens block carries no prose-executed exemption"
+    unt_para = _paragraph_containing(blocks["untestable"], UNTESTABLE_CLAUSE_ANCHOR)
+    assert "critical" in unt_para
+    assert EXEMPTION_RE.search(unt_para), (
+        "prose-executed exemption is not inside the untestable #108 carve-out's exemption list"
     )
+    assert "Substitute execution" in unt_para and "ci-evidence" in unt_para
+
     for lens in ("missed", "misread", "simplifier"):
         assert not EXEMPTION_RE.search(blocks[lens]), f"{lens} lens block must not carry it"
+    for lens, head in heads.items():
+        assert not EXEMPTION_RE.search(head), f"{lens}: exemption leaked into PARTs 2-4"
+
+
+def test_108_blocking_wording_for_executable_code_is_untouched_in_both_lenses(tmp_path):
+    """Control (may already pass): the exemption narrows #108, it must not
+    soften it -- the critical instructions stay in the lens blocks."""
+    tc, tc_out = _test_package(tmp_path)
+    assert tc.returncode == 0, tc.stderr
+    taut = _paragraph_containing(_lens_block_only(tc_out.read_text(encoding="utf-8")),
+                                 TAUTOLOGY_CLAUSE_ANCHOR)
+    assert "`critical` finding, layer `plan`" in taut
+    result, out = _plan_package(tmp_path, "untestable")
+    assert result.returncode == 0, result.stderr
+    unt = _paragraph_containing(_lens_block_only(out.read_text(encoding="utf-8")),
+                                UNTESTABLE_CLAUSE_ANCHOR)
+    assert "`critical` finding, kind `gap`" in unt
 
 
 def test_plan_critic_parts_1_to_4_stay_byte_identical_across_lenses(tmp_path):
@@ -266,13 +339,26 @@ def test_plan_critic_parts_1_to_4_stay_byte_identical_across_lenses(tmp_path):
     assert len(set(texts.values())) == 1
 
 
-def test_fixture_anchor_survives_verbatim_inside_part_1(tmp_path):
-    """Additional coverage (may already pass): the #108 anchor precondition
-    accepts the fixture plan and carries the anchor into PART 1."""
-    anchor = ("No available assertion executes such a requirement; any assertion is a "
-              "string comparison.")
-    out = tmp_path / "test-package.txt"
-    result = _run_bash(TEST_CRITIC_PACKAGE, str(PLAN), str(TESTS_DIFF), "tautology", str(out))
-    assert result.returncode == 0, result.stderr
-    text = out.read_text(encoding="utf-8")
-    assert anchor in text[text.index("PART 1"): text.index("PART 2")]
+def test_declared_paths_carry_the_executable_vs_prose_discriminator(tmp_path):
+    """The packagers cannot judge a declaration (no diff exists at that time),
+    so the prose/executable discriminator lives in prose-role-check.py. Replay
+    the fixture plan's own `Prose-executed:` declaration: its named paths are
+    prose (exit 0); the SAME declaration re-pointed at executable code is
+    refused (exit 1), while both plans are equally accepted by both packagers
+    -- which is exactly why the reviewer's role check, not the packager, is
+    the gate."""
+    plan_text = PLAN.read_text(encoding="utf-8")
+    assert _role_verdict_for_declared_paths(plan_text).returncode == 0
+
+    code_plan = tmp_path / "plan-code.md"
+    code_plan.write_text(
+        plan_text.replace("Prose-executed: agents/planner.md",
+                          "Prose-executed: scripts/critic/plan-critic-merge.py"),
+        encoding="utf-8")
+    verdict = _role_verdict_for_declared_paths(code_plan.read_text(encoding="utf-8"))
+    assert verdict.returncode == 1, verdict.stdout + verdict.stderr
+    assert any("plan-critic-merge.py" in l for l in _lines(verdict.stdout, "CODE"))
+
+    for plan in (PLAN, code_plan):
+        assert _test_package(tmp_path, plan)[0].returncode == 0
+        assert _plan_package(tmp_path, "untestable", plan)[0].returncode == 0
