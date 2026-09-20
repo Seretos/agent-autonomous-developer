@@ -303,6 +303,7 @@ def test_refuses_monitor_in_pipeline_run(tmp_path):
         "Start-Job { pytest }",
         "Start-Process pytest -ArgumentList '-q'",
         "cd /w && nohup npm test",
+        "project-issues wait-pipeline --project p --sha abc --timeout 540 &",
     ],
 )
 def test_refuses_detaching_bash_commands(tmp_path, command):
@@ -319,6 +320,7 @@ def test_refuses_detaching_bash_commands(tmp_path, command):
         "curl 'https://x.example/?a=1&b=2'",
         "sleep 60",
         "git -C /w status",
+        "project-issues wait-pipeline --project p --sha abc --timeout 540",
     ],
 )
 def test_allows_foreground_bash_commands(tmp_path, command):

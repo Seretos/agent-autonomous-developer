@@ -90,9 +90,9 @@ than trying to end the turn again.
    `Monitor`; all of these are forbidden without exception, for you and for
    every subagent you dispatch (ticket #101). Anything long — the CI poll, a
    suite run — runs *inside* the turn as a blocking foreground `Bash` call
-   with an explicit `timeout`: `Bash("sleep <n>")` for the poll (escalating
-   30/60/120/300 s, see Phase 6), synchronous chunks one after another for a
-   suite (`agents/developer.md` step 4). A
+   with an explicit `timeout`: the one foreground `project-issues
+   wait-pipeline` call for the CI wait (see Phase 6), synchronous chunks one
+   after another for a suite (`agents/developer.md` step 4). A
    command that does not fit one call is cut into shorter calls, never
    detached. There is no case in which backgrounding is right — a case that
    seems to need it is a `blocked` event, not a background task. Backgrounding
@@ -707,7 +707,9 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    report), each requirement's pasted output bounded to 200 lines or ~4000
    characters, whichever is hit first, with a trailing "...truncated, see
    <rundir>/change-report-round-<n>.md for full output" marker appended when
-   truncated + one "Closes #<n>" line per ticket in the package. If the
+   truncated + a `Run artefacts: <rundir>` line followed by the URLs of this run's
+   `adev:event` comments on the ticket + one "Closes #<n>" line per ticket in
+   the package. If the
    review gate was accepted at a round with `REVIEW_OWN_BLOCKING: 0` while
    `kind: "codex"` findings were still open (ticket #112 — see Phase 4),
    append a `## Codex notes (not blocking)` section listing each such finding
@@ -785,21 +787,43 @@ findings (Codex pass folded in when available). Post `review-verdict`.
 
 A local PASS was a pre-filter. The pipeline decides.
 
-1. `head = git -C <worktree_path> rev-parse HEAD`.
-2. Poll **in this turn**: `list_pipeline_runs(project_id, commit_sha=head,
-   limit=20)`; if no run exists yet or any run has `status != "completed"`,
-   sleep and poll again — blocking, in the foreground, escalating each miss:
-   `Bash("sleep 30")` the first time, then 60, then 120, then 300, holding at
-   300 for every subsequent miss this round (ticket #105: a fixed 60 s
-   interval means up to 45 poll round-trips in a slow round; a run that takes
-   20+ minutes does not need per-minute checking). Cap 45 minutes per round;
-   a cap hit is an `i` round. Never poll from inside a
-   subagent (its background processes die with its turn), and never poll by
-   backgrounding something and ending your own turn either — see *Turn-end
-   discipline*: ending your turn ends this process.
-3. All runs `conclusion == "success"` → post **`ci-green`** with `ci_run:` and
-   end. Done.
-4. Any failure → post `ci-red` (`f`), then for the failing run:
+1. `head = git -C <worktree_path> rev-parse HEAD`. Re-read it after anything
+   that moves HEAD (the retrigger commit below).
+2. Wait **in this turn** with one blocking foreground call — never from inside
+   a subagent, never detached (see *Turn-end discipline*: ending your turn
+   ends this process):
+   `Bash("project-issues wait-pipeline --project <project_id> --sha <head> --timeout 540", timeout: 600000)`.
+   The CLI blocks until every run on `head` has finished or its own 540 s
+   elapse; its stdout JSON (`state`, `runs[].id`, `runs[].url`) is this gate's
+   data. The tool `timeout` outlives the CLI's, so the CLI always ends first.
+   Route on its exit code:
+   - `0` — every run succeeded: post **`ci-green`** with `ci_run:` taken from
+     that JSON, and end. Done.
+   - `1` — a run failed: post `ci-red` (`f`), then step 4.
+   - `2`, `3` — still waiting (not finished yet / no run registered yet): run
+     the same command again, inside the same round. The repeats cost the
+     round's 45-minute budget, never a new round; hitting the 45 minutes is an
+     `i` round.
+   - `4`, an exit code outside 0-5, or the binary not found on `PATH`
+     (the CLI is missing or older than `wait-pipeline`): make one
+     `list_pipeline_runs(project_id, commit_sha=head, limit=20)` and classify
+     by `conclusion`, not by completion: all `success` → `ci-green`; any
+     `failure` → the `1` path; a run that ended with another conclusion
+     (cancelled, timed out, skipped, neutral) → the no-verdict path below;
+     nothing completed → an `i` round and a retrigger (step 5). A second
+     consecutive exit `4` in the same round, or a lookup that fails as well,
+     → `blocked`, naming what you tried and asking for the CLI to be
+     installed or updated. Never fall back to a sleeping poll.
+   - `5` — no verdict: the runs ended without success or failure. Never
+     `ci-green`, never `ci-red`, never a fix round. The first time this
+     attempt: retrigger once (step 5), one `i` round. The second time this
+     attempt: post `blocked` quoting each run's `state` and `url`, asking the
+     human to decide (re-run by hand, accept, or fix the workflow) — a retry
+     is not a decision, so no third retrigger.
+3. Anything else that ends a round without green counts as above; the round
+   caps are unchanged: three CI rounds without green → `failed`, the text
+   separating `f` from `i` rounds and quoting the last failing job.
+4. Failure: for the failing run
    `get_pipeline_run(project_id, run_id, include_failure_excerpt=True)` and
    `get_pipeline_step_log(project_id, run_id, job_id, mode="around_failure")`.
    Classify:
@@ -808,25 +832,24 @@ A local PASS was a pre-filter. The pipeline decides.
      **The moment this CI-repair dispatch returns, run the Checkpoint
      procedure, `push_mode=plain`**, then a fresh review (Phase 4, its own
      counter — narrowed exactly as any other fix round, per Phase 4's rule
-     above), then poll again;
+     above), then wait again (step 1, new `head`);
    - **infrastructure** (runner lost, timeout unrelated to the diff, workflow
-     misconfiguration not introduced by this package) → `i`; re-run by pushing
-     an empty commit (`git -C <worktree_path> commit --allow-empty -m "ci:
-     retry (#<ticket>)"`) and poll again. This empty-commit retry is
-     deliberately **not** a Checkpoint invocation — it has nothing to add and
-     no unpushed developer work to protect, and running it through the
-     Checkpoint procedure would let the skip-on-clean-tree guard swallow it
-     silently.
-5. Three CI rounds without green → `failed`. The text must separate `f` from
-   `i` rounds and quote the last failing job.
+     misconfiguration not introduced by this package) → `i`; retrigger
+     (step 5) and wait again.
+5. **Retrigger:** push an empty commit (`git -C <worktree_path> commit
+   --allow-empty -m "ci: retry (#<ticket>)"`, then push), re-read `head`, wait
+   again. This is deliberately **not** a Checkpoint invocation — it has
+   nothing to add and no unpushed developer work to protect, and running it
+   through the Checkpoint procedure would let the skip-on-clean-tree guard
+   swallow it silently.
 
 ## Hard rules
 
 - **Delegate everything.** Your own tools: `Agent` (always unnamed, always
   `run_in_background: false`, always a fresh call — never `name`, never
   `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git,
-  `cp` (round/generation plan archives) and `sleep` calls named above and for
-  invoking `scripts/critic/stagnation-check.py` (deterministic, no model —
+  `cp` (round/generation plan archives) and the `project-issues wait-pipeline`
+  call named in Phase 6, and for invoking `scripts/critic/stagnation-check.py` (deterministic, no model —
   see "Round caps: progress or stagnation"), and these MCP calls:
   `list_projects`, `add_comment`, `create_pr`, `list_prs`, `update_pr`,
   `list_pipeline_runs`, `get_pipeline_run`, `get_pipeline_step_log`. Nothing else
