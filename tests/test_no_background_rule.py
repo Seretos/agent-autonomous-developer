@@ -303,6 +303,7 @@ def test_refuses_monitor_in_pipeline_run(tmp_path):
         "Start-Job { pytest }",
         "Start-Process pytest -ArgumentList '-q'",
         "cd /w && nohup npm test",
+        "project-issues wait-pipeline --project p --sha abc --timeout 540 &",
     ],
 )
 def test_refuses_detaching_bash_commands(tmp_path, command):
@@ -319,6 +320,7 @@ def test_refuses_detaching_bash_commands(tmp_path, command):
         "curl 'https://x.example/?a=1&b=2'",
         "sleep 60",
         "git -C /w status",
+        "project-issues wait-pipeline --project p --sha abc --timeout 540",
     ],
 )
 def test_allows_foreground_bash_commands(tmp_path, command):
@@ -435,3 +437,46 @@ def test_walk_foreground_only_is_clean():
         _assistant("Bash", {"command": "npm install && npm test"}),
     ]
     assert _scan(lines) is None
+
+
+# ---------------------------------------------------------------------------
+# Ticket #118 - the permitted wait is one named foreground call, not `sleep`
+# ---------------------------------------------------------------------------
+
+_MARKERS = ("run_in_background: true", "nohup", "Start-Job", "Start-Process", "Monitor")
+
+
+def _md_section(text: str, heading: str, level: str) -> str:
+    m = re.search(
+        r"^" + re.escape(level + heading) + r".*?$(.*?)(?=^" + re.escape(level) + r"\S|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert m, f"heading {level}{heading!r} not found"
+    return m.group(1)
+
+
+def _turn_end_rule_1() -> str:
+    sec = _md_section(_read(SKILL_MD), "Turn-end discipline", "## ")
+    m = re.search(r"^1\. .*?(?=^2\. )", sec, re.MULTILINE | re.DOTALL)
+    assert m, "Turn-end rule 1 not found"
+    return m.group(0)
+
+
+def test_turn_end_rule_names_wait_pipeline_and_not_sleep_poll():
+    rule = _turn_end_rule_1()
+    assert "wait-pipeline" in rule
+    assert 'Bash("sleep' not in rule
+    for marker in _MARKERS:
+        assert marker in rule, f"prohibition of {marker} must stay listed"
+
+
+def test_agents_md_names_wait_pipeline_as_the_permitted_wait():
+    text = _read(AGENTS_MD)
+    nothing = _md_section(text, "Nothing runs in the background", "## ")
+    assert "wait-pipeline" in nothing
+    for marker in _MARKERS:
+        assert marker in nothing
+    verdict = _md_section(text, "CI is the verdict", "## ")
+    assert "wait-pipeline" in verdict
+    assert 'Bash("sleep' not in verdict
