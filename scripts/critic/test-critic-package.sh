@@ -215,7 +215,7 @@ whole test diff you were handed, not one assertion at a time — whether ANY ass
 executes the action or outcome that sentence names. If every assertion touching that requirement
 only inspects prose, a literal string, a file's structure, or a JSON key, and none of them runs the
 actual behaviour the symptom describes, report a `critical` finding, layer `plan`, whose title and
-`what` literally contain the phrase "the acceptance criterion is exercised by no test". Three
+`what` literally contain the phrase "the acceptance criterion is exercised by no test". Four
 exemptions belong with this same clause, and none of them is a finding: a `Symptom: none:<category>`
 anchor never fires it (there is no runtime symptom to exercise); a requirement covering the
 symptom that carries a `Substitute execution:` line never fires it either (its evidence is the
@@ -223,7 +223,13 @@ pasted command output, not a test); and a requirement covering the symptom that 
 `ci-evidence`, naming the specific CI run/job that demonstrates it (`agents/planner.md` requires
 `ci-evidence` to name one), never fires it either (its evidence is that CI run, not a test) — the
 plausibility of that named run against the anchor symptom is validated at the plan-critic/review
-layer, not here.
+layer, not here; and a requirement covering the symptom that is declared `none` or `ci-evidence`
+with a `Prose-executed:` line (ticket #123) never fires it either — its only executor is a model
+reading a prose file, so no assertion could execute it, and the decidable part is extracted into a
+script with its own tests, which this lens does judge. That exemption is for prose only:
+`scripts/critic/prose-role-check.py` refuses it for executable code at review time, and an assertion
+that merely inspects a literal string in executable code, a workflow, or a config file still fires
+this clause.
 
 Report only this. Whether the batch covers every case of the requirement, whether the tests are
 tidy, whether they follow the naming convention — none of that is this run's finding.

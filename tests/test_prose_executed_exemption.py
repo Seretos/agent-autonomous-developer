@@ -399,9 +399,10 @@ def test_exemption_sits_inside_the_108_exemption_list_of_the_owning_lens(tmp_pat
         assert result.returncode == 0, (lens, result.stderr)
         text = out.read_text(encoding="utf-8")
         blocks[lens] = _lens_block_only(text)
-        # PART 1 legitimately embeds the plan (which uses the declaration);
-        # PARTs 2-4 (constraints, scope, ...) must not carry the exemption.
-        heads[lens] = text[text.index("PART 2"): text.index(LENS_BLOCK_MARKER)]
+        # PARTs 3 and 4 legitimately embed the fixture scope and plan (which
+        # use the declaration); the fixed constraints (PART 2) must not carry
+        # the exemption.
+        heads[lens] = text[text.index("PART 2"): text.index("PART 3")]
 
     unt_para = _paragraph_containing(blocks["untestable"], UNTESTABLE_CLAUSE_ANCHOR)
     assert "critical" in unt_para
@@ -414,7 +415,7 @@ def test_exemption_sits_inside_the_108_exemption_list_of_the_owning_lens(tmp_pat
     for lens in ("missed", "misread", "simplifier"):
         assert not EXEMPTION_RE.search(blocks[lens]), f"{lens} lens block must not carry it"
     for lens, head in heads.items():
-        assert not EXEMPTION_RE.search(head), f"{lens}: exemption leaked into PARTs 2-4"
+        assert not EXEMPTION_RE.search(head), f"{lens}: exemption leaked into the PART 2 constraints"
 
 
 def test_108_blocking_wording_for_executable_code_is_untouched_in_both_lenses(tmp_path):

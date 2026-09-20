@@ -134,6 +134,20 @@ push, not what declares the package done.
      CHANGES_REQUESTED`, structured `"kind": "consistency"`. A diff that adds
      **less** than the balance promised is not a finding — subtraction beyond
      the plan is welcome, not a deviation.
+   - **Prose-executed declarations vs. diff** — for every requirement the
+     plan declares with a `Prose-executed: <paths> — <script>, <tests>` line,
+     run the mechanical check instead of judging by eye: `git -C
+     <worktree_path> diff <base_branch>...HEAD | python
+     "${CLAUDE_PLUGIN_ROOT}/scripts/critic/prose-role-check.py" --diff -
+     --repo-root <worktree_path>`. Exit `0` = every hunk is prose. Exit `1` =
+     at least one `CODE` hunk: if that hunk belongs to the declared
+     requirement, the requirement was misdeclared (executable code cannot be
+     exempted from its driving test) → `[blocking]`, structured `"kind":
+     "consistency"`; hunks of *other* requirements are not this check's
+     concern. Also `[blocking]`: the named script does not exist in the diff or
+     has no behaviour tests. Exit `2` = the tool could not read the diff —
+     report it as a `[nit]` and review by eye, never as an approval of the
+     declaration. A plan with no `Prose-executed:` line skips this check.
    - **Public-API stability** — the exported surface (see README / package
      `__init__`) must stay stable unless the plan intends a change.
    - **Conventions** — layout, models, and naming consistent with the
