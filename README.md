@@ -3,7 +3,7 @@
 # agent-autonomous-developer
 
 A Claude Code **skill + agents** plugin that takes one **work package** — a
-[agent-project-issues](https://github.com/Seretos/agent-project-issues) ticket, or an epic
+[agent-project-issues](https://github.com/seretos-agents/agent-project-issues) ticket, or an epic
 standing for all of its child tickets — from a prepared worktree to a pull request with a
 **green CI pipeline**, for projects in **any language**. Built to run headless overnight: it
 never asks a human; it escalates by writing a `blocked` event on the ticket and ending.
@@ -90,8 +90,8 @@ not auto-install them today — enabling them is the consumer's responsibility. 
 ## Install
 
 ```
-/plugin marketplace add Seretos/agent-marketplace
-/plugin install agent-autonomous-developer@agent-marketplace
+/plugin marketplace add seretos-agents/modular-software-factory
+/plugin install agent-autonomous-developer@modular-software-factory
 ```
 
 Then enable the MCP dependency as shown above.
@@ -130,6 +130,6 @@ Actions → release → Run workflow → version=X.Y.Z
 
 Stamps the version into `plugin.json` (CI only — never hand-bump it), pushes the orphan
 `release` branch, tags `agent-autonomous-developer--vX.Y.Z`, and dispatches to
-`Seretos/agent-marketplace` (category `skill`) via `MARKETPLACE_DISPATCH_TOKEN` — the dispatch
+`seretos-agents/modular-software-factory` (category `skill`) via `MARKETPLACE_DISPATCH_TOKEN` — the dispatch
 payload includes a `changelog` field (the release's own generated notes, read back rather than
-recomputed) that `agent-marketplace` renders into the registry PR body.
+recomputed) that `modular-software-factory` renders into the registry PR body.
