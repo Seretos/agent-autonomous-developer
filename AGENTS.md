@@ -16,9 +16,9 @@ The skill was named `process-ticket` until ticket #126; it was renamed so the tw
 
 ## The contract with the caller is a write obligation, not a return schema
 
-A headless dispatch returns "process ended" plus text. That channel is structurally too poor to carry state, and a caller that reconstructs state from prose is a bug waiting to happen. So `process-developer` owes the caller a **fixed set of comment events** on the package ticket (`<!-- adev:event v1 … -->`, names and fields in `skills/process-developer/SKILL.md` → "Events"). The caller derives everything from the latest event. Three invariants follow:
+A headless dispatch returns "process ended" plus text. That channel is structurally too poor to carry state, and a caller that reconstructs state from prose is a bug waiting to happen. So `process-developer` owes the caller a **fixed set of comment events** on the package ticket (`<!-- adev:event v1 … -->`, names and fields in `skills/process-developer/SKILL.md` → "Events"). The block is produced only by `scripts/event_block.py`, whose stdout the skill posts unchanged; the model never composes it. A deterministic external parser (`ecosystem-statistics`) reads the block, and hand-built blocks reached tickets in three shapes (raw, fenced, HTML-escaped), with four or five gates and a trailing space after an empty `pr:` (#134). The caller derives everything from the latest event. Three invariants follow:
 
-- The event vocabulary is **closed**. Adding an event is a contract change; tell the caller's maintainers (`agent-ticket-orchestrator/AGENTS.md` carries the same table). `replan-triggered` (2026-08-25) is the one addition since the vocabulary was fixed — additive and non-terminal, see "Round caps are progress-based, not just round-counted" below.
+- The event vocabulary is **closed**. Adding an event is a contract change: it also goes into the renderer's `EVENTS` tuple (a gate into its `GATES` tuple), and the caller's maintainers must be told (`agent-ticket-orchestrator/AGENTS.md` carries the same table). `replan-triggered` (2026-08-25) is the one addition since the vocabulary was fixed — additive and non-terminal, see "Round caps are progress-based, not just round-counted" below.
 - Exactly **one terminal event** per run (`ci-green`, `blocked`, `failed`), posted last, then the turn ends. A run that keeps working after a terminal event makes the caller act on a stale state. `replan-triggered` is the deliberate exception: it is non-terminal by design, and more work in the same turn is expected to follow it.
 - The `rounds:` line must distinguish findings rounds (`f`) from infrastructure rounds (`i`). A human who reads a `failed` event has to be able to tell "three real critiques" from "three crashes" — they are different problems with different fixes. It also now carries `generation:` alongside it (see below).
 
@@ -44,10 +44,10 @@ is a retry".
 
 No new event exists for the repair path (Phase R). The vocabulary stays
 **closed** — Phase R posts the same events Phases 1–6 could always post, just
-fewer of them, and advances a new `rebase=` sub-field on the existing
-`rounds:` line rather than inventing a sixth gate name. A caller that ignores
-the sub-field loses nothing; it is opaque prose exactly like the rest of
-`rounds:`.
+fewer of them, and advances the fifth gate, `rebase=`, on the existing
+`rounds:` line rather than a new event. A caller that ignores the gate loses
+nothing, but the `rounds:` line is not opaque: an external parser reads it,
+which is why the renderer always prints all five gates.
 
 **One branch has at most one open PR, ever.** Phase 0 looks up any existing
 open PR for its head before doing anything else, and Phase 5 reuses it
