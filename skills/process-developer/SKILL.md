@@ -33,31 +33,71 @@ reason to wait.
 State lives in the ticket, not in your return value. After every phase you post
 a comment on the **package ticket** (the epic, if the package is an epic) via
 `add_comment` (the MCP prepends `#ai-generated`; never type it). Each comment
-starts with a machine block, then one short human-readable paragraph:
+is a machine block, a blank line, then one short human-readable paragraph.
+
+**You never write the machine block yourself.** For every event — including
+`started`, `blocked` and `failed` — first render it with one foreground `Bash`
+call:
+
+`python "${CLAUDE_PLUGIN_ROOT}/scripts/event_block.py" --event <name> --package <package> --attempt <attempt> --generation <g> --gate <gate>=<u>,<f>,<i> … [--pr <number>] [--ci-run <id>]`
+
+- `--gate` once per gate whose counter is not all zero, gate names
+  `plan-critic`, `test-critic`, `review`, `ci`, `rebase`; `<u>,<f>,<i>` =
+  rounds used, rounds that ended with real findings/failures, rounds lost to
+  infrastructure (crash, timeout, unparseable output). **Both `f` and `i`
+  count toward the cap.** An omitted gate renders as `0/3(0f,0i)`, so a
+  session outside Phase R never passes `--gate rebase`.
+- `--generation` is `1` on every session that never replans, `2` once a
+  replan has happened (see "Round caps: progress or stagnation" below).
+- `--pr`/`--ci-run` only once you have the value; omitted, the line renders
+  as a bare `pr:`/`ci_run:`.
+
+The `add_comment` body **starts with the renderer's stdout, byte for byte**:
+no text before it, no code fence around it, no HTML escaping (`&lt;`/`&gt;`),
+no edits, no retyping. Then a blank line, then your paragraph. A deterministic
+external parser reads that block; the ticket UI hiding a raw HTML comment is
+intended, never a reason to fence or escape it.
+
+What the renderer prints for `--event review-verdict --package 42 --attempt 2
+--generation 1 --gate plan-critic=2,1,0 --gate test-critic=1,0,0 --gate
+review=1,1,0` — shown fenced here only so this file displays it; the posted
+body never carries the fence, and this is output to recognise, not a template
+to fill in:
 
 ```
 <!-- adev:event v1
-event: <name>
-package: <id>
-attempt: <n>
-generation: <g>/2
-rounds: plan-critic=<u>/3(<f>f,<i>i) test-critic=<u>/3(<f>f,<i>i) review=<u>/3(<f>f,<i>i) ci=<u>/3(<f>f,<i>i)
-pr: <number or empty>
-ci_run: <id or empty>
+event: review-verdict
+package: 42
+attempt: 2
+generation: 1/2
+rounds: plan-critic=2/3(1f,0i) test-critic=1/3(0f,0i) review=1/3(1f,0i) ci=0/3(0f,0i) rebase=0/3(0f,0i)
+pr:
+ci_run:
 -->
 ```
 
-`f` counts rounds that ended with real findings/failures, `i` rounds lost to
-infrastructure (crash, timeout, unparseable output). **Both count toward the
-cap.** The `rounds:` line carries a sixth gate, `rebase=<u>/3(<f>f,<i>i)`,
-that only Phase R (see below) ever advances; a session that never enters
-Phase R reports it as `0/3`. `generation` is new (see "Round caps: progress
-or stagnation" below) — `1/2` on every session that never replans, `2/2` once
-a replan has happened. Both fields are additive to the contract: a caller
-that does not parse them loses nothing, the terminal events and their
-meaning are unchanged. The event **vocabulary itself stays closed except for
-this one addition** — a repair session posts nothing but the thirteen names
-below, in the order Phase 0/R would produce them. Event names, exhaustively:
+**When the renderer refuses or cannot run:**
+
+- **Exit 2** (stdout empty, stderr `event_block: error: …`): one of your flag
+  values is wrong — an unknown event name, whitespace or `-->` in a value, a
+  generation other than 1 or 2, an unknown or repeated `--gate`, a count that
+  is not a non-negative integer. Correct that value and run the renderer
+  again.
+- **The renderer cannot run at all** (no Python interpreter, script missing,
+  any other failure that persists on a second try): post **no** event. End
+  the run with a plain-text failure naming the command and its error, exactly
+  as precondition 3 does — even when the event you were about to post is
+  terminal.
+- In neither case do you type a block by hand or copy the example above so
+  the event still gets out: a hand-built block is the malformed comment the
+  renderer exists to prevent.
+
+`generation:` and the fifth gate `rebase=` are additive to the contract: a
+caller that does not parse them loses nothing, the terminal events and their
+meaning are unchanged. The event **vocabulary itself stays closed** — it is
+also the renderer's `EVENTS` tuple, which rejects any other name — and a
+repair session posts nothing but the thirteen names below, in the order
+Phase 0/R would produce them. Event names, exhaustively:
 
 `started` · `plan-committed` · `plan-critic-verdict` · `tests-red` ·
 `test-critic-verdict` · `tests-green` · `review-verdict` · `pr-opened` ·
@@ -384,7 +424,8 @@ Entered only from the table above. No new event exists for this phase — it
 posts the same terminal and intermediate events Phases 1–6 always could
 (`tests-green`, `review-verdict`, `pr-opened`, `ci-red`, and exactly one of
 `ci-green`/`blocked`/`failed`), just fewer of them, and it advances the
-`rebase=` sub-field on the `rounds:` line instead of the others.
+`rebase` gate (`--gate rebase=<u>,<f>,<i>` on every render, see *Events*)
+instead of the others.
 
 1. `git -C <worktree_path> rebase origin/<base_branch>`.
    - Clean → the diff shape is unchanged from before the rebase; run the
@@ -889,7 +930,8 @@ A local PASS was a pre-filter. The pipeline decides.
   `SendMessage`), `Read`/`Write` for `<rundir>` files only, `Bash` for the git,
   `cp` (round/generation plan archives) and the `scripts/ci-wait-pipeline.sh`
   call and the `scripts/ci-promised-check.py` call named in Phase 6, and for invoking `scripts/critic/stagnation-check.py` (deterministic, no model —
-  see "Round caps: progress or stagnation"), and these MCP calls:
+  see "Round caps: progress or stagnation") and the `scripts/event_block.py`
+  call named in *Events*, and these MCP calls:
   `list_projects`, `add_comment`, `create_pr`, `list_prs`, `update_pr`,
   `list_pipeline_runs`, `get_pipeline_run`, `get_pipeline_step_log`. Nothing else
   — in particular no `get_pr` and no `merge_pr`: mergeability and
