@@ -9,6 +9,10 @@ on prose wording.
 
 import pathlib
 import re
+import subprocess
+import sys
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKILL = REPO_ROOT / "skills" / "process-developer" / "SKILL.md"
@@ -502,3 +506,239 @@ def test_release_workflow_still_sends_the_tags_array():
     text = _read(RELEASE_WORKFLOW)
     dispatch_step = text.split("Dispatch to agent-marketplace", 1)[1]
     assert '"git"' in dispatch_step and '"organisation"' in dispatch_step
+
+
+# --- scripts/event_block.py: deterministic adev:event renderer (#134) ------
+#
+# The gatekeeper's symptom (Frame comment 5843754508 on #134): posted
+# adev:event comments reach the ticket in three shapes (raw, fenced,
+# HTML-escaped), with 4 or 5 gates on the `rounds:` line and a trailing
+# space after an empty `pr:`/`ci_run:`, so a deterministic external parser
+# (ecosystem-statistics) misreads or rejects them. These tests run the new
+# renderer as a real subprocess and parse its stdout with a parser that is
+# deliberately independent of the renderer's own code, standing in for that
+# external parser -- it must catch the renderer being wrong, not agree with
+# it by construction.
+
+EVENT_BLOCK = REPO_ROOT / "scripts" / "event_block.py"
+GATES = ("plan-critic", "test-critic", "review", "ci", "rebase")
+
+ROUNDS_RE = re.compile(
+    r"^rounds: "
+    r"plan-critic=(\d+)/3\((\d+)f,(\d+)i\) "
+    r"test-critic=(\d+)/3\((\d+)f,(\d+)i\) "
+    r"review=(\d+)/3\((\d+)f,(\d+)i\) "
+    r"ci=(\d+)/3\((\d+)f,(\d+)i\) "
+    r"rebase=(\d+)/3\((\d+)f,(\d+)i\)$"
+)
+
+
+def run_event_block(*args):
+    return subprocess.run(
+        [sys.executable, str(EVENT_BLOCK), *args],
+        capture_output=True, text=True,
+    )
+
+
+def _kv(line, key):
+    """Parse a strict `key:` (empty) or `key: <token>` line. Returns None
+    (never raises) when the line does not match at all, so callers can
+    assert with a useful message."""
+    m = re.match(rf"^{re.escape(key)}:(?: (\S+))?$", line)
+    return None if m is None else (m.group(1) or "")
+
+
+def strict_parse_event_block(stdout):
+    """Independent strict parser for the `<!-- adev:event v1 ... -->` block,
+    standing in for ecosystem-statistics. Raises AssertionError, quoting the
+    offending text, on ANY deviation from the one accepted shape (raw, all
+    five gates, no trailing whitespace, exactly 9 lines, nothing before the
+    marker)."""
+    assert stdout.endswith("\n"), f"must end in a trailing newline: {stdout!r}"
+    assert not stdout.endswith("\n\n"), f"must end in exactly one trailing newline: {stdout!r}"
+    assert stdout.startswith("<!-- adev:event v1\n"), \
+        f"nothing may precede the marker: {stdout!r}"
+    assert "```" not in stdout, f"must not be fenced: {stdout!r}"
+    assert "&lt;" not in stdout and "&gt;" not in stdout, f"must not be HTML-escaped: {stdout!r}"
+
+    lines = stdout[:-1].split("\n")
+    assert len(lines) == 9, f"expected exactly 9 lines, got {len(lines)}: {lines!r}"
+    assert lines[0] == "<!-- adev:event v1", lines[0]
+    assert lines[-1] == "-->", lines[-1]
+    for line in lines:
+        assert line == line.rstrip(), f"trailing whitespace on line: {line!r}"
+
+    body = lines[1:-1]  # event, package, attempt, generation, rounds, pr, ci_run
+    assert len(body) == 7, body
+
+    fields = {}
+    for key, line in zip(("event", "package", "attempt"), body[:3]):
+        v = _kv(line, key)
+        assert v is not None, f"bad {key} line: {line!r}"
+        fields[key] = v
+
+    m = re.match(r"^generation: (\d+)/2$", body[3])
+    assert m, f"bad generation line: {body[3]!r}"
+    fields["generation"] = m.group(1)
+
+    m = ROUNDS_RE.match(body[4])
+    assert m, f"bad rounds line: {body[4]!r}"
+    g = m.groups()
+    fields["rounds"] = {
+        gate: {"u": g[i * 3], "f": g[i * 3 + 1], "i": g[i * 3 + 2]}
+        for i, gate in enumerate(GATES)
+    }
+
+    for key, line in zip(("pr", "ci_run"), body[5:7]):
+        v = _kv(line, key)
+        assert v is not None, f"bad {key} line: {line!r}"
+        fields[key] = v
+
+    return fields
+
+
+# (event, package, attempt, generation, pr, ci_run) -- covers all 13 closed
+# events, empty and filled pr/ci_run, and both generation values 1 and 2.
+_MATRIX = [
+    (EVENTS[0], "pkg-0", "1", "1", "7", "run-0"),
+    (EVENTS[1], "pkg-1", "2", "2", "", "run-1"),
+    (EVENTS[2], "a--b", "1", "1", "8", ""),
+    (EVENTS[3], "pkg-3", "3", "2", "", ""),
+    (EVENTS[4], "pkg-4", "1", "1", "9", "run-4"),
+    (EVENTS[5], "pkg-5", "1", "2", "", "run-5"),
+    (EVENTS[6], "pkg-6", "4", "1", "10", ""),
+    (EVENTS[7], "pkg-7", "1", "2", "", ""),
+    (EVENTS[8], "pkg-8", "1", "1", "11", "run-8"),
+    (EVENTS[9], "pkg-9", "1", "2", "", "run-9"),
+    (EVENTS[10], "pkg-10", "5", "1", "12", ""),
+    (EVENTS[11], "pkg-11", "1", "2", "", ""),
+    (EVENTS[12], "pkg-12", "1", "1", "13", "run-12"),
+]
+assert {c[0] for c in _MATRIX} == set(EVENTS), "matrix must cover every closed-vocabulary event"
+assert "" in {c[4] for c in _MATRIX} and any(c[4] for c in _MATRIX), \
+    "matrix must cover both an empty and a filled pr"
+assert "" in {c[5] for c in _MATRIX} and any(c[5] for c in _MATRIX), \
+    "matrix must cover both an empty and a filled ci_run"
+assert {c[3] for c in _MATRIX} == {"1", "2"}, "matrix must cover generation 1 and 2"
+
+# Five distinct non-zero gates, including a U > 3, on every matrix case.
+# rebase is deliberately never passed -- its own default is a separate test.
+_GATE_ARGS = ["plan-critic=2,1,0", "test-critic=5,0,1", "review=1,1,1", "ci=0,0,3"]
+_EXPECTED_GATES = {
+    "plan-critic": {"u": "2", "f": "1", "i": "0"},
+    "test-critic": {"u": "5", "f": "0", "i": "1"},
+    "review": {"u": "1", "f": "1", "i": "1"},
+    "ci": {"u": "0", "f": "0", "i": "3"},
+}
+
+
+@pytest.mark.parametrize("event,package,attempt,generation,pr,ci_run", _MATRIX)
+def test_event_block_renders_parseable_block(event, package, attempt, generation, pr, ci_run):
+    args = ["--event", event, "--package", package, "--attempt", attempt,
+            "--generation", generation]
+    for g in _GATE_ARGS:
+        args += ["--gate", g]
+    if pr:
+        args += ["--pr", pr]
+    if ci_run:
+        args += ["--ci-run", ci_run]
+
+    result = run_event_block(*args)
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    fields = strict_parse_event_block(result.stdout)
+
+    assert fields["event"] == event
+    assert fields["package"] == package
+    assert fields["attempt"] == attempt
+    assert fields["generation"] == generation
+    assert fields["pr"] == pr
+    assert fields["ci_run"] == ci_run
+    for gate, expected in _EXPECTED_GATES.items():
+        assert fields["rounds"][gate] == expected, gate
+    assert fields["rounds"]["rebase"] == {"u": "0", "f": "0", "i": "0"}, \
+        "an omitted --gate rebase must default to 0,0,0"
+
+
+def test_event_block_empty_pr_and_ci_run_are_bare_keys():
+    result = run_event_block("--event", "started", "--package", "pkg-x")
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    lines = result.stdout.splitlines()
+    assert "pr:" in lines and "ci_run:" in lines
+    for line in lines:
+        assert not line.startswith("pr: "), "empty pr must be a bare key, no trailing space"
+        assert not line.startswith("ci_run: "), "empty ci_run must be a bare key, no trailing space"
+    fields = strict_parse_event_block(result.stdout)
+    assert fields["pr"] == "" and fields["ci_run"] == ""
+
+
+def test_event_block_rebase_defaults_to_zero_with_suffix():
+    result = run_event_block("--event", "started", "--package", "pkg-y",
+                              "--gate", "plan-critic=1,0,0")
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    fields = strict_parse_event_block(result.stdout)
+    assert fields["rounds"]["rebase"] == {"u": "0", "f": "0", "i": "0"}
+    assert "rebase=0/3(0f,0i)" in result.stdout
+
+
+def test_event_block_nine_lines_and_nothing_before_the_marker():
+    result = run_event_block("--event", "started", "--package", "pkg-z")
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    assert result.stdout.startswith("<!-- adev:event v1\n")
+    assert len(result.stdout.splitlines()) == 9
+
+
+# --- validation: one whitespace/`-->` rule for every flag value, plus the
+# closed-vocabulary and integer/range checks (#134) -------------------------
+
+_BAD_WHITESPACE = {"space": " ", "tab": "\t", "newline": "\n"}
+
+
+def _bad_argv(flag, bad_value):
+    """A valid call for --event/--package, with one flag's value replaced.
+    argparse's store action keeps the *last* occurrence of a flag, so
+    appending a second --event/--package/--attempt/--generation/--pr/--ci-run
+    overrides the valid default above; --gate is an append action, so an
+    extra malformed --gate is rejected regardless of the others being fine."""
+    return ["--event", "started", "--package", "pkg-v", f"--{flag}", bad_value]
+
+
+_INVALID_CASES = []
+for _flag in ("event", "package", "attempt", "generation", "pr", "ci-run", "gate"):
+    _base = "plan-critic=1,0,0" if _flag == "gate" else "x"
+    for _label, _ws in _BAD_WHITESPACE.items():
+        _INVALID_CASES.append((f"{_flag} value contains {_label}",
+                               _bad_argv(_flag, f"{_base}{_ws}")))
+    _INVALID_CASES.append((f"{_flag} value contains an arrow",
+                           _bad_argv(_flag, f"{_base}-->")))
+
+_INVALID_CASES += [
+    ("unknown event", ["--event", "merged", "--package", "pkg-v"]),
+    ("unknown gate name", ["--event", "started", "--package", "pkg-v",
+                           "--gate", "unknown-gate=1,0,0"]),
+    ("duplicate gate", ["--event", "started", "--package", "pkg-v",
+                        "--gate", "plan-critic=1,0,0", "--gate", "plan-critic=2,0,0"]),
+    ("negative gate count", ["--event", "started", "--package", "pkg-v",
+                             "--gate", "plan-critic=-1,0,0"]),
+    ("non-integer gate count", ["--event", "started", "--package", "pkg-v",
+                                "--gate", "plan-critic=x,0,0"]),
+    ("generation too low", ["--event", "started", "--package", "pkg-v", "--generation", "0"]),
+    ("generation too high", ["--event", "started", "--package", "pkg-v", "--generation", "3"]),
+    ("empty event", ["--event", "", "--package", "pkg-v"]),
+    ("empty package", ["--event", "started", "--package", ""]),
+    ("negative attempt", ["--event", "started", "--package", "pkg-v", "--attempt", "-1"]),
+    ("non-integer attempt", ["--event", "started", "--package", "pkg-v", "--attempt", "abc"]),
+]
+
+
+@pytest.mark.parametrize("label,args", _INVALID_CASES, ids=[c[0] for c in _INVALID_CASES])
+def test_event_block_rejects_invalid_input(label, args):
+    result = run_event_block(*args)
+    assert result.returncode == 2, (label, result.returncode, result.stdout, result.stderr)
+    assert result.stdout == "", (label, result.stdout)
+    assert result.stderr.startswith("event_block: error:"), (label, result.stderr)
+
+
+@pytest.mark.parametrize("event", EVENTS)
+def test_event_block_accepts_exactly_the_closed_vocabulary(event):
+    result = run_event_block("--event", event, "--package", "pkg-v")
+    assert result.returncode == 0, (event, result.returncode, result.stdout, result.stderr)
