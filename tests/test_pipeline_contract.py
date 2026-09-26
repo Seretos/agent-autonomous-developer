@@ -569,7 +569,6 @@ def strict_parse_event_block(stdout):
         assert line == line.rstrip(), f"trailing whitespace on line: {line!r}"
 
     body = lines[1:-1]  # event, package, attempt, generation, rounds, pr, ci_run
-    assert len(body) == 7, body
 
     fields = {}
     for key, line in zip(("event", "package", "attempt"), body[:3]):
@@ -659,6 +658,39 @@ def test_event_block_renders_parseable_block(event, package, attempt, generation
         "an omitted --gate rebase must default to 0,0,0"
 
 
+
+# The R1 matrix above reuses one fixed --gate combination on every row, which
+# by itself would let a renderer that hardcodes the `rounds:` line pass every
+# case there. This dedicated test varies the --gate values themselves across
+# several distinct combinations (all five named explicitly, a different
+# subset with rebase included, and none at all) and checks each round-trips.
+_GATE_COMBOS = [
+    ("plan-critic=2,1,0", "test-critic=5,0,1", "review=1,1,1", "ci=0,0,3", "rebase=0,0,0"),
+    ("plan-critic=0,4,2", "test-critic=1,0,0", "review=0,0,0", "ci=6,1,0", "rebase=3,2,1"),
+    ("plan-critic=1,0,0",),
+    (),
+]
+
+
+@pytest.mark.parametrize("gate_args", _GATE_COMBOS,
+                         ids=["all-five-distinct", "different-five-distinct",
+                              "single-gate-only", "no-gate-flags"])
+def test_event_block_varied_gate_combinations_round_trip(gate_args):
+    args = ["--event", "started", "--package", "pkg-gatecombo"]
+    expected = {name: {"u": "0", "f": "0", "i": "0"} for name in GATES}
+    for g in gate_args:
+        args += ["--gate", g]
+        name, counts = g.split("=")
+        u, f, i = counts.split(",")
+        expected[name] = {"u": u, "f": f, "i": i}
+
+    result = run_event_block(*args)
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    fields = strict_parse_event_block(result.stdout)
+    for gate in GATES:
+        assert fields["rounds"][gate] == expected[gate], (gate, gate_args)
+
+
 def test_event_block_empty_pr_and_ci_run_are_bare_keys():
     result = run_event_block("--event", "started", "--package", "pkg-x")
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
@@ -676,6 +708,11 @@ def test_event_block_rebase_defaults_to_zero_with_suffix():
                               "--gate", "plan-critic=1,0,0")
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
     fields = strict_parse_event_block(result.stdout)
+    # the gate that *was* passed must round-trip to its own value -- not just
+    # the omitted rebase gate's default -- so a renderer that always emits
+    # the zero default regardless of --gate could not pass this test.
+    assert fields["rounds"]["plan-critic"] == {"u": "1", "f": "0", "i": "0"}
+    assert "plan-critic=1/3(0f,0i)" in result.stdout
     assert fields["rounds"]["rebase"] == {"u": "0", "f": "0", "i": "0"}
     assert "rebase=0/3(0f,0i)" in result.stdout
 
@@ -702,17 +739,52 @@ def _bad_argv(flag, bad_value):
     return ["--event", "started", "--package", "pkg-v", f"--{flag}", bad_value]
 
 
+# A base value that is otherwise VALID for the flag it belongs to -- using
+# something already-invalid (e.g. a bare "x" for --event/--attempt, which
+# fails the vocabulary/integer check on its own) would make the
+# whitespace/`-->` case exit 2 for a reason unrelated to the whitespace rule,
+# regardless of whether that rule even fires for the flag.
+_VALID_BASE = {
+    "event": "started",
+    "package": "pkgval",
+    "attempt": "3",
+    "generation": "1",
+    "pr": "prval",
+    "ci-run": "runval",
+    "gate": "plan-critic=1,0,0",
+}
+
+# Flags whose bad-value cases also get an *embedded* (mid-value) variant, not
+# just a trailing one -- a validator that only inspected the last character
+# (or only `str.rstrip()`-compared the value) would wrongly accept these.
+_EMBED_FLAGS = ("package", "pr", "ci-run", "gate")
+
 _INVALID_CASES = []
 for _flag in ("event", "package", "attempt", "generation", "pr", "ci-run", "gate"):
-    _base = "plan-critic=1,0,0" if _flag == "gate" else "x"
+    _base = _VALID_BASE[_flag]
     for _label, _ws in _BAD_WHITESPACE.items():
-        _INVALID_CASES.append((f"{_flag} value contains {_label}",
+        _INVALID_CASES.append((f"{_flag} value contains a trailing {_label}",
                                _bad_argv(_flag, f"{_base}{_ws}")))
-    _INVALID_CASES.append((f"{_flag} value contains an arrow",
+    _INVALID_CASES.append((f"{_flag} value contains a trailing arrow",
                            _bad_argv(_flag, f"{_base}-->")))
+    if _flag in _EMBED_FLAGS:
+        _mid = len(_base) // 2
+        for _label, _ws in _BAD_WHITESPACE.items():
+            _embedded = _base[:_mid] + _ws + _base[_mid:]
+            _INVALID_CASES.append((f"{_flag} value contains an embedded {_label}",
+                                   _bad_argv(_flag, _embedded)))
+        _embedded_arrow = _base[:_mid] + "-->" + _base[_mid:]
+        _INVALID_CASES.append((f"{_flag} value contains an embedded arrow",
+                               _bad_argv(_flag, _embedded_arrow)))
 
 _INVALID_CASES += [
     ("unknown event", ["--event", "merged", "--package", "pkg-v"]),
+    # a second, differently-fabricated unknown name -- guards against a
+    # renderer whose EVENTS tuple drifted to a 14th name that happens not to
+    # be "merged" (the closed-vocabulary accept test below only proves the
+    # 13 known names are accepted, never that an arbitrary superset addition
+    # would be caught).
+    ("second unknown event", ["--event", "abandoned", "--package", "pkg-v"]),
     ("unknown gate name", ["--event", "started", "--package", "pkg-v",
                            "--gate", "unknown-gate=1,0,0"]),
     ("duplicate gate", ["--event", "started", "--package", "pkg-v",
