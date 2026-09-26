@@ -22,7 +22,7 @@ reason to wait.
 
 | parameter | required | meaning |
 |---|---|---|
-| `package` | yes | a ticket id, or an epic id. An epic means **all** its child tickets (`list_hierarchy`): one branch, one PR, one `Closes #<n>` per child |
+| `package` | yes | a ticket id, or an epic id. An epic means **all** its child tickets (`list_hierarchy`): one branch, one PR, one closing reference per child (Phase 5) |
 | `project_id` | yes | the project-issues project. Never guessed — if missing, STOP with a `failed` event |
 | `worktree_path` | yes | absolute path of the prepared worktree. Every git call is `git -C <worktree_path> …`; never rely on cwd |
 | `base_branch` | yes | the PR base (usually the default branch) |
@@ -361,9 +361,11 @@ through to Phase 1, exactly as before this phase existed.
    origin/<base_branch> HEAD` **fails** (the branch does not contain the
    current base).
 6. `finished`: there is an `open_pr` **and** `ahead` is non-empty **and**
-   `list_pipeline_runs(project_id, commit_sha=<HEAD sha>, limit=20)` returns at
-   least one completed run and every completed run has
-   `conclusion == "success"`. This is the discriminator between a resumed
+   `list_pipeline_runs(project_id, commit_sha=<HEAD sha>, limit=20)` shows HEAD
+   **CI-green** as agent-project-issues defines it (its skill, section
+   "Reading a run's `status` and `conclusion`"): at least one run, none still
+   in progress, every run green. A run still in progress means *not
+   finished*. This is the discriminator between a resumed
    crash and a resumed conflict: this pipeline only opens a PR after the
    reviewer approves (Phase 4), so *an open PR plus green CI on this exact
    HEAD* means the work is done and only the base moved underneath it.
@@ -709,8 +711,11 @@ findings (Codex pass folded in when available). Post `review-verdict`.
    characters, whichever is hit first, with a trailing "...truncated, see
    <rundir>/change-report-round-<n>.md for full output" marker appended when
    truncated + a `Run artefacts: <rundir>` line followed by the URLs of this run's
-   `adev:event` comments on the ticket + one "Closes #<n>" line per ticket in
-   the package. If the
+   `adev:event` comments on the ticket + one closing reference per ticket in
+   the package, in the syntax agent-project-issues prescribes for this
+   project's provider (its skill, section "Pull requests: closing the ticket
+   on merge"; `create_pr`'s description says the same). Closing a ticket after
+   merge is the caller's concern, not a step here. If the
    review gate was accepted at a round with `REVIEW_OWN_BLOCKING: 0` while
    `kind: "codex"` findings were still open (ticket #112 — see Phase 4),
    append a `## Codex notes (not blocking)` section listing each such finding
@@ -799,41 +804,36 @@ A local PASS was a pre-filter. The pipeline decides.
    a subagent, never detached (see *Turn-end discipline*: ending your turn
    ends this process):
    `Bash("bash ${CLAUDE_PLUGIN_ROOT}/scripts/ci-wait-pipeline.sh --project <project_id> --sha <head> --timeout 540", timeout: 600000)`.
-   The wrapper resolves the CLI by executing a candidate (`project-issues.exe`
-   first under Git Bash, `project-issues` first elsewhere) and passes the CLI's
-   stdout and exit code through; when no candidate is executable it exits `4`
-   and names each candidate it tried with its rc on stderr. The CLI blocks until every run on `head` has finished or its own 540 s
-   elapse; its stdout JSON (`state`, `runs[].id`, `runs[].url`) is this gate's
-   data. The tool `timeout` outlives the CLI's, so the CLI always ends first.
-   Route on its exit code:
-   - `0` — every run succeeded: run the **promised-CI check** below on that
-     run list; only on `verdict: ok` post **`ci-green`** with `ci_run:` taken
-     from that JSON, and end. Done.
-   - `1` — a run failed: post `ci-red` (`f`), then step 4.
-   - `2`, `3` — still waiting (not finished yet / no run registered yet): run
-     the same command again, inside the same round. The repeats cost the
-     round's 45-minute budget, never a new round; hitting the 45 minutes is an
-     `i` round.
-   - `4`, or an exit code outside 0-5 (including 126/127): the CLI could not
-     be used here (missing, too old for `wait-pipeline`, or not executable —
-     the wrapper's stderr lists the candidates it tried). This is the
-     degraded-wait path, never a terminal blocker on first occurrence and never
-     a diagnosis of the platform. Once the CLI proved unusable in a round, do
-     not run the wrapper again in that round: every later wait goes straight to
-     `list_pipeline_runs(project_id, commit_sha=head, limit=20)`, classified
-     by `conclusion`, not by completion: all `success` → the promised-CI check
-     below, then `ci-green` on `verdict: ok`; any
-     `failure` → the `1` path; a run that ended with another conclusion
-     (cancelled, timed out, skipped, neutral) → the no-verdict path below;
-     runs still in progress → repeat the lookup inside the round's 45-minute
-     budget, with no pacing command and never detached; nothing registered
-     and the budget spent → an `i` round and a retrigger (step 5). Post
-     `blocked`, naming what you tried and asking for the CLI to be installed
-     or updated, only when that lookup itself fails or the round budget or the
-     `i`-round cap runs out without a verdict — never after the wrapper's
-     failure alone. Never fall back to a sleeping poll.
-   - `5` — no verdict: the runs ended without success or failure. Never
-     `ci-green`, never `ci-red`, never a fix round. The first time this
+   The exit codes and the stdout JSON are `project-issues wait-pipeline`'s,
+   defined in agent-project-issues' skill, section "Waiting for CI"; the
+   wrapper passes both through and exits `4` when it cannot run the CLI at
+   all. Take `ci_run:` and each run's `url` from that JSON. Route on the exit
+   code:
+   - `0` — green: run the **promised-CI check** below on that run list; only
+     on `verdict: ok` post **`ci-green`** with `ci_run:` taken from that JSON,
+     and end. Done.
+   - `1` — red: post `ci-red` (`f`), then step 4.
+   - `2`, `3` — still waiting: run the same command again, inside the same
+     round. The repeats cost the round's 45-minute budget, never a new round;
+     hitting the 45 minutes is an `i` round.
+   - `4`, or an exit code outside 0-5 (including 126/127) — CLI unusable: this
+     is the degraded-wait path, never a terminal blocker on first occurrence
+     and never a diagnosis of the platform. Once the CLI proved unusable in a
+     round, do not run the wrapper again in that round: every later wait goes
+     straight to `list_pipeline_runs(project_id, commit_sha=head, limit=20)`,
+     its runs classified by agent-project-issues' green condition and the
+     per-provider run vocabulary in `list_pipeline_runs`' tool description:
+     green → the promised-CI check below, then `ci-green` on `verdict: ok`; a
+     run failed → the `1` path; a run ended without a verdict → the
+     no-verdict path below; runs still in progress → repeat the lookup inside
+     the round's 45-minute budget, with no pacing command and never detached;
+     nothing registered and the budget spent → an `i` round and a retrigger
+     (step 5). Post `blocked`, naming what you tried and asking for the CLI to
+     be installed or updated, only when that lookup itself fails or the round
+     budget or the `i`-round cap runs out without a verdict — never after the
+     wrapper's failure alone. Never fall back to a sleeping poll.
+   - `5` — no verdict: never `ci-green`, never `ci-red`, never a fix round.
+     The first time this
      attempt: retrigger once (step 5), one `i` round. The second time this
      attempt: post `blocked` quoting each run's `state` and `url`, asking the
      human to decide (re-run by hand, accept, or fix the workflow) — a retry
