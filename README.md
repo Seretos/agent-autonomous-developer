@@ -85,7 +85,7 @@ session** (ticket/PR/comment/pipeline operations: `get_ticket`, `list_hierarchy`
 
 Declared in `.claude-plugin/plugin.json` under `dependencies`, but the marketplace registry does
 not auto-install them today — enabling them is the consumer's responsibility. The project needs
-`pulls.create` in `~/.seretos/projects.yml`; merging is the caller's job (`pulls.merge`).
+PR write access configured (see the agent-project-issues setup docs); merging is the caller's job.
 
 ## Install
 

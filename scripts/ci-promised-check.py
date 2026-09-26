@@ -2,10 +2,17 @@
 """Did the pipeline actually run what this package added to it? (ticket #122)
 
 Phase 6 used to post `ci-green` as soon as every run on the PR head reported
-`conclusion == "success"`. A workflow the diff added a job to, but which never
-ran for the PR (a `workflow_dispatch`-only release workflow, a brand-new
-workflow file), is invisible in that JSON: the promised job is *absent*, not
-red. This check looks for that absence.
+green. A workflow the diff added a job to, but which never ran for the PR (a
+`workflow_dispatch`-only release workflow, a brand-new workflow file), is
+invisible in that JSON: the promised job is *absent*, not red. This check
+looks for that absence.
+
+This module does not itself claim what "green" means for a run: that
+vocabulary (status `completed`, conclusion `success`) is defined by the
+agent-project-issues run-vocabulary contract — see the skill section
+"Reading a run's `status` and `conclusion`" (this contract is documented as
+of agent-project-issues 0.3.11, ticket agent-project-issues#357) — and
+`has_successful_run` below just applies it.
 
 Input (stdin, one JSON object):
   {"worktree": "<path>", "base": "<branch>", "head": "<sha>",
@@ -114,6 +121,9 @@ def added_jobs_by_workflow(worktree, base, head):
 
 def has_successful_run(runs, workflow_name):
     wanted = workflow_name.lower()
+    # "completed" + "success" is the agent-project-issues run-vocabulary
+    # contract cited in the module docstring above, not this script's own
+    # assumption.
     return any(
         isinstance(r, dict)
         and str(r.get("name", "")).lower() == wanted
